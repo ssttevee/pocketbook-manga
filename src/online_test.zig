@@ -145,4 +145,71 @@ test "download failure stays visible with progress and resume instructions" {
     try harness.frame();
     try harness.expectText("Download failed - tap chapter to resume");
     try harness.expectText(session.status);
+    try harness.expectText(book.title);
+    try harness.expectText(book.chapters[0].title);
+}
+
+test "online rows use fabrum pressed state and small partial updates" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: online.Engine = .{ .gpa = a, .io = std.testing.io, .root = root, .execute_fn = fixtureExecutor };
+    var model: lib.Model = .{ .gpa = a };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = root };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    try smoke.start(std.testing.allocator, std.testing.io, &session);
+    defer smoke.stop();
+    try smoke.tapText("Browse");
+    try finish(&session);
+    try smoke.expectRowFeedback("Fixture Source");
+    try smoke.tapText("Install / update extensions");
+    try finish(&session);
+    try smoke.expectRowFeedback("Fixture Extension");
+    try smoke.tapText("Fixture Extension");
+    try finish(&session);
+    try smoke.tapText("Fixture Source");
+    try finish(&session);
+    try smoke.expectRowFeedback("Fixture Story");
+    try smoke.tapText("Source settings");
+    try finish(&session);
+    try smoke.expectRowFeedback("Use mirror");
+    try smoke.tapText("Aa");
+    try smoke.expectRowFeedback("Right to left (manga)");
+}
+
+pub fn stalledDownload(engine: *online.Engine, job: *online.Job) !void {
+    job.pages_done.store(4, .release);
+    job.pages_total.store(12, .release);
+    try engine.io.sleep(.fromSeconds(60), .awake);
+}
+test "downloading and cancellation keep the selected series and chapter" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var engine: online.Engine = .{ .gpa = a, .io = std.testing.io, .root = ".", .execute_fn = stalledDownload };
+    var model: lib.Model = .{ .gpa = a, .library = smoke.fixture };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = "." };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    const book = smoke.fixture.manga[0];
+    session.start(.{ .download = .{ .book = book, .chapter = book.chapters[0] } });
+    while (session.browser.busy.?.pages_total.load(.acquire) == 0) try std.testing.io.sleep(.fromMilliseconds(1), .awake);
+    var harness: @import("fabrum").app.testing.Harness(.{}, @import("ui.zig")) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{@import("fabrum").app.RootValue.of(&session)}, .widgets = .drawn });
+    defer harness.deinit();
+    try harness.frame();
+    try harness.expectText("Downloading chapter");
+    try harness.expectText(book.title);
+    try harness.expectText(book.chapters[0].title);
+    try harness.expectText("4 / 12 pages");
+    session.browser.busy.?.cancel();
+    try session.poll();
+    try harness.frame();
+    try harness.expectText("Download canceled - tap chapter to resume");
+    try harness.expectText(book.title);
+    try harness.expectText(book.chapters[0].title);
+    try std.testing.expect(std.mem.indexOf(u8, session.status, "4/12") != null);
 }

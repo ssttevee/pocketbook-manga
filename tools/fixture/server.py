@@ -1,4 +1,4 @@
-import base64, os, ssl, struct, zlib, random, time, threading
+import base64, os, ssl, struct, zlib, random, time, threading, pathlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # A deterministic ~1 MiB PNG per page makes emulator measurements useful.
 def chunk(kind, data):
@@ -12,6 +12,17 @@ seen_lock=threading.Lock()
 class Server(BaseHTTPRequestHandler):
     def do_GET(self):
         global seen_stall
+        if self.path.startswith('/metadata/'):
+            if 'zstd' not in self.headers.get('Accept-Encoding', ''):
+                self.send_error(406); return
+            encoded=pathlib.Path(__file__).with_name('metadata.zst').read_bytes()
+            self.send_response(200)
+            self.send_header('Content-Type','text/plain; charset=utf-8')
+            self.send_header('Content-Encoding','zstd')
+            self.send_header('Content-Length',str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+            return
         if self.path.startswith('/redirect'):
             self.send_response(302)
             self.send_header('Location',self.path.replace('/redirect','/page.png'))

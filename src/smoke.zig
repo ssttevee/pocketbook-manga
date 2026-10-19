@@ -37,6 +37,9 @@ pub fn start(gpa: std.mem.Allocator, io: std.Io, session: *Session) !void {
         .fonts = &.{.{ .name = "Go", .data = @embedFile("fonts/Go-Regular.ttf") }},
         .provide = &.{f.app.RootValue.of(session)},
         .clock = fake.clock,
+        // Press feedback must never trigger a periodic full-screen clean.
+        // Reader page turns request their own full refreshes in ui.zig.
+        .refresh = .{ .full_every = 0, .interactive = .dynamic },
         .context = .{ .units = 512, .breadth = 64 },
     });
     fake.advance(1);
@@ -45,12 +48,49 @@ pub fn stop() void {
     Host.instance.deinit();
     fake.deinit();
 }
-pub fn tapText(value: []const u8) !void {
+pub fn textPoint(value: []const u8) !struct { x: c_int, y: c_int } {
     const unit = f.app.testing.findText(Host.Runtime.Text, Host.instance.runtime.context(), value) orelse return error.TextNotFound;
     const center = f.app.testing.center(unit);
     const scale = Host.instance.screen.scale;
-    fake.tap(@intFromFloat(center.x * scale), @intFromFloat(center.y * scale));
+    return .{ .x = @intFromFloat(center.x * scale), .y = @intFromFloat(center.y * scale) };
+}
+pub fn tapText(value: []const u8) !void {
+    const point = try textPoint(value);
+    fake.tap(point.x, point.y);
     fake.advance(1);
+}
+pub fn pressText(value: []const u8) !void {
+    const point = try textPoint(value);
+    _ = fake.send(.pointer_down, point.x, point.y);
+    fake.advance(1);
+}
+pub fn cancelPress() void {
+    _ = fake.send(.pointer_cancel, 0, 0);
+    fake.advance(1);
+}
+pub fn expectRowFeedback(value: []const u8) !void {
+    const point = try textPoint(value);
+    const offset = @as(usize, @intCast(point.y * fake.state.canvas.scanline + 30));
+    const normal = fake.state.framebuffer[offset];
+    const before_press = fake.state.updates.items.len;
+    try pressText(value);
+    try std.testing.expect(fake.state.framebuffer[offset] < normal);
+    try expectSmallPartial(before_press, point.y);
+    const before_release = fake.state.updates.items.len;
+    _ = fake.send(.pointer_up, 0, 0); // Release outside: clear without activation.
+    fake.advance(1);
+    try std.testing.expectEqual(normal, fake.state.framebuffer[offset]);
+    try expectSmallPartial(before_release, point.y);
+}
+fn expectSmallPartial(since: usize, row_y: c_int) !void {
+    const updates = fake.state.updates.items[since..];
+    try std.testing.expect(updates.len > 0);
+    for (updates) |update| {
+        try std.testing.expectEqual(fake.Update.Kind.partial, update.kind);
+        try std.testing.expect(update.h > 0 and update.h <= 100);
+        try std.testing.expect(update.y <= row_y and update.y + update.h >= row_y);
+        try std.testing.expect(update.w < fake.state.width);
+    }
 }
 pub fn writeScreen(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
     const width: usize = @intCast(fake.state.width);
@@ -124,4 +164,35 @@ test "InkView system keyboard filters the library by title" {
     try std.testing.expectEqual(1, model.titleCount());
     try tapText("Stories from the Observatory");
     try std.testing.expectEqual(2, model.manga);
+}
+
+test "title and chapter press feedback stays within the row and never flashes" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var model: lib.Model = .{ .gpa = arena.allocator(), .library = fixture };
+    var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io };
+    try start(std.testing.allocator, std.testing.io, &session);
+    defer stop();
+    // More than the host's default cleaning interval: taps must still be partial.
+    for (0..8) |_| try expectRowFeedback("The Copper Lantern");
+    try tapText("The Copper Lantern");
+    try expectRowFeedback("Chapter 1 - A new beginning");
+    try std.testing.expectEqual(lib.Screen.chapters, model.screen);
+    try std.testing.expect(session.browser.busy == null);
+}
+
+test "partial reader mode still cleans every twelve page turns" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var model: lib.Model = .{ .gpa = arena.allocator(), .library = fixture };
+    var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io, .load_image = sampleImage };
+    try start(std.testing.allocator, std.testing.io, &session);
+    defer stop();
+    try tapText("The Copper Lantern");
+    try tapText("Chapter 1 - A new beginning");
+    model.prefs.full_refresh = false;
+    for (0..12) |i| {
+        _ = fake.pressKey(if (i % 2 == 0) .next else .prev);
+        try std.testing.expectEqual(if (i == 11) fake.Update.Kind.full else fake.Update.Kind.partial, fake.state.updates.items[fake.state.updates.items.len - 1].kind);
+    }
 }

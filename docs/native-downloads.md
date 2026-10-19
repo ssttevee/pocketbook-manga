@@ -38,7 +38,7 @@ The prior reader transition already worked on successful downloads, as its exist
 
 ## Compression and measurements
 
-okhttp-zstd and its catalog entry were removed from the worktree host. The rebuilt jar contains no zstd classes/resources, so OkHttp's optional algorithm discovery cannot advertise/load that unavailable JNI codec. okhttp-brotli remains; it uses the pure Java `org.brotli.dec.BrotliInputStream` ([OkHttp source](https://github.com/square/okhttp/blob/master/okhttp-brotli/src/main/kotlin/okhttp3/brotli/Brotli.kt)).
+The original removal of okhttp-zstd broke extensions that link to `okhttp3.zstd.Zstd.INSTANCE`. This is corrected by a binary-compatible host object backed by pure Java Aircompressor, with strict-alignment ARM Zero memory access fixes; see [device feedback fixes](device-feedback-fixes.md). The JNI-backed okhttp-zstd dependency remains absent. okhttp-brotli remains; it uses the pure Java `org.brotli.dec.BrotliInputStream` ([OkHttp source](https://github.com/square/okhttp/blob/master/okhttp-brotli/src/main/kotlin/okhttp3/brotli/Brotli.kt)).
 
 Per-page logs report bytes, network_ms, head_ms, body_ms and disk_ms. Head time includes DNS/connect/TLS/response headers, body time includes transfer and native TLS decoding, and disk time includes image writes, sync and rename. Incomplete transfers log bytes_written and their elapsed network/disk time. Chapter logs include completed/total pages, resumed/native counts, bytes, network/disk totals, planning_ms, transfer elapsed_ms and total_elapsed_ms. JVM fallback's UI network timing includes worker/IPC overhead; the diagnostic JVM benchmark times fetchImage directly, avoiding that overhead.
 

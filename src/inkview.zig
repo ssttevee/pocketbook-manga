@@ -109,6 +109,9 @@ pub fn main(init: std.process.Init) !void {
         .provide = &.{f.app.RootValue.of(&session)},
         // Back is routed through fabrum: chapter list -> library -> exit.
         .close_key = null,
+        // Press feedback must never trigger a periodic full-screen clean.
+        // Reader page turns request their own full refreshes in ui.zig.
+        .refresh = .{ .full_every = 0, .interactive = .dynamic },
         .context = .{ .units = 512, .breadth = 64 },
     });
 }

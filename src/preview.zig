@@ -14,6 +14,11 @@ pub fn main(init: std.process.Init) !void {
     try smoke.writeScreen(init.gpa, init.io, "preview/library.pgm");
     try smoke.tapText("The Copper Lantern");
     try smoke.writeScreen(init.gpa, init.io, "preview/chapters.pgm");
+    try smoke.pressText("Chapter 1 - A new beginning");
+    try smoke.writeScreen(init.gpa, init.io, "preview/pressed-chapter.pgm");
+    const pressed_update = smoke.fake.state.updates.items[smoke.fake.state.updates.items.len - 1];
+    std.debug.print("Pressed chapter update: {s} ({d},{d}) {d}x{d} px\n", .{ @tagName(pressed_update.kind), pressed_update.x, pressed_update.y, pressed_update.w, pressed_update.h });
+    smoke.cancelPress();
     try smoke.tapText("Chapter 1 - A new beginning");
     try smoke.writeScreen(init.gpa, init.io, "preview/reader.pgm");
     try smoke.tapText("Aa");
@@ -39,6 +44,15 @@ pub fn main(init: std.process.Init) !void {
     try smoke.tapText("Fixture Story");
     try finish(&session);
     try smoke.writeScreen(init.gpa, init.io, "preview/online-chapters.pgm");
+    engine.execute_fn = @import("online_test.zig").stalledDownload;
+    try smoke.tapText("Chapter 1");
+    while (session.browser.busy.?.pages_total.load(.acquire) == 0) try init.io.sleep(.fromMilliseconds(1), .awake);
+    smoke.fake.advance(250);
+    try smoke.writeScreen(init.gpa, init.io, "preview/downloading.pgm");
+    session.browser.busy.?.cancel();
+    try session.poll();
+    smoke.fake.advance(250);
+    try smoke.writeScreen(init.gpa, init.io, "preview/download-canceled.pgm");
     std.debug.print("Rendered 758x1024 application screens into preview/*.pgm\n", .{});
 }
 

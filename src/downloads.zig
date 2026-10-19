@@ -167,7 +167,12 @@ fn fetch(client: *std.http.Client, store: Store, index: usize, request: p.ImageR
     defer file.close(io);
     var extension: ?[]const u8 = null;
     while (true) {
-        const n = reader.readSliceShort(&buffer) catch return response.bodyErr() orelse error.NetworkReadFailed;
+        const n = reader.readSliceShort(&buffer) catch {
+            // HTTP framing can forward the connection's ReadFailed without
+            // setting bodyErr. Preserve the underlying Io cancellation.
+            if (response.bodyErr()) |err| return err;
+            return req.connection.?.getReadError() orelse error.NetworkReadFailed;
+        };
         if (n == 0) break;
         if (bytes == 0) extension = imageExtension(buffer[0..n]) orelse return error.JvmImageResponse;
         if (bytes + n > max_image) return error.ImageTooLarge;

@@ -7,7 +7,7 @@ const Root = @This();
 const online = @import("online.zig");
 const models = @import("source_models.zig");
 pub const OnlineCommand = union(enum) { extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel };
-pub const State = struct { focused: bool = false, tapping: bool = false };
+pub const State = struct { focused: bool = false, tapping: bool = false, reader_updates: u8 = 0 };
 pub const Props = struct {};
 pub const Msg = union(enum) { act: lib.Action, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
@@ -75,7 +75,7 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
             }
             if (action == .back) session.browser.offset = 0;
             try session.act(action);
-            if (session.model.screen == .reader and session.model.prefs.full_refresh) ctx.refresh(.page);
+            if (session.model.screen == .reader) refreshReader(state, session, ctx);
             ctx.focus("screen");
         },
         .pointer => |event| {
@@ -89,7 +89,7 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                     const left = event.local.x < event.size.x / 2;
                     const forward = left == session.model.prefs.rtl;
                     try session.act(.{ .turn = if (forward) 1 else -1 });
-                    if (session.model.prefs.full_refresh) ctx.refresh(.page);
+                    refreshReader(state, session, ctx);
                     ctx.focus("screen");
                 },
             }
@@ -122,9 +122,27 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                 else => return,
             };
             try session.act(action);
-            if (model.screen == .reader and model.prefs.full_refresh) ctx.refresh(.page);
+            if (model.screen == .reader) refreshReader(state, session, ctx);
         },
     }
+}
+// Panel policy leaves cleaning refreshes to reading, never to row press/release.
+fn refreshReader(state: *State, session: *const Session, ctx: *app.Update(Root)) void {
+    state.reader_updates += 1;
+    if (session.model.prefs.full_refresh or state.reader_updates >= 12) {
+        state.reader_updates = 0;
+        ctx.refresh(.page);
+    }
+}
+fn rowFill(ui: *app.Ui, key: anytype) f.Color {
+    // Same interaction queries and 12% pressed shading as app.drawn.button.
+    if (ui.pressed(key)) return .gray(216);
+    if (ui.capabilities().hover and ui.hovered(key)) return .gray(247);
+    return .gray(246);
+}
+fn downloadIdentity(ui: *app.Ui, series: []const u8, chapter: []const u8) !void {
+    try ui.text(series, .{ .font_size = 17, .wrap_mode = .words });
+    try ui.text(chapter, .{ .font_size = 14, .wrap_mode = .words });
 }
 fn text(ui: *app.Ui, value: []const u8, size: f32, gray: u8) !void {
     try ui.text(value, .{ .font_size = size, .color = .gray(gray), .overflow = .ellipsis_end, .wrap_mode = .none });
@@ -164,16 +182,19 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         if (model.screen != .settings and session.browser.busy == null) try button(ui, "settings", "Aa", .settings);
     }
     if (session.download_error and session.browser.busy == null) {
-        try ui.open("download-error", .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .all(10), .child_gap = 5 }, .border = .{ .color = .black, .widths = .all(2) } });
+        try ui.open("download-error", .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .all(10), .child_gap = 5 }, .border = .{ .color = .black, .widths = .outside(2) } });
         try text(ui, if (std.mem.startsWith(u8, session.status, "Download canceled")) "Download canceled - tap chapter to resume" else "Download failed - tap chapter to resume", 15, 0);
+        if (session.download_identity) |identity| try downloadIdentity(ui, identity.series, identity.chapter);
         try ui.text(session.status[0..@min(session.status.len, 240)], .{ .font_size = 13, .wrap_mode = .words });
         ui.close();
     }
     if (session.browser.busy) |job| {
         try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 16 } });
         defer ui.close();
-        try text(ui, "Working on your reader", 18, 0);
-        try text(ui, switch (job.request) {
+        try text(ui, if (job.request == .download) "Downloading chapter" else "Working on your reader", 18, 0);
+        if (job.request == .download) {
+            try downloadIdentity(ui, job.request.download.book.title, job.request.download.chapter.title);
+        } else try text(ui, switch (job.request) {
             .sources => "Loading extensions...",
             .extensions => "Loading extension repository...",
             .install => "Downloading and installing extension...",
@@ -187,7 +208,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         const total = job.pages_total.load(.acquire);
         if (total > 0) try ui.print(.{ .font_size = 14 }, "{d} / {d} pages", .{ job.pages_done.load(.acquire), total });
         try onlineButton(ui, "cancel-job", "Cancel", .cancel);
-        try text(ui, "Java startup can take a while on the Verse.", 12, 40);
+        if (job.request != .download) try text(ui, "Java startup can take a while on the Verse.", 12, 40) else if (total == 0) try text(ui, "Preparing page list...", 12, 40);
     } else switch (model.screen) {
         .library, .chapters => try list(ui, model),
         .reader => try reader(ui, session),
@@ -206,7 +227,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         },
         .sources, .extensions, .catalog, .source_settings => try browserView(ui, session),
     }
-    if (session.status.len > 0 and !session.download_error) try text(ui, session.status, 11, 0);
+    if (session.status.len > 0 and !session.download_error and session.browser.busy == null) try text(ui, session.status, 11, 0);
 }
 fn list(ui: *app.Ui, model: *const lib.Model) !void {
     const is_library = model.screen == .library;
@@ -234,9 +255,10 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
             const i = if (is_library) model.titleIndex(row) else row;
             const title = if (is_library) model.library.manga[i].title else model.library.manga[model.manga].chapters[i].title;
             const on = ui.messages(Root);
-            try ui.open(.{ .row = i }, .{
+            const key = .{ .row = i };
+            try ui.open(key, .{
                 .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(37) }, .axis = .y, .padding = .init(8, 8, 3, 3), .child_gap = 1 },
-                .background_color = .gray(246),
+                .background_color = rowFill(ui, key),
                 .border = .{ .color = .gray(130), .widths = .{ .bottom = 1 } },
                 .on_click = on.bind(.{ .act = if (is_library) @as(lib.Action, .{ .open = i }) else @as(lib.Action, .{ .read = i }) }),
             });
@@ -462,9 +484,10 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
                 .source_settings => .{ .preference = i },
                 else => unreachable,
             };
-            try ui.open(.{ .online_row = i }, .{
+            const key = .{ .online_row = i };
+            try ui.open(key, .{
                 .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(33) }, .axis = .y, .padding = .init(8, 8, 3, 3) },
-                .background_color = .gray(246),
+                .background_color = rowFill(ui, key),
                 .border = .{ .color = .gray(140), .widths = .{ .bottom = 1 } },
                 .on_click = ui.messages(Root).bind(.{ .online = command }),
             });

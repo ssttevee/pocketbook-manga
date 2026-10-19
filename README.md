@@ -61,6 +61,7 @@ ZIG=/Users/steve/Programs/Zig/v0.17.0/zig
 "$ZIG" build -Doptimize=ReleaseSmall         # native UI and isolated ARM JVM worker
 "$ZIG" build test                           # model, persistence, UI and background flows
 "$ZIG" build preview -Doptimize=ReleaseSmall # fake-InkView screenshots in preview/*.pgm
+python3 tools/preview_png.py                # lossless preview/*.png for review
 python3 tools/package_device.py --firmware-root /tmp/pocketmanga-prepared610
 ```
 
@@ -119,3 +120,5 @@ Zero interprets Java bytecode. Startup and extension loading can be slow on the 
 The ARM runtime, JNI bridge, repository connection and UI flows are tested in emulation. **Physical Verse verification is still needed** for real panel refresh, Wi-Fi dialogs, suspend behavior, startup time and peak RAM. Failed startup or corrupt JSON is reported in the log rather than silently resetting user data. Keep the runtime directory and launch through the provided `.app` script.
 
 The Go font and its license are in `src/fonts/`. See zig-tachi's NOTICE for the upstream Mihon and Android compatibility code.
+
+The [device feedback fixes](docs/device-feedback-fixes.md) document extension-compatible pure Java zstd decoding, download identification and partial-refresh row feedback.
