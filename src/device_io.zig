@@ -140,5 +140,7 @@ fn randomSecure(_: ?*anyopaque, buffer: []u8) Io.RandomSecureError!void {
 }
 
 fn random(userdata: ?*anyopaque, buffer: []u8) void {
-    randomSecure(userdata, buffer) catch threaded(userdata).vtable.random(userdata, buffer);
+    // TLS uses Io.random (a void API). Never seed it with the generic
+    // backend's weak fallback if the device entropy source fails.
+    randomSecure(userdata, buffer) catch @panic("Device entropy unavailable: /dev/urandom");
 }

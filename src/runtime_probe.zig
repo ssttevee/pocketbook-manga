@@ -45,18 +45,37 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ, roo
         const library = try @import("library.zig").readJson(@import("library.zig").Library, gpa, io, library_path);
         defer library.deinit();
         const book = library.value.manga[0];
+        if (environ.getPosix("POCKETMANGA_FIXTURE_CANCEL_RESUME") != null) {
+            const partial = try online.Job.start(&engine, .{ .download = .{ .book = book, .chapter = book.chapters[0] } });
+            defer partial.deinit();
+            const deadline = @import("worker_wire.zig").pm_now_ms() + 60_000;
+            while (partial.pages_done.load(.acquire) < 1 and !partial.done.load(.acquire)) {
+                if (@import("worker_wire.zig").pm_now_ms() > deadline) return error.CancelSetupTimedOut;
+                try io.sleep(.fromMilliseconds(10), .awake);
+            }
+            try io.sleep(.fromMilliseconds(300), .awake);
+            const before_cancel = @import("worker_wire.zig").pm_now_ms();
+            partial.cancel();
+            const cancel_ms = @import("worker_wire.zig").pm_now_ms() - before_cancel;
+            if (cancel_ms > 500 or partial.failure == null or !std.mem.eql(u8, partial.failure.?, "Canceled") or partial.pages_done.load(.acquire) != 1) return error.CancelNotImmediate;
+            std.debug.print("Native stalled-body cancel returned Canceled in {d} ms; completed page retained.\n", .{cancel_ms});
+        }
         const downloaded = try runJob(&engine, .{ .download = .{ .book = book, .chapter = book.chapters[0] } });
         defer downloaded.deinit();
-        if (downloaded.pages_done.load(.acquire) != 1 or downloaded.pages_total.load(.acquire) != 1) return error.MissingDownloadProgress;
-        std.debug.print("Download progress crossed protocol: 1/1; worker RSS {d} KiB.\n", .{engine.client.last_rss_kib});
+        if (downloaded.pages_done.load(.acquire) != 3 or downloaded.pages_total.load(.acquire) != 3) return error.MissingDownloadProgress;
+        std.debug.print("Native download progress: 3/3; worker RSS {d} KiB.\n", .{engine.client.last_rss_kib});
         const ready = try @import("library.zig").readJson(@import("library.zig").Library, gpa, io, library_path);
         defer ready.deinit();
-        if (ready.value.manga[0].chapters[0].pages.len != 1) return error.FixtureDownloadFailed;
+        if (ready.value.manga[0].chapters[0].pages.len != 3) return error.FixtureDownloadFailed;
         const page_path = try std.fs.path.join(gpa, &.{ root, ready.value.manga[0].chapters[0].pages[0] });
-        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, page_path, gpa, .limited(1 << 20));
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, page_path, gpa, .limited(2 << 20));
         defer gpa.free(bytes);
         if (!std.mem.startsWith(u8, bytes, "\x89PNG")) return error.FixtureNotPng;
-        std.debug.print("ARM extension install, search, details, chapters and authenticated image download passed ({d} bytes).\n", .{bytes.len});
+        if (engine.client.pid != -1) return error.WorkerRetainedDuringNativeDownload;
+        std.debug.print("ARM extension install, search, details, chapters and authenticated image download passed ({d} bytes/page; native TLS, Referer and cookie; worker released).\n", .{bytes.len});
+        const benchmark = try runJob(&engine, .{ .benchmark = .{ .book = book, .chapter = book.chapters[0] } });
+        benchmark.deinit();
+        if (environ.getPosix("POCKETMANGA_FIXTURE_CANCEL_RESUME") != null) std.debug.print("Native retry resumed completed pages and published chapter.\n", .{});
     }
     std.debug.print("Worker RSS at completion: {d} KiB.\n", .{engine.client.last_rss_kib});
     if (environ.getPosix("POCKETMANGA_WORKER_TEST") != null) {

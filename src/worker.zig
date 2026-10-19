@@ -49,7 +49,21 @@ pub fn main(init: std.process.Init) !void {
         switch (command.kind) {
             .shutdown => std.c._exit(0),
             .cancel => if (active) |job| {
-                if (command.id == id) job.cancelled.store(true, .release);
+                if (command.id == id) {
+                    job.cancelled.store(true, .release);
+                    const source: ?i64 = switch (job.request) {
+                        .download => |r| r.book.source_id,
+                        .image => |r| r.source,
+                        .titles => |r| r.source,
+                        else => null,
+                    };
+                    if (source) |source_id| if (engine.runtime) |rt| {
+                        const canceled = rt.call(source_id, "cancel", "{}") catch null;
+                        if (canceled) |bytes| init.gpa.free(bytes);
+                        rt.detachThread();
+                    };
+                    std.c._exit(0);
+                }
             },
             .crash => {
                 if (init.minimal.environ.getPosix("POCKETMANGA_WORKER_TEST") != null) std.c._exit(70);

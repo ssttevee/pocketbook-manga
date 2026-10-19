@@ -11,6 +11,7 @@ pub const Session = struct {
     image: ?Image = null,
     load_image: ?*const fn (*Session, []const u8) anyerror!void = null,
     status: []const u8 = "",
+    download_error: bool = false,
     browser: Browser = .{},
     library_snapshot: ?std.json.Parsed(lib.Library) = null,
     pub fn start(self: *Session, request: online.Request) void {
@@ -19,12 +20,17 @@ pub const Session = struct {
         };
     }
     pub fn poll(self: *Session) !void {
+        if (self.browser.engine) |engine| engine.serviceWorker();
         const job = self.browser.busy orelse return;
         if (!job.done.load(.acquire)) return;
         job.join();
         self.browser.busy = null;
         if (job.result.library_changed) try self.reloadLibrary();
-        self.status = try self.model.gpa.dupe(u8, job.failure orelse job.result.message);
+        self.download_error = job.failure != null and job.request == .download;
+        self.status = if (job.failure) |failure|
+            if (job.request == .download) try std.fmt.allocPrint(self.model.gpa, "{s} ({d}/{d} pages): {s}. Tap chapter to resume.", .{ if (std.mem.eql(u8, failure, "Canceled")) "Download canceled" else "Download failed", job.pages_done.load(.acquire), job.pages_total.load(.acquire), failure }) else try self.model.gpa.dupe(u8, failure)
+        else
+            try self.model.gpa.dupe(u8, job.result.message);
         if (job.failure != null) {
             if (self.browser.pending_chapter) |id| self.model.gpa.free(id);
             self.browser.pending_chapter = null;
@@ -81,6 +87,7 @@ pub const Session = struct {
         try self.model.dispatch(action);
         if (self.model.screen == .reader and (old_screen != .reader or old_page != self.model.page or before == null or !std.mem.eql(u8, before.?.id, self.model.current().?.id))) {
             self.status = "";
+            self.download_error = false;
             if (self.browser.busy == null) if (self.browser.engine) |engine| engine.client.shutdown(engine.gpa);
             if (self.load_image) |load| {
                 const path = self.model.current().?.pages[self.model.page];

@@ -11,9 +11,8 @@ pub const Job = struct {
     request: Request,
     result: Result = .{},
     failure: ?[]const u8 = null,
-    thread: ?std.Thread = null,
+    future: ?Io.Future(void) = null,
     done: std.atomic.Value(bool) = .init(false),
-    cancelled: std.atomic.Value(bool) = .init(false),
     pages_done: std.atomic.Value(usize) = .init(0),
     pages_total: std.atomic.Value(usize) = .init(0),
     pub fn start(engine: *Engine, request: Request) !*Job {
@@ -27,25 +26,31 @@ pub const Job = struct {
         const a = job.arena.allocator();
         const json = try std.json.Stringify.valueAlloc(a, request, .{});
         job.request = try std.json.parseFromSliceLeaky(Request, a, json, .{ .allocate = .alloc_always });
-        job.thread = try .spawn(.{}, run, .{job});
+        job.future = try engine.io.concurrent(run, .{job});
         return job;
     }
     fn run(self: *Job) void {
         defer self.done.store(true, .release);
         const execute = self.engine.execute_fn orelse Engine.execute;
         execute(self.engine, self) catch |err| {
-            self.failure = std.fmt.allocPrint(self.arena.allocator(), "{s}", .{@errorName(err)}) catch "Operation failed (out of memory)";
+            if (self.failure == null) self.failure = std.fmt.allocPrint(self.arena.allocator(), "{s}", .{@errorName(err)}) catch "Operation failed (out of memory)";
             if (!@import("builtin").is_test) std.log.warn("{s}", .{self.failure.?});
         };
     }
     pub fn checkCancelled(self: *Job) !void {
-        if (self.cancelled.load(.acquire)) return error.Cancelled;
+        try self.engine.io.checkCancel();
+    }
+    pub fn cancel(self: *Job) void {
+        if (self.future) |*future| future.cancel(self.engine.io);
     }
     pub fn join(self: *Job) void {
-        if (self.thread) |thread| {
-            thread.join();
-            self.thread = null;
+        // Forks must stay on the event thread. A challenge may need a fresh worker
+        // after the planning worker has exited; tests use this same service loop.
+        while (!self.done.load(.acquire)) {
+            self.engine.serviceWorker();
+            self.engine.io.sleep(.fromMilliseconds(5), .awake) catch {};
         }
+        if (self.future) |*future| future.await(self.engine.io);
     }
     pub fn deinit(self: *Job) void {
         self.join();
@@ -61,9 +66,28 @@ pub const Engine = struct {
     root: []const u8,
     environ: std.process.Environ = .empty,
     execute_fn: ?*const fn (*Engine, *Job) anyerror!void = null,
+    worker_needed: std.atomic.Value(bool) = .init(false),
+    worker_ready: Io.Event = .unset,
+    worker_failure: bool = false,
     paused: std.atomic.Value(bool) = .init(false),
     client: @import("worker_client.zig").Client = .{},
 
+    pub fn serviceWorker(self: *Engine) void {
+        if (!self.worker_needed.swap(false, .acq_rel)) return;
+        self.worker_failure = false;
+        self.client.prepare(self) catch {
+            self.worker_failure = true;
+        };
+        self.worker_ready.set(self.io);
+    }
+    pub fn requireWorker(self: *Engine) !void {
+        if (self.client.alive()) return;
+        self.worker_ready.reset();
+        self.worker_needed.store(true, .release);
+        defer self.worker_needed.store(false, .release);
+        try self.worker_ready.wait(self.io);
+        if (self.worker_failure) return error.WorkerStartFailed;
+    }
     pub fn execute(self: *Engine, job: *Job) !void {
         const a = job.arena.allocator();
         try job.checkCancelled();
@@ -81,10 +105,11 @@ pub const Engine = struct {
             job.result = .{ .library_changed = true, .message = "Local manga indexed" };
             return;
         }
+        if (job.request == .download) return @import("downloads.zig").download(self, job);
         try self.client.execute(self, job);
     }
-    // Interrupt first, join the UI's request thread, then close/reap. The
-    // worker socket cannot be recycled while a request still reads it.
+    // Lifecycle shutdown interrupts the worker and cancels the active Io task
+    // before descriptors can be reused by a subsequent request.
     pub fn interrupt(self: *Engine) void {
         self.paused.store(true, .release);
         self.client.interrupt();

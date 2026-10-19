@@ -98,7 +98,7 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
             if (event.phase != .press and event.phase != .repeat) return;
             const model = session.model;
             if (session.browser.busy != null) {
-                if (event.key == .escape) session.browser.busy.?.cancelled.store(true, .release);
+                if (event.key == .escape) session.browser.busy.?.cancel();
                 return;
             }
             if (model.screen == .sources or model.screen == .extensions or model.screen == .catalog or model.screen == .source_settings) {
@@ -163,6 +163,12 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         if (model.screen == .library and session.browser.busy == null) try button(ui, "browse", "Browse", .help);
         if (model.screen != .settings and session.browser.busy == null) try button(ui, "settings", "Aa", .settings);
     }
+    if (session.download_error and session.browser.busy == null) {
+        try ui.open("download-error", .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .all(10), .child_gap = 5 }, .border = .{ .color = .black, .widths = .all(2) } });
+        try text(ui, if (std.mem.startsWith(u8, session.status, "Download canceled")) "Download canceled - tap chapter to resume" else "Download failed - tap chapter to resume", 15, 0);
+        try ui.text(session.status[0..@min(session.status.len, 240)], .{ .font_size = 13, .wrap_mode = .words });
+        ui.close();
+    }
     if (session.browser.busy) |job| {
         try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 16 } });
         defer ui.close();
@@ -180,7 +186,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         }, 13, 40);
         const total = job.pages_total.load(.acquire);
         if (total > 0) try ui.print(.{ .font_size = 14 }, "{d} / {d} pages", .{ job.pages_done.load(.acquire), total });
-        if (job.cancelled.load(.acquire)) try text(ui, "Stopping after the current request...", 12, 40) else try onlineButton(ui, "cancel-job", "Cancel", .cancel);
+        try onlineButton(ui, "cancel-job", "Cancel", .cancel);
         try text(ui, "Java startup can take a while on the Verse.", 12, 40);
     } else switch (model.screen) {
         .library, .chapters => try list(ui, model),
@@ -200,7 +206,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         },
         .sources, .extensions, .catalog, .source_settings => try browserView(ui, session),
     }
-    if (session.status.len > 0) try text(ui, session.status, 11, 0);
+    if (session.status.len > 0 and !session.download_error) try text(ui, session.status, 11, 0);
 }
 fn list(ui: *app.Ui, model: *const lib.Model) !void {
     const is_library = model.screen == .library;
@@ -299,7 +305,7 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
     const model = session.model;
     const a = model.gpa;
     if (b.busy != null) {
-        if (command == .cancel) b.busy.?.cancelled.store(true, .release);
+        if (command == .cancel) b.busy.?.cancel();
         return;
     }
     switch (command) {

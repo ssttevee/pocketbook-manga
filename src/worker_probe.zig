@@ -36,16 +36,19 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ, roo
         const library = try @import("library.zig").readJson(@import("library.zig").Library, gpa, io, library_path);
         defer library.deinit();
         const book = library.value.manga[0];
-        const downloaded = try runJob(&engine, .{ .download = .{ .book = book, .chapter = book.chapters[0] } });
-        defer downloaded.deinit();
-        const ready = try @import("library.zig").readJson(@import("library.zig").Library, gpa, io, library_path);
-        defer ready.deinit();
-        if (ready.value.manga[0].chapters[0].pages.len != 1) return error.FixtureDownloadFailed;
-        const page_path = try std.fs.path.join(gpa, &.{ root, ready.value.manga[0].chapters[0].pages[0] });
-        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, page_path, gpa, .limited(1 << 20));
-        defer gpa.free(bytes);
-        if (!std.mem.startsWith(u8, bytes, "\x89PNG")) return error.FixtureNotPng;
-        std.debug.print("ARM extension install, search, details, chapters and authenticated image download passed ({d} bytes).\n", .{bytes.len});
+        const planned = try runJob(&engine, .{ .download = .{ .book = book, .chapter = book.chapters[0] } });
+        defer planned.deinit();
+        if (planned.result.image_requests.?.len != 3) return error.FixtureDownloadFailed;
+        for (planned.result.image_requests.?) |image_request| {
+            if (image_request.fallback != null or image_request.rates.len != 2) return error.FixtureNativePlanFailed;
+            if (image_request.rates[0].spacingMs != 50 or image_request.rates[1].spacingMs != 34) return error.FixtureRateExportFailed;
+            const page_json = try std.json.Stringify.valueAlloc(gpa, image_request.page, .{});
+            defer gpa.free(page_json);
+            const image = try engine.runtime.?.fetchImage(424242, page_json);
+            defer image.deinit(gpa);
+            if (!std.mem.startsWith(u8, image.bytes, "\x89PNG")) return error.FixtureNotPng;
+        }
+        std.debug.print("ARM extension request plan, Referer/cookie and JVM image fallback passed.\n", .{});
     }
     try checkMappings(gpa, io, root);
     // Destroying the VM also verifies its main thread was detached correctly.

@@ -1,5 +1,5 @@
 //! One on-demand child, serialized by online.Job. The UI thread may interrupt
-//! it at any time; descriptors close only after the request thread joins.
+//! it at any time; descriptors close after the reading Io task has stopped.
 const std = @import("std");
 const online = @import("online.zig");
 const p = @import("protocol.zig");
@@ -19,6 +19,16 @@ pub const Client = struct {
     fn lock(self: *Client) void {
         while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
     }
+    pub fn alive(self: *Client) bool {
+        self.lock();
+        defer self.mutex.unlock();
+        if (self.pid > 0 and pm_reap(self.pid, 0) != 0) {
+            if (self.fd >= 0) _ = std.c.close(self.fd);
+            self.fd = -1;
+            self.pid = -1;
+        }
+        return self.pid > 0;
+    }
     pub fn interrupt(self: *Client) void {
         self.interrupted.store(true, .release);
         self.lock();
@@ -35,7 +45,10 @@ pub const Client = struct {
         self.fd = -1;
     }
     fn waitExit(self: *Client) bool {
-        const until = wire.pm_now_ms() + 1500;
+        return self.waitExitFor(1500);
+    }
+    fn waitExitFor(self: *Client, ms: u64) bool {
+        const until = wire.pm_now_ms() + ms;
         while (self.pid > 0 and wire.pm_now_ms() < until) {
             if (pm_reap(self.pid, 0) != 0) {
                 self.pid = -1;
@@ -90,28 +103,26 @@ pub const Client = struct {
         try self.ensure(engine, arena.allocator());
     }
     pub fn execute(self: *Client, engine: *online.Engine, job: *online.Job) !void {
-        _ = engine;
+        return self.call(engine, job, job.request);
+    }
+    pub fn call(self: *Client, engine: *online.Engine, job: *online.Job, request: p.Request) !void {
+        try engine.requireWorker();
         const a = job.arena.allocator();
         if (self.pid <= 0 or self.interrupted.load(.acquire)) return error.WorkerStopped;
-        errdefer self.close();
         const id = self.next_id;
         self.next_id += 1;
+        errdefer {
+            wire.cancelNow(self.fd, id);
+            _ = self.waitExitFor(75);
+            // Stop the waiter through Io first; then terminate the uncooperative JNI
+            // process. No outstanding frame is ever reused after cancellation.
+            self.close();
+        }
         const crash = self.test_crash_next;
         self.test_crash_next = false;
-        try wire.send(self.fd, a, p.Command{ .id = id, .kind = if (crash) .crash else .request, .request = if (crash) null else job.request });
-        var sent_cancel = false;
-        var last_message = wire.pm_now_ms();
+        try wire.sendIo(engine.io, self.fd, a, p.Command{ .id = id, .kind = if (crash) .crash else .request, .request = if (crash) null else request });
         while (true) {
-            if (job.cancelled.load(.acquire) and !sent_cancel) {
-                try wire.send(self.fd, a, p.Command{ .id = id, .kind = .cancel });
-                sent_cancel = true;
-            }
-            if (!try wire.ready(self.fd, 100)) {
-                if (wire.pm_now_ms() - last_message > 300_000) return error.WorkerTimedOut;
-                continue;
-            }
-            const response = try wire.receive(p.Response, self.fd, a);
-            last_message = wire.pm_now_ms();
+            const response = try wire.receiveTimed(engine.io, self.fd, a);
             if (response.version != p.version or response.id != id) return error.WorkerProtocolMismatch;
             job.pages_done.store(response.pages_done, .release);
             job.pages_total.store(response.pages_total, .release);
@@ -120,7 +131,7 @@ pub const Client = struct {
                 .progress => {},
                 .failure => {
                     job.failure = response.failure orelse "Worker failed";
-                    return;
+                    return error.ExtensionFailure;
                 },
                 .result => {
                     job.result = response.result orelse return error.InvalidWorkerResult;

@@ -163,7 +163,40 @@ pub const Engine = struct {
                 }
                 job.result.message = "Library updated";
             },
-            .download => |request| try self.download(job, request.book, request.chapter),
+            .download => |request| try self.planDownload(job, request.book, request.chapter),
+            .benchmark => |request| {
+                if (self.environ.getPosix("POCKETMANGA_WORKER_TEST") == null) return error.DiagnosticsDisabled;
+                const source = request.book.source_id orelse return error.LocalTitle;
+                const args = try std.json.Stringify.valueAlloc(a, .{ .chapter = request.chapter.remote.? }, .{});
+                const json = try rt.call(source, "pages", args);
+                defer self.gpa.free(json);
+                const pages = try parse([]const models.Page, a, json);
+                const started = @import("worker_wire.zig").pm_now_ms();
+                var total: usize = 0;
+                for (pages, 0..) |page, i| {
+                    const before = @import("worker_wire.zig").pm_now_ms();
+                    const page_json = try std.json.Stringify.valueAlloc(a, page, .{});
+                    const image = try rt.fetchImage(source, page_json);
+                    defer image.deinit(self.gpa);
+                    total += image.bytes.len;
+                    std.log.info("JVM benchmark page {d}/{d} bytes={d} network_ms={d}", .{ i + 1, pages.len, image.bytes.len, @import("worker_wire.zig").pm_now_ms() - before });
+                }
+                std.log.info("JVM benchmark chapter pages={d} bytes={d} network_ms={d}", .{ pages.len, total, @import("worker_wire.zig").pm_now_ms() - started });
+            },
+            .image => |request| {
+                if (request.cookies.len > 0) {
+                    const cookie_args = try std.json.Stringify.valueAlloc(a, .{ .url = request.url, .cookies = request.cookies }, .{});
+                    const restored = try rt.call(request.source, "imageCookies", cookie_args);
+                    self.gpa.free(restored);
+                }
+                const page_json = try std.json.Stringify.valueAlloc(a, request.page, .{});
+                const image = try rt.fetchImage(request.source, page_json);
+                defer image.deinit(self.gpa);
+                if (image.bytes.len > 16 << 20) return error.ImageTooLarge;
+                const encoder = std.base64.standard.Encoder;
+                const encoded = try a.alloc(u8, encoder.calcSize(image.bytes.len));
+                job.result.image_base64 = encoder.encode(encoded, image.bytes);
+            },
             .preferences => |id| try self.preferences(job, id),
             .set_preference => |request| {
                 const args = try std.json.Stringify.valueAlloc(a, .{ .key = request.key, .value = request.value }, .{});
@@ -228,41 +261,14 @@ pub const Engine = struct {
         try self.saveLibrary(a, try catalog.merge(a, try self.readLibrary(a), book));
         return book;
     }
-    fn download(self: *Engine, job: *Job, book: lib.Manga, chapter: lib.Chapter) !void {
+    fn planDownload(self: *Engine, job: *Job, book: lib.Manga, chapter: lib.Chapter) !void {
         const a = job.arena.allocator();
         const id = book.source_id orelse return error.LocalTitle;
         const remote = chapter.remote orelse return error.MissingChapterMetadata;
         const args = try std.json.Stringify.valueAlloc(a, .{ .chapter = remote }, .{});
-        const json = try self.runtime.?.call(id, "pages", args);
+        const json = try self.runtime.?.call(id, "imageRequests", args);
         defer self.gpa.free(json);
-        const pages = try parse([]const models.Page, a, json);
-        if (pages.len == 0) return error.EmptyChapter;
-        job.pages_total.store(pages.len, .release);
-        const folder = try std.fmt.allocPrint(a, "downloads/{x}/{d}", .{ std.hash.Wyhash.hash(0, chapter.id), Io.Clock.real.now(self.io).nanoseconds });
-        const absolute = try std.fs.path.join(a, &.{ self.root, folder });
-        try Io.Dir.cwd().createDirPath(self.io, absolute);
-        var published = false;
-        defer if (!published) Io.Dir.cwd().deleteTree(self.io, absolute) catch {};
-        const files = try a.alloc([]const u8, pages.len);
-        for (pages, 0..) |page, i| {
-            try job.checkCancelled();
-            const page_json = try std.json.Stringify.valueAlloc(a, page, .{});
-            const image = try self.runtime.?.fetchImage(id, page_json);
-            defer image.deinit(self.gpa);
-            const ext = if (std.mem.startsWith(u8, image.bytes, "\x89PNG\r\n\x1a\n")) "png" else if (std.mem.startsWith(u8, image.bytes, "\xff\xd8\xff")) "jpg" else return error.UnsupportedImageFormat;
-            files[i] = try std.fmt.allocPrint(a, "{s}/{d:0>4}.{s}", .{ folder, i + 1, ext });
-            const path = try std.fs.path.join(a, &.{ self.root, files[i] });
-            try Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = image.bytes });
-            job.pages_done.store(i + 1, .release);
-        }
-        try job.checkCancelled();
-        var downloaded = chapter;
-        downloaded.pages = files;
-        var update = book;
-        update.chapters = &.{downloaded};
-        try self.saveLibrary(a, try catalog.merge(a, try self.readLibrary(a), update));
-        published = true;
-        job.result = .{ .library_changed = true, .open_id = book.id, .message = "Chapter downloaded" };
+        job.result.image_requests = try parse([]const protocol.ImageRequest, a, json);
     }
 };
 fn parse(comptime T: type, a: std.mem.Allocator, json: []const u8) !T {

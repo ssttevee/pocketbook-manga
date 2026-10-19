@@ -149,3 +149,7 @@ test "local scanning works without a JVM bundle or a worker" {
     defer saved.deinit();
     try std.testing.expectEqualStrings("Offline", saved.value.manga[0].title);
 }
+
+test {
+    _ = @import("downloads.zig");
+}

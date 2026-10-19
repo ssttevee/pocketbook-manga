@@ -5,11 +5,11 @@ ROOT=pathlib.Path(__file__).resolve().parent.parent
 parser=argparse.ArgumentParser()
 parser.add_argument('mode',choices=['sources','repo','fixture'],default='fixture',nargs='?')
 args=parser.parse_args()
-jar=ROOT.parent/'zig-tachi/host/build/libs/tachi-host.jar'
+jar=ROOT.parent/'zig-tachi-native-downloads/host/build/libs/tachi-host.jar'
 classes=ROOT/'dist/fixture/classes'
 classes.mkdir(parents=True,exist_ok=True)
 if args.mode=='fixture':
-    subprocess.run(['javac','--release','17','-classpath',str(jar),'-d',str(classes),str(ROOT/'tools/fixture/FixtureSource.java')],check=True)
+    subprocess.run(['javac','--release','17','-classpath',str(jar),'-d',str(classes),*[str(p) for p in sorted((ROOT/'tools/fixture').glob('*.java'))]],check=True)
     (classes/'AndroidManifest.xml').write_bytes((ROOT/'tools/fixture/AndroidManifest.xml').read_bytes())
     subprocess.run(['jar','--create','--file',str(ROOT/'dist/fixture/source.jar'),'-C',str(classes),'.'],check=True)
 scratch=ROOT/'dist/arm-test-data'

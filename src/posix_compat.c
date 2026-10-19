@@ -189,3 +189,11 @@ size_t pm_rss_kib(void) {
     return n;
 }
 void pm_eof(int fd) { shutdown(fd, SHUT_WR); }
+
+ssize_t pm_send_now(int fd, const void *buf, size_t n) {
+#ifdef MSG_NOSIGNAL
+    return send(fd, buf, n, MSG_NOSIGNAL | MSG_DONTWAIT);
+#else
+    return send(fd, buf, n, MSG_DONTWAIT);
+#endif
+}

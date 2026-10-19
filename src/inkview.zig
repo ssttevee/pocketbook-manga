@@ -21,7 +21,7 @@ var page_pixels: []u8 = &.{};
 fn loadPage(session: *Session, relative: []const u8) !void {
     const gpa = session.model.gpa;
     if (!lib.safePath(relative)) return error.UnsafePagePath;
-    const path = try std.fmt.allocPrintSentinel(gpa, "{s}/{s}", .{ session.root, relative }, 0);
+    const path = try @import("downloads.zig").pagePath(gpa, session.root, relative);
     defer gpa.free(path);
     // Fit decode to the physical panel to bound memory on the 512MB Verse.
     const host = &ink.App(Root).instance;
@@ -121,7 +121,7 @@ var app_handler: ink.inkview.Handler = undefined;
 fn stopWorker() void {
     if (lifecycle_engine) |engine| {
         engine.interrupt();
-        if (lifecycle_session) |session| if (session.browser.busy) |job| job.join();
+        if (lifecycle_session) |session| if (session.browser.busy) |job| job.cancel();
         engine.deinit();
     }
 }

@@ -66,7 +66,7 @@ pub const Browser = struct {
         if (self.engine) |engine| engine.interrupt();
         defer if (self.engine) |engine| engine.deinit();
         if (self.busy) |job| {
-            job.cancelled.store(true, .release);
+            job.cancel();
             job.deinit();
         }
         if (self.query.len > 0) gpa.free(self.query);

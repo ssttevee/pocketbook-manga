@@ -2,7 +2,7 @@
 
 A standalone manga app for the **PocketBook Verse PB629**, inspired by Mihon / Tachiyomi. Source extensions, browsing, search, chapter updates, image downloads and reading all run **on the reader**. No desktop companion or server is used.
 
-The app uses fabrum, fabrum-platform-inkview, libinkview and libtachi. Its install bundle includes an **ARM soft-float OpenJDK 17 Zero runtime**, the libtachi host, and public certificate stores. Java and extension work run in a separate, on-demand worker process. The UI never loads the JVM or libtachi; reading downloaded chapters and scanning local manga need only the native InkView app.
+The app uses fabrum, fabrum-platform-inkview, libinkview and libtachi. Its install bundle includes an **ARM soft-float OpenJDK 17 Zero runtime**, the libtachi host, and public certificate stores. Java and extension work run in a separate, on-demand worker process. The UI never loads the JVM or libtachi. It downloads chapter images with Zig DNS, native TLS and `std.http.Client` over cancellable `std.Io` tasks. Reading downloaded chapters and scanning local manga need only the native InkView app. See [native download design and verification](docs/native-downloads.md).
 
 ## Install
 
@@ -15,16 +15,16 @@ Use `dist/pocketmanga-verse.tar.gz`, or copy the contents of `dist/applications/
 3. On macOS, run `dot_clean /Volumes/READER/applications` to remove `._` files, then eject.
 4. Start **pocketmanga** from Applications. Use **pocketmanga-log** if you need diagnostics in `applications/pocketmanga.log`.
 
-After installation, normal use needs only the reader and Wi-Fi. The UI starts the worker through its private loader when online work is requested. The worker exits after 60 seconds idle; opening a downloaded chapter shuts down an idle worker immediately. Backgrounding or closing the app stops and reaps it. A crashed worker reports an error; the next request can start a fresh one. The launcher retains the executable-stack loader setting needed by some firmware 6.11 releases. A full runtime is included rather than downloaded at first launch.
+After installation, normal use needs only the reader and Wi-Fi. The UI starts the worker through its private loader when online work is requested. For a native chapter, the worker exits as soon as it has resolved the page requests. It otherwise exits after 60 seconds idle; opening a downloaded chapter shuts down an idle worker immediately. Backgrounding or closing the app stops and reaps it. A crashed worker reports an error; the next request can start a fresh one. The launcher retains the executable-stack loader setting needed by some firmware 6.11 releases. A full runtime is included rather than downloaded at first launch.
 
 ## Use
 
 - **Browse → Install / update extensions:** filter the repository by name or language, then tap an extension to install or update it. libtachi checks the repository's signing key. Unsupported extension API versions are labelled.
 - Tap an installed **source** to view popular titles. Use the reader's system keyboard and **Search**, or switch to **Latest**. **Previous / Next** browse results and source pages.
-- Tap a **title** to add it to your library and fetch its chapters. Tap an undownloaded **chapter** to download it and begin reading. The download uses the extension's own HTTP client, headers and cookies.
+- Tap a **title** to add it to your library and fetch its chapters. Tap an undownloaded **chapter** to download it and begin reading. Zig downloads plain GET images using the source's resolved requests, headers, cookies and rate limits. Unsupported requests and unknown response-transforming interceptors use the extension's JVM client. Each completed page is saved atomically; retry keeps completed pages, including after cancellation. Failures remain visible with progress and resume instructions.
 - **Refresh chapters** updates a title; **Update library** refreshes online titles. Existing page downloads and reading progress survive metadata updates.
 - **Source settings** supports text, toggle, list and multi-select preferences, plus extension removal. Removing an extension preserves downloaded chapters.
-- During background work, **Cancel** stops before the next stage or page; an HTTP request already in progress may need to finish first.
+- During background work, **Cancel** interrupts the active `std.Io` operation immediately. An unresponsive JVM worker is terminated after a short cancellation grace period. Tap the chapter again to resume.
 - Hardware **Next / Prev** always move in reading order. In RTL mode, tap the page's left half to advance; in LTR mode, tap the right half. At the last page, **Chapter >** opens or downloads the next chapter.
 - **Back** returns to chapters, the library, then exits. **Aa** changes direction and full/partial refresh. Progress is saved on each page change.
 
@@ -41,12 +41,12 @@ pocketbook-manga-app/
 zig-layout/
 zig-fabrum-platform-inkview/
 libinkview/
-zig-tachi/
+zig-tachi-native-downloads/
 ```
 
 libtachi needs the small bundled-CA API addition recorded in `patches/libtachi-ca-file.patch`. It has already been applied to this workspace's `zig-tachi` checkout. For another checkout without it, apply it in zig-tachi with `git apply ../pocketbook-manga-app/patches/libtachi-ca-file.patch`. This keeps repository HTTPS verification independent of the device's system certificate paths.
 
-Build `tachi-host.jar` in zig-tachi with Zig 0.17 (`zig build host` there, following its build prerequisites). On this workspace, use `/Users/steve/Programs/Zig/v0.17.0/zig`; the `zig` on PATH is 0.16.
+This branch points `build.zig.zon` at the isolated `../zig-tachi-native-downloads` worktree (branch `native-downloads`, based on `051f138`). Build its modified `tachi-host.jar` first: `cd ../zig-tachi-native-downloads/host && ./gradlew shadowJar`. The original zig-tachi checkout and its uncommitted build changes are preserved; none of those changes was needed or copied. On this workspace, use `/Users/steve/Programs/Zig/v0.17.0/zig`; the `zig` on PATH is 0.16.
 
 Extract the checksum-pinned official Verse 6.10.1461 firmware **outside the repo**. Reuse an existing complete extraction if available. `prepare_firmware.py` requires `debugfs` (e2fsprogs) and `unsquashfs`, and reads images without mounting them or using root:
 
@@ -79,7 +79,7 @@ python3 tools/test_arm_runtime.py repo
 python3 tools/test_arm_runtime.py fixture
 ```
 
-The existing ARM checks invoke the headless worker with the private loader. The optional Debian test sysroot and Docker image emulate the ARM soft-float environment. They are not shipped to the reader. The synthetic fixture uses a local HTTP server that rejects image requests without the extension's header, exercising real ARM JNI loading, extension installation, search, manga details, chapters and image downloads without a manga website. The repository test exercises live HTTPS using the bundle's CA roots.
+The existing ARM checks invoke the headless worker with the private loader. The optional Debian test sysroot and Docker image emulate the ARM soft-float environment. They are not shipped to the reader. The ARM fixture checks request planning, both rate-limit layouts, null image URL resolution and JVM fallback. The firmware fixture downloads three ~1 MiB PNGs through native TLS and Zig DNS, requiring the extension's header, Referer, cookie-jar cookie and request-interceptor cookie. Its test CA is generated and installed only into temporary container copies, never into dist/. The repository test exercises live HTTPS using the bundle's CA roots.
 
 For the firmware-container checks, also extract the official 6.9.862 archive (the closest available glibc 2.23 stand-in for 6.8), then:
 
@@ -95,6 +95,13 @@ python3 tools/test_firmware_runtime.py --rootfs /tmp/pocketmanga-prepared69 --ve
 
 python3 tools/audit_runtime.py --rootfs /tmp/pocketmanga-prepared69 --process ui
 python3 tools/audit_runtime.py --rootfs /tmp/pocketmanga-prepared69 --process worker
+```
+
+Additional strict scenarios exercise cancellation/resume and dynamic redirect fallback:
+
+```
+python3 tools/test_firmware_runtime.py --rootfs /tmp/pocketmanga-prepared69 --version 6.9 --deny-new-syscalls --cancel-resume
+python3 tools/test_firmware_runtime.py --rootfs /tmp/pocketmanga-prepared610 --version 6.10 --deny-new-syscalls --redirect
 ```
 
 Repeat the ELF audits for the 6.10 root. The containers use the packaged UI, native firmware loader and real InkView library up to symbol resolution, stopping before `InkViewMain`. They exercise the worker's full fixture through the private loader and the actual UI/worker protocol, including progress, crash/retry, version rejection, EOF and idle shutdown. `--parent-exit` deliberately bypasses UI cleanup and checks that its worker exits too. RSS samples include emulator overhead and stop before the hardware event loop.

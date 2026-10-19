@@ -38,7 +38,7 @@ pub fn fixtureExecutor(engine: *online.Engine, job: *online.Job) !void {
             job.result.preferences = prefs;
         },
         .update_all, .refresh => job.result.library_changed = true,
-        .scan => return error.FixtureFailure,
+        .benchmark, .image, .scan => return error.FixtureFailure,
     }
 }
 fn finish(session: *Session) !void {
@@ -114,4 +114,35 @@ test "background failures are reported and leave library and progress intact" {
     try std.testing.expect(std.mem.startsWith(u8, session.status, "FixtureFailure"));
     try std.testing.expectEqual(3, model.library.manga.len);
     try std.testing.expect(session.browser.busy == null);
+}
+
+fn failedDownload(_: *online.Engine, job: *online.Job) !void {
+    job.pages_done.store(1, .release);
+    job.pages_total.store(3, .release);
+    return error.NetworkDisconnected;
+}
+test "download failure stays visible with progress and resume instructions" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var engine: online.Engine = .{ .gpa = arena.allocator(), .io = std.testing.io, .root = ".", .execute_fn = failedDownload };
+    var model: lib.Model = .{ .gpa = arena.allocator(), .library = smoke.fixture, .screen = .chapters };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = "." };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    const book = smoke.fixture.manga[0];
+    session.start(.{ .download = .{ .book = book, .chapter = book.chapters[0] } });
+    session.browser.busy.?.join();
+    try session.poll();
+    try std.testing.expect(session.download_error);
+    try std.testing.expect(std.mem.indexOf(u8, session.status, "1/3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, session.status, "NetworkDisconnected") != null);
+    try std.testing.expect(std.mem.indexOf(u8, session.status, "resume") != null);
+    try session.poll();
+    try std.testing.expect(session.download_error);
+    try std.testing.expectEqual(lib.Screen.chapters, model.screen);
+    var harness: @import("fabrum").app.testing.Harness(.{}, @import("ui.zig")) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{@import("fabrum").app.RootValue.of(&session)}, .widgets = .drawn });
+    defer harness.deinit();
+    try harness.frame();
+    try harness.expectText("Download failed - tap chapter to resume");
+    try harness.expectText(session.status);
 }

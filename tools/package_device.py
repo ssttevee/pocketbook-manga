@@ -48,7 +48,7 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--cache', type=pathlib.Path, default=ROOT / '.runtime-cache')
     parser.add_argument('--output', type=pathlib.Path, default=ROOT / 'dist')
-    parser.add_argument('--host-jar', type=pathlib.Path, default=ROOT.parent / 'zig-tachi/host/build/libs/tachi-host.jar')
+    parser.add_argument('--host-jar', type=pathlib.Path, default=ROOT.parent / 'zig-tachi-native-downloads/host/build/libs/tachi-host.jar')
     parser.add_argument('--firmware-root', type=pathlib.Path, required=True, help='Extracted official Verse 6.10.1461 root, including ebrmain/cramfs/lib (outside this repo)')
     parser.add_argument('--test-sysroot', action='store_true', help='Also unpack ARM libc for emulation; never shipped to the reader')
     args=parser.parse_args()

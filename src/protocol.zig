@@ -3,7 +3,7 @@
 const std = @import("std");
 const lib = @import("library.zig");
 const models = @import("source_models.zig");
-pub const version = 1;
+pub const version = 2;
 const protocol_version = version;
 pub const max_frame = 32 << 20;
 pub const RepoEntry = struct {
@@ -36,10 +36,14 @@ pub const Request = union(enum) {
     add: struct { source: i64, manga: models.Manga },
     refresh: lib.Manga,
     download: struct { book: lib.Manga, chapter: lib.Chapter },
+    benchmark: struct { book: lib.Manga, chapter: lib.Chapter },
+    image: struct { source: i64, page: models.Page, url: []const u8 = "", cookies: []const []const u8 = &.{} },
     preferences: i64,
     set_preference: struct { source: i64, key: []const u8, value: std.json.Value },
 };
 pub const Result = struct {
+    image_requests: ?[]const ImageRequest = null,
+    image_base64: ?[]const u8 = null,
     sources: []const models.SourceInfo = &.{},
     extensions: []const RepoEntry = &.{},
     titles: ?models.MangasPage = null,
@@ -65,3 +69,15 @@ pub const Response = struct {
     pages_total: usize = 0,
     rss_kib: usize = 0,
 };
+
+/// Native image plan, returned by the extension host without transferring image bodies.
+pub const ImageRequest = struct {
+    page: models.Page,
+    url: []const u8,
+    method: []const u8,
+    headers: []const std.http.Header,
+    rates: []const Rate = &.{},
+    cookies: []const []const u8 = &.{},
+    fallback: ?[]const u8 = null,
+};
+pub const Rate = struct { key: []const u8, spacingMs: u64, initialWaitMs: u64 };
