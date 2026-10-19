@@ -1,0 +1,84 @@
+diff --git a/src/manage.zig b/src/manage.zig
+index db688ec..131a675 100644
+--- a/src/manage.zig
++++ b/src/manage.zig
+@@ -225,6 +225,7 @@ pub const RepoOptions = struct {
+ pub fn repoList(rt: *Runtime, arena: Allocator, opts: RepoOptions) Error![]RepoEntry {
+     var http: repo.Http = .init(rt.gpa, rt.io);
+     defer http.deinit();
++    if (rt.ca_file) |path| try http.useCaFile(path);
+     const store = try fetchStore(rt, &http, arena, opts);
+ 
+     rt.lock.lockUncancelable(rt.io);
+@@ -253,6 +254,7 @@ pub fn repoInstall(rt: *Runtime, pkg: []const u8, opts: RepoOptions) Error![]u8
+     const arena = arena_state.allocator();
+     var http: repo.Http = .init(rt.gpa, rt.io);
+     defer http.deinit();
++    if (rt.ca_file) |path| try http.useCaFile(path);
+     const store = try fetchStore(rt, &http, arena, opts);
+     const ext = store.find(pkg) orelse {
+         tachi.setLastErrorFmt("{s} is not in {s}", .{ pkg, opts.url orelse repo.default_index_url });
+@@ -281,6 +283,7 @@ pub fn repoUpdate(rt: *Runtime, opts: RepoOptions) Error![]u8 {
+     const arena = arena_state.allocator();
+     var http: repo.Http = .init(rt.gpa, rt.io);
+     defer http.deinit();
++    if (rt.ca_file) |path| try http.useCaFile(path);
+     const url = opts.url orelse repo.default_index_url;
+     const store = try fetchStore(rt, &http, arena, opts);
+ 
+diff --git a/src/repo.zig b/src/repo.zig
+index 8b95832..4c885ac 100644
+--- a/src/repo.zig
++++ b/src/repo.zig
+@@ -254,6 +254,13 @@ pub const Http = struct {
+         return .{ .client = .{ .allocator = gpa, .io = io } };
+     }
+ 
++    /// Use explicit PEM roots without changing system files or disabling TLS.
++    pub fn useCaFile(h: *Http, path: []const u8) Error!void {
++        const now = Io.Clock.real.now(h.client.io);
++        h.client.ca_bundle.addCertsFromFilePath(h.client.allocator, h.client.io, now, Io.Dir.cwd(), path) catch return error.NetworkError;
++        h.client.now = now;
++    }
++
+     pub fn deinit(h: *Http) void {
+         h.client.deinit();
+     }
+diff --git a/src/tachi.zig b/src/tachi.zig
+index 4179bcb..5596fb9 100644
+--- a/src/tachi.zig
++++ b/src/tachi.zig
+@@ -42,6 +42,8 @@ pub const LogLevel = enum(c_int) { verbose = 2, debug = 3, info = 4, warn = 5, e
+ pub const LogFn = *const fn (level: LogLevel, tag: [*:0]const u8, message: [*:0]const u8, user_data: ?*anyopaque) callconv(.c) void;
+ 
+ pub const Options = struct {
++    /// PEM trust bundle for repository HTTPS; null uses the OS roots.
++    ca_file: ?[]const u8 = null,
+     /// Directory where the host persists preferences, cookies and converted APKs.
+     data_dir: []const u8,
+     cache_dir: ?[]const u8 = null,
+@@ -184,6 +186,7 @@ pub const Runtime = struct {
+     lock: Io.Mutex = .init,
+     /// extensions-lib versions the host jar reported at `init`.
+     supported_lib_versions: []const []const u8,
++    ca_file: ?[]u8 = null,
+ 
+     // Management (registry, repositories): see manage.zig.
+     pub const installExtension = manage.installExtension;
+@@ -214,6 +217,8 @@ pub const Runtime = struct {
+         defer gpa.free(default_cache);
+         self.cache_dir = try absoluteDir(gpa, io, opts.cache_dir orelse default_cache);
+         errdefer gpa.free(self.cache_dir);
++        if (opts.ca_file) |path| self.ca_file = try gpa.dupe(u8, path);
++        errdefer if (self.ca_file) |path| gpa.free(path);
+ 
+         self.vm = if (opts.existing_vm) |vm| jvm.Vm.adopt(vm) else try self.createVm(opts);
+         errdefer self.vm.destroy();
+@@ -293,6 +298,7 @@ pub const Runtime = struct {
+         self.gpa.free(self.supported_lib_versions);
+         self.gpa.free(self.data_dir);
+         self.gpa.free(self.cache_dir);
++        if (self.ca_file) |path| self.gpa.free(path);
+         self.gpa.destroy(self);
+     }
+ 

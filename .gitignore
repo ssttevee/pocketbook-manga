@@ -5,3 +5,6 @@ zig-pkg/
 library/
 preview/
 .DS_Store
+.runtime-cache/
+dist/
+__pycache__/

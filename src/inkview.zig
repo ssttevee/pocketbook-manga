@@ -12,6 +12,10 @@ const Jpeg = *const fn ([*:0]const u8, c_int, c_int, c_int, c_int, c_int) callco
 const Png = *const fn ([*:0]const u8, c_int, c_int, c_int, c_int) callconv(.c) ?*Bitmap;
 var jpeg: Jpeg = undefined;
 var png: Png = undefined;
+var network_connect: *const fn (?[*:0]const u8) callconv(.c) c_int = undefined;
+fn connectNetwork() !void {
+    if (network_connect(null) != 0) return error.WifiConnectionFailed;
+}
 var page_pixels: []u8 = &.{};
 
 fn loadPage(session: *Session, relative: []const u8) !void {
@@ -69,8 +73,12 @@ pub fn main(init: std.process.Init) !void {
     };
     if (prefs) |p| model.prefs = p.value;
     var session: Session = .{ .model = &model, .root = root, .io = io, .save_path = prefs_path, .load_image = loadPage };
+    var engine: @import("online.zig").Engine = .{ .gpa = gpa, .io = io, .root = root, .environ = init.minimal.environ };
+    session.browser.engine = &engine;
+    session.browser.ensure_network = connectNetwork;
     const library_name = std.c.getenv("INKVIEW_LIBRARY") orelse "libinkview.so";
     var image_library = try std.DynLib.open(std.mem.span(library_name));
+    network_connect = image_library.lookup(@TypeOf(network_connect), "NetConnect") orelse return error.MissingNetworkApi;
     jpeg = image_library.lookup(Jpeg, "LoadJPEG") orelse return error.MissingJpegDecoder;
     png = image_library.lookup(Png, "LoadPNGStretch") orelse return error.MissingPngDecoder;
     try ink.run(Root, gpa, io, .{}, .{

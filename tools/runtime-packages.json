@@ -1,0 +1,53 @@
+{
+  "base_url": "https://deb.debian.org/debian/",
+  "packages": {
+    "ca-certificates": {
+      "Version": "20230311+deb12u1",
+      "Filename": "pool/main/c/ca-certificates/ca-certificates_20230311+deb12u1_all.deb",
+      "SHA256": "0d5f444f594e48c1e16a41d8fc628a09b24c658916a1274025c2330f2a802bed",
+      "Size": "155260"
+    },
+    "libatomic1": {
+      "Version": "12.2.0-14+deb12u1",
+      "Filename": "pool/main/g/gcc-12/libatomic1_12.2.0-14+deb12u1_armel.deb",
+      "SHA256": "cf05c67ba9e699105aff6717e02b5139cf77c1391d8a717e563de088839711ef",
+      "Size": "9056"
+    },
+    "libgcc-s1": {
+      "Version": "12.2.0-14+deb12u1",
+      "Filename": "pool/main/g/gcc-12/libgcc-s1_12.2.0-14+deb12u1_armel.deb",
+      "SHA256": "4d9bf44b70e4437e652160ec8c042ed7a186662281f4d58a728f4a87225f1527",
+      "Size": "38300"
+    },
+    "libstdc++6": {
+      "Version": "12.2.0-14+deb12u1",
+      "Filename": "pool/main/g/gcc-12/libstdc++6_12.2.0-14+deb12u1_armel.deb",
+      "SHA256": "0ddc1914184e5beb5db4c7d7c6c2ce7de14094ac8cdf1d5b9ed6e2097ff8b6b1",
+      "Size": "506204"
+    },
+    "libc6": {
+      "Version": "2.36-9+deb12u14",
+      "Filename": "pool/main/g/glibc/libc6_2.36-9+deb12u14_armel.deb",
+      "SHA256": "5eb674d8a73cccad372a7d35878209fc403266da1c23eb5974cdadb69de4091e",
+      "Size": "2141784"
+    },
+    "openjdk-17-jre-headless": {
+      "Version": "17.0.19+10-1~deb12u2",
+      "Filename": "pool/main/o/openjdk-17/openjdk-17-jre-headless_17.0.19+10-1~deb12u2_armel.deb",
+      "SHA256": "e184a19100a14ed54a97b795223a2c9e76c2281e29abec288a5bd7255366c65f",
+      "Size": "33050372"
+    },
+    "zlib1g": {
+      "Version": "1:1.2.13.dfsg-1",
+      "Filename": "pool/main/z/zlib/zlib1g_1.2.13.dfsg-1_armel.deb",
+      "SHA256": "e048eb368e45058d2a62449e8a967a4cb336c7af05c9075a9bbd1107c38f627a",
+      "Size": "73580"
+    },
+    "gcc-12-base": {
+      "Version": "12.2.0-14+deb12u1",
+      "Filename": "pool/main/g/gcc-12/gcc-12-base_12.2.0-14+deb12u1_armel.deb",
+      "SHA256": "5561d1a181ee3a2b70b7d1e903f247372eb7acf8eefdec6b706c8051f7922b20",
+      "Size": "37628"
+    }
+  }
+}

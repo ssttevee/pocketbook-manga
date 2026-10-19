@@ -8,5 +8,5 @@
         .inkview = .{ .path = "../zig-fabrum-platform-inkview" },
         .tachi = .{ .path = "../zig-tachi" },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "src", "tools", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "tools", "patches", "README.md" },
 }

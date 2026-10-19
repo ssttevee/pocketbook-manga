@@ -3,11 +3,13 @@ const UiModules = struct {
     fabrum: *std.Build.Module,
     platform: *std.Build.Module,
     image: *std.Build.Module,
+    tachi: *std.Build.Module,
     fn imports(self: UiModules, b: *std.Build) []const std.Build.Module.Import {
         return b.allocator.dupe(std.Build.Module.Import, &.{
             .{ .name = "fabrum", .module = self.fabrum },
             .{ .name = "fabrum-platform-inkview", .module = self.platform },
             .{ .name = "reader-image", .module = self.image },
+            .{ .name = "tachi", .module = self.tachi },
         }) catch @panic("OOM");
     }
 };
@@ -19,22 +21,11 @@ fn uiModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
     const image = b.createModule(.{ .root_source_file = b.path("src/image.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "fabrum", .module = fabrum }} });
     const renderer = b.createModule(.{ .root_source_file = b.path("src/renderer.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "fabrum", .module = fabrum }, .{ .name = "base", .module = base }, .{ .name = "reader-image", .module = image } } });
     platform.addImport("fabrum-renderer-z2d", renderer);
-    return .{ .fabrum = fabrum, .platform = platform, .image = image };
+    return .{ .fabrum = fabrum, .platform = platform, .image = image, .tachi = b.dependency("tachi", .{ .target = target, .optimize = optimize }).module("tachi") };
 }
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const host_ui = uiModules(b, b.graph.host, optimize);
-    const tachi = b.dependency("tachi", .{ .target = b.graph.host, .optimize = optimize });
-    const sync = b.addExecutable(.{ .name = "pocketmanga-sync", .root_module = b.createModule(.{
-        .root_source_file = b.path("src/sync.zig"),
-        .target = b.graph.host,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "tachi", .module = tachi.module("tachi") }},
-    }) });
-    b.installArtifact(sync);
-    const run = b.addRunArtifact(sync);
-    run.addPassthruArgs();
-    b.step("sync", "Run desktop library / extension manager").dependOn(&run.step);
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/tests.zig"),
         .target = b.graph.host,
@@ -42,7 +33,6 @@ pub fn build(b: *std.Build) void {
         .imports = host_ui.imports(b),
         .link_libc = true,
     }) });
-    tests.root_module.addImport("tachi", tachi.module("tachi"));
     b.step("test", "Test storage, navigation, UI and fake InkView host").dependOn(&b.addRunArtifact(tests).step);
     const preview = b.addExecutable(.{ .name = "pocketmanga-preview", .root_module = b.createModule(.{
         .root_source_file = b.path("src/preview.zig"),
@@ -61,9 +51,18 @@ pub fn build(b: *std.Build) void {
         .imports = device_ui.imports(b),
         .link_libc = true,
     }) });
+    const probe = b.addExecutable(.{ .name = "pocketmanga-runtime-probe", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/runtime_probe.zig"),
+        .target = device_target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "tachi", .module = device_ui.tachi }},
+        .link_libc = true,
+    }) });
+    b.step("runtime-probe", "Build ARM JNI diagnostic for emulation / hardware testing").dependOn(&b.addInstallArtifact(probe, .{}).step);
     const install = b.addInstallArtifact(device, .{});
     const launcher = b.addInstallFile(b.path("tools/pocketmanga-log.app"), "bin/pocketmanga-log.app");
     const device_step = b.step("device", "Build ARM app for Verse firmware 6.10+");
     device_step.dependOn(&install.step);
     device_step.dependOn(&launcher.step);
+    b.getInstallStep().dependOn(device_step);
 }

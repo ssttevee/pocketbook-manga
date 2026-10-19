@@ -7,6 +7,7 @@ pub fn main(init: std.process.Init) !void {
     defer arena.deinit();
     var model: lib.Model = .{ .gpa = arena.allocator(), .library = smoke.fixture };
     var session: Session = .{ .model = &model, .root = ".", .io = init.io, .load_image = smoke.sampleImage };
+    defer session.deinit();
     try std.Io.Dir.cwd().createDirPath(init.io, "preview");
     try smoke.start(init.gpa, init.io, &session);
     defer smoke.stop();
@@ -17,5 +18,32 @@ pub fn main(init: std.process.Init) !void {
     try smoke.writeScreen(init.gpa, init.io, "preview/reader.pgm");
     try smoke.tapText("Aa");
     try smoke.writeScreen(init.gpa, init.io, "preview/settings.pgm");
+    try smoke.tapText("Back");
+    try smoke.tapText("Back");
+    try smoke.tapText("Back");
+    try std.Io.Dir.cwd().createDirPath(init.io, "preview/demo-data");
+    var engine: @import("online.zig").Engine = .{ .gpa = arena.allocator(), .io = init.io, .root = "preview/demo-data", .execute_fn = @import("online_test.zig").fixtureExecutor };
+    session.root = engine.root;
+    session.browser.engine = &engine;
+    try smoke.tapText("Browse");
+    try finish(&session);
+    try smoke.writeScreen(init.gpa, init.io, "preview/sources.pgm");
+    try smoke.tapText("Install / update extensions");
+    try finish(&session);
+    try smoke.writeScreen(init.gpa, init.io, "preview/extensions.pgm");
+    try smoke.tapText("Fixture Extension");
+    try finish(&session);
+    try smoke.tapText("Fixture Source");
+    try finish(&session);
+    try smoke.writeScreen(init.gpa, init.io, "preview/browse.pgm");
+    try smoke.tapText("Fixture Story");
+    try finish(&session);
+    try smoke.writeScreen(init.gpa, init.io, "preview/online-chapters.pgm");
     std.debug.print("Rendered 758x1024 application screens into preview/*.pgm\n", .{});
+}
+
+fn finish(session: *Session) !void {
+    const job = session.browser.busy orelse return error.NoBackgroundJob;
+    job.join();
+    smoke.fake.advance(250);
 }

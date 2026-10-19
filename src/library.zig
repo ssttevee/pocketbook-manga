@@ -1,7 +1,8 @@
 const std = @import("std");
 const Io = std.Io;
-pub const Chapter = struct { id: []const u8, title: []const u8, pages: []const []const u8 = &.{} };
-pub const Manga = struct { id: []const u8, title: []const u8, author: []const u8 = "", description: []const u8 = "", chapters: []const Chapter = &.{} };
+const models = @import("tachi").models;
+pub const Chapter = struct { id: []const u8, title: []const u8, pages: []const []const u8 = &.{}, remote: ?models.Chapter = null };
+pub const Manga = struct { id: []const u8, title: []const u8, author: []const u8 = "", description: []const u8 = "", chapters: []const Chapter = &.{}, source_id: ?i64 = null, remote: ?models.Manga = null };
 pub const Library = struct { version: u32 = 1, manga: []const Manga = &.{} };
 pub const Entry = struct { id: []const u8, page: usize = 0, completed: bool = false };
 pub const Preferences = struct { rtl: bool = true, full_refresh: bool = true, progress: []const Entry = &.{} };
@@ -47,7 +48,7 @@ pub fn writeJson(gpa: std.mem.Allocator, io: Io, path: []const u8, value: anytyp
     try Io.Dir.cwd().rename(temp, Io.Dir.cwd(), path, io);
 }
 
-pub const Screen = enum { library, chapters, reader, settings, help };
+pub const Screen = enum { library, chapters, reader, settings, sources, extensions, catalog, source_settings };
 pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, turn: i32, next_chapter, list_page: i32, settings, help, rtl, refresh };
 pub const Model = struct {
     gpa: std.mem.Allocator,
@@ -97,25 +98,43 @@ pub const Model = struct {
         if (ch.pages.len == 0) return;
         const entry: Entry = .{ .id = ch.id, .page = self.page, .completed = self.page + 1 == ch.pages.len };
         if (!self.progress_owned) {
-            self.prefs.progress = try self.gpa.dupe(Entry, self.prefs.progress);
+            const copy = try self.gpa.dupe(Entry, self.prefs.progress);
+            var copied: usize = 0;
+            errdefer {
+                for (copy[0..copied]) |p| self.gpa.free(p.id);
+                self.gpa.free(copy);
+            }
+            for (copy) |*p| {
+                p.id = try self.gpa.dupe(u8, p.id);
+                copied += 1;
+            }
+            self.prefs.progress = copy;
             self.progress_owned = true;
         }
         const entries = @constCast(self.prefs.progress);
         for (entries) |*p| if (std.mem.eql(u8, p.id, ch.id)) {
             const completed = p.completed;
             if (p.page == entry.page and (p.completed or !entry.completed)) return;
+            const owned_id = p.id;
             p.* = entry;
+            p.id = owned_id;
             p.completed = p.completed or completed;
             self.dirty = true;
             return;
         };
+        const id = try self.gpa.dupe(u8, ch.id);
+        errdefer self.gpa.free(id);
         const appended = try self.gpa.realloc(entries, entries.len + 1);
         appended[appended.len - 1] = entry;
+        appended[appended.len - 1].id = id;
         self.prefs.progress = appended;
         self.dirty = true;
     }
     pub fn deinit(self: *Model) void {
-        if (self.progress_owned) self.gpa.free(self.prefs.progress);
+        if (self.progress_owned) {
+            for (self.prefs.progress) |p| self.gpa.free(p.id);
+            self.gpa.free(self.prefs.progress);
+        }
         if (self.query_text.len > 0) self.gpa.free(self.query_text);
     }
     pub fn dispatch(self: *Model, action: Action) !void {
@@ -159,7 +178,11 @@ pub const Model = struct {
                     self.offset = self.chapter / rows * rows;
                 },
                 .settings => self.screen = self.return_screen,
-                .help => {
+                .extensions, .catalog, .source_settings => {
+                    self.screen = .sources;
+                    self.offset = 0;
+                },
+                .sources => {
                     self.screen = .library;
                     self.offset = 0;
                 },
@@ -183,8 +206,8 @@ pub const Model = struct {
                 self.screen = .settings;
             },
             .help => {
-                self.return_screen = self.screen;
-                self.screen = .help;
+                self.screen = .sources;
+                self.offset = 0;
             },
             .rtl => {
                 self.prefs.rtl = !self.prefs.rtl;

@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="fixture.pocketmanga" android:versionName="1.6.1" android:versionCode="1">
+  <uses-feature android:name="tachiyomi.extension" />
+  <application>
+    <meta-data android:name="tachiyomi.extension.class" android:value="fixture.FixtureSource" />
+    <meta-data android:name="tachiyomix.name" android:value="PocketManga test fixture" />
+    <meta-data android:name="tachiyomix.extensionLib" android:value="1.6" />
+  </application>
+</manifest>

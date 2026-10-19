@@ -80,7 +80,7 @@ test "local import uses natural order and storage survives an atomic rewrite" {
 }
 
 test "download merge replaces a chapter without losing other titles or chapter order" {
-    const companion = @import("sync.zig");
+    const companion = @import("catalog.zig");
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const gpa = arena.allocator();
@@ -102,4 +102,26 @@ test "download merge replaces a chapter without losing other titles or chapter o
     try std.testing.expectEqualStrings("Chapter 3", merged.manga[0].chapters[1].title);
     try std.testing.expectEqualStrings("new.png", merged.manga[0].chapters[2].pages[0]);
     try std.testing.expectEqualStrings("Title B", merged.manga[1].title);
+}
+test {
+    _ = @import("online_test.zig");
+}
+test "progress owns chapter IDs across replacement of parsed library metadata" {
+    const a = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(lib.Library, a, "{\"manga\":[{\"id\":\"story\",\"title\":\"Story\",\"chapters\":[{\"id\":\"c1\",\"title\":\"Chapter 1\",\"pages\":[\"1.png\"]}]}]}", .{ .allocate = .alloc_always });
+    var model: lib.Model = .{ .gpa = a, .library = parsed.value };
+    defer model.deinit();
+    try model.dispatch(.{ .open = 0 });
+    try model.dispatch(.{ .read = 0 });
+    parsed.deinit();
+    model.library = fixture;
+    try std.testing.expect(model.progress("c1").?.completed);
+}
+test "metadata refresh preserves downloaded pages" {
+    const catalog = @import("catalog.zig");
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const refreshed = try catalog.merge(arena.allocator(), fixture, .{ .id = "story", .title = "Updated story", .chapters = &.{.{ .id = "c1", .title = "New chapter name", .remote = .{ .url = "/c1", .name = "New chapter name" } }} });
+    try std.testing.expectEqual(2, refreshed.manga[0].chapters[1].pages.len);
+    try std.testing.expectEqualStrings("New chapter name", refreshed.manga[0].chapters[1].title);
 }
