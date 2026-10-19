@@ -152,4 +152,5 @@ test "local scanning works without a JVM bundle or a worker" {
 
 test {
     _ = @import("downloads.zig");
+    _ = @import("power.zig");
 }

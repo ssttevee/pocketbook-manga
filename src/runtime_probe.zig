@@ -17,6 +17,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ, roo
     var engine: online.Engine = .{ .gpa = gpa, .io = io, .root = root, .environ = environ };
     defer engine.deinit();
     const request: online.Request = if (std.mem.eql(u8, cmd, "repo")) .extensions else if (std.mem.eql(u8, cmd, "install")) .{ .install = package orelse return error.MissingPackage } else .sources;
+    const canceled_start = try online.Job.start(&engine, request);
+    if (canceled_start.phase.load(.acquire) != .worker_starting) return error.MissingStartupPhase;
+    const cancel_start = @import("worker_wire.zig").pm_now_ms();
+    canceled_start.cancel();
+    if (@import("worker_wire.zig").pm_now_ms() - cancel_start > 500 or engine.client.alive()) return error.StartupCancelNotImmediate;
+    canceled_start.deinit();
+    std.debug.print("Cold worker startup phase cancels immediately and reaps its child.\n", .{});
     const job = try online.Job.start(&engine, request);
     defer job.deinit();
     job.join();
@@ -24,6 +31,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ, roo
         std.debug.print("{s}\n", .{failure});
         return error.RuntimeProbeFailed;
     }
+    if (!engine.client.ready.load(.acquire) or job.phase.load(.acquire) != .operation) return error.MissingWorkerReady;
+    const warm = try online.Job.start(&engine, .sources);
+    if (warm.phase.load(.acquire) != .operation) return error.WarmWorkerStartupPhase;
+    warm.join();
+    if (warm.failure != null) return error.WarmWorkerFailed;
+    warm.deinit();
+    std.debug.print("Worker ready after JVM/extension restore; warm requests skip startup.\n", .{});
     std.debug.print("ARM JNI host: {d} installed sources, {d} repository extensions\n", .{ job.result.sources.len, job.result.extensions.len });
     if (environ.getPosix("POCKETMANGA_PARENT_EXIT_TEST") != null) {
         const path = try std.fmt.allocPrint(gpa, "{s}/.worker-pid", .{root});

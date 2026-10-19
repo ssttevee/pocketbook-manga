@@ -44,8 +44,20 @@ pub fn main(init: std.process.Init) !void {
     try smoke.tapText("Fixture Story");
     try finish(&session);
     try smoke.writeScreen(init.gpa, init.io, "preview/online-chapters.pgm");
-    engine.execute_fn = @import("online_test.zig").stalledDownload;
+    var long_book = model.library.manga[0];
+    long_book.title = @import("online_test.zig").long_title;
+    model.library = .{ .manga = &.{long_book} };
+    engine.execute_fn = @import("online_test.zig").startingWorker;
     try smoke.tapText("Chapter 1");
+    while (session.browser.busy.?.phase.load(.acquire) != .worker_starting) try init.io.sleep(.fromMilliseconds(1), .awake);
+    smoke.fake.advance(250);
+    try smoke.writeScreen(init.gpa, init.io, "preview/downloading-worker-loading.pgm");
+    session.browser.busy.?.cancel();
+    try session.poll();
+    smoke.fake.advance(250);
+    engine.execute_fn = @import("online_test.zig").stalledDownload;
+    session.start(.{ .download = .{ .book = long_book, .chapter = long_book.chapters[0] } });
+    _ = smoke.fake.send(.show, 0, 0);
     while (session.browser.busy.?.pages_total.load(.acquire) == 0) try init.io.sleep(.fromMilliseconds(1), .awake);
     smoke.fake.advance(250);
     try smoke.writeScreen(init.gpa, init.io, "preview/downloading.pgm");
@@ -53,11 +65,27 @@ pub fn main(init: std.process.Init) !void {
     try session.poll();
     smoke.fake.advance(250);
     try smoke.writeScreen(init.gpa, init.io, "preview/download-canceled.pgm");
+    engine.execute_fn = @import("online_test.zig").failedDownload;
+    session.start(.{ .download = .{ .book = long_book, .chapter = long_book.chapters[0] } });
+    _ = smoke.fake.send(.show, 0, 0);
+    try finish(&session);
+    try smoke.writeScreen(init.gpa, init.io, "preview/download-failed-long-title.pgm");
+    model.screen = .catalog;
+    engine.execute_fn = @import("online_test.zig").startingWorker;
+    session.start(.{ .titles = .{ .source = session.browser.source_id } });
+    _ = smoke.fake.send(.show, 0, 0);
+    while (session.browser.busy.?.phase.load(.acquire) != .worker_starting) try init.io.sleep(.fromMilliseconds(1), .awake);
+    smoke.fake.advance(250);
+    try smoke.writeScreen(init.gpa, init.io, "preview/browse-worker-loading.pgm");
+    session.browser.busy.?.cancel();
+    try session.poll();
     std.debug.print("Rendered 758x1024 application screens into preview/*.pgm\n", .{});
 }
 
 fn finish(session: *Session) !void {
     const job = session.browser.busy orelse return error.NoBackgroundJob;
     job.join();
+    try session.poll();
+    _ = smoke.fake.send(.show, 0, 0);
     smoke.fake.advance(250);
 }

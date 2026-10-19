@@ -19,11 +19,16 @@ pub fn main(init: std.process.Init) !void {
     var last_activity = wire.pm_now_ms();
     var last_done: usize = 0;
     var last_total: usize = 0;
+    var sent_ready = false;
     while (true) {
         if (active) |job| {
             const done = job.pages_done.load(.acquire);
             const total = job.pages_total.load(.acquire);
             const finished = job.done.load(.acquire);
+            if (!sent_ready and job.runtime_ready.load(.acquire)) {
+                try wire.send(fd, init.gpa, p.Response{ .id = id, .kind = .ready });
+                sent_ready = true;
+            }
             if (done != last_done or total != last_total or finished) {
                 try wire.send(fd, init.gpa, p.Response{ .id = id, .kind = .progress, .pages_done = done, .pages_total = total, .rss_kib = wire.pm_rss_kib() });
                 last_done = done;
@@ -74,6 +79,7 @@ pub fn main(init: std.process.Init) !void {
                 id = command.id;
                 last_done = 0;
                 last_total = 0;
+                sent_ready = false;
                 active = try online.Job.start(&engine, command.request orelse return error.MissingRequest);
             },
         }

@@ -116,7 +116,7 @@ test "background failures are reported and leave library and progress intact" {
     try std.testing.expect(session.browser.busy == null);
 }
 
-fn failedDownload(_: *online.Engine, job: *online.Job) !void {
+pub fn failedDownload(_: *online.Engine, job: *online.Job) !void {
     job.pages_done.store(1, .release);
     job.pages_total.store(3, .release);
     return error.NetworkDisconnected;
@@ -129,14 +129,17 @@ test "download failure stays visible with progress and resume instructions" {
     var session: Session = .{ .model = &model, .io = std.testing.io, .root = "." };
     session.browser.engine = &engine;
     defer session.deinit();
-    const book = smoke.fixture.manga[0];
+    var book = smoke.fixture.manga[0];
+    book.title = long_title;
+    model.library = .{ .manga = &.{book} };
     session.start(.{ .download = .{ .book = book, .chapter = book.chapters[0] } });
     session.browser.busy.?.join();
     try session.poll();
     try std.testing.expect(session.download_error);
     try std.testing.expect(std.mem.indexOf(u8, session.status, "1/3") != null);
     try std.testing.expect(std.mem.indexOf(u8, session.status, "NetworkDisconnected") != null);
-    try std.testing.expect(std.mem.indexOf(u8, session.status, "resume") != null);
+    // The headline carries the outcome and the resume hint, so the detail repeats neither.
+    try std.testing.expect(std.mem.indexOf(u8, session.status, "Download failed") == null);
     try session.poll();
     try std.testing.expect(session.download_error);
     try std.testing.expectEqual(lib.Screen.chapters, model.screen);
@@ -145,6 +148,9 @@ test "download failure stays visible with progress and resume instructions" {
     try harness.frame();
     try harness.expectText("Download failed - tap chapter to resume");
     try harness.expectText(session.status);
+    const label = harness.findText("Download failed - tap chapter to resume").?;
+    const detail = harness.findText(session.status).?;
+    try std.testing.expect(detail.bbox.y + detail.bbox.h - label.bbox.y < 65);
     try harness.expectText(book.title);
     try harness.expectText(book.chapters[0].title);
 }
@@ -212,4 +218,44 @@ test "downloading and cancellation keep the selected series and chapter" {
     try harness.expectText(book.title);
     try harness.expectText(book.chapters[0].title);
     try std.testing.expect(std.mem.indexOf(u8, session.status, "4/12") != null);
+}
+
+pub const long_title = "Reincarnated as the Villainous Orphanage Director Destined to Be Defeated, I Ended Up Being Loved by the Main Heroines' Daughters";
+pub fn startingWorker(engine: *online.Engine, job: *online.Job) !void {
+    job.setPhase(.worker_starting);
+    var ready: std.Io.Event = .unset;
+    try ready.wait(engine.io);
+}
+test "worker startup is shown for downloads and browse and remains immediately cancelable" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var engine: online.Engine = .{ .gpa = a, .io = std.testing.io, .root = ".", .execute_fn = startingWorker };
+    var book = smoke.fixture.manga[0];
+    book.title = long_title;
+    var model: lib.Model = .{ .gpa = a, .library = .{ .manga = &.{book} }, .screen = .chapters };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = "." };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    var harness: @import("fabrum").app.testing.Harness(.{}, @import("ui.zig")) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{@import("fabrum").app.RootValue.of(&session)}, .widgets = .drawn });
+    defer harness.deinit();
+    const requests: []const online.Request = &.{ .{ .download = .{ .book = book, .chapter = book.chapters[0] } }, .sources, .{ .titles = .{ .source = 42 } }, .{ .preferences = 42 } };
+    for (requests) |request| {
+        session.start(request);
+        const job = session.browser.busy.?;
+        while (job.phase.load(.acquire) != .worker_starting) try std.testing.io.sleep(.fromMilliseconds(1), .awake);
+        try harness.frame();
+        try harness.expectText("Loading libtachi worker");
+        try harness.expectText("Cancel");
+        if (request == .download) {
+            job.setPhase(.operation);
+            try harness.frame();
+            try harness.expectNoText("Loading libtachi worker");
+            try harness.expectText("Fetching page list");
+        }
+        const started = @import("worker_wire.zig").pm_now_ms();
+        job.cancel();
+        try std.testing.expect(@import("worker_wire.zig").pm_now_ms() - started < 500);
+        try session.poll();
+    }
 }

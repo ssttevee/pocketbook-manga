@@ -17,6 +17,7 @@ pub const Job = struct {
     failure: ?[]const u8 = null,
     thread: ?std.Thread = null,
     done: std.atomic.Value(bool) = .init(false),
+    runtime_ready: std.atomic.Value(bool) = .init(false),
     cancelled: std.atomic.Value(bool) = .init(false),
     pages_done: std.atomic.Value(usize) = .init(0),
     pages_total: std.atomic.Value(usize) = .init(0),
@@ -115,6 +116,7 @@ pub const Engine = struct {
             return;
         }
         const rt = try self.initRuntime();
+        job.runtime_ready.store(true, .release);
         switch (job.request) {
             .sources => try self.sources(job),
             .extensions => job.result.extensions = try parse([]const protocol.RepoEntry, a, try std.json.Stringify.valueAlloc(a, try rt.repoList(a, .{}), .{})),

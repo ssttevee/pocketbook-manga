@@ -82,6 +82,9 @@ pub fn main(init: std.process.Init) !void {
     network_connect = image_library.lookup(@TypeOf(network_connect), "NetConnect") orelse return error.MissingNetworkApi;
     jpeg = image_library.lookup(Jpeg, "LoadJPEG") orelse return error.MissingJpegDecoder;
     png = image_library.lookup(Png, "LoadPNGStretch") orelse return error.MissingPngDecoder;
+    power_guard = @import("power.zig").Guard.load(&image_library);
+    session.activity = updatePower;
+    defer power_guard.update(false, 0);
     // The packaged binary itself can verify JNI and every required InkView
     // symbol without entering the hardware event loop. Nothing enables this
     // during normal launch; the firmware integration tests set the variable.
@@ -116,12 +119,17 @@ pub fn main(init: std.process.Init) !void {
     });
 }
 
+var power_guard: @import("power.zig").Guard = .{};
+fn updatePower(active: bool) void {
+    power_guard.update(active, @import("worker_wire.zig").pm_now_ms());
+}
 var lifecycle_engine: ?*@import("online.zig").Engine = null;
 var lifecycle_session: ?*Session = null;
 var actual_main: *const fn (ink.inkview.Handler) callconv(.c) void = undefined;
 var actual_close: *const fn () callconv(.c) void = undefined;
 var app_handler: ink.inkview.Handler = undefined;
 fn stopWorker() void {
+    defer updatePower(false);
     if (lifecycle_engine) |engine| {
         engine.interrupt();
         if (lifecycle_session) |session| if (session.browser.busy) |job| job.cancel();

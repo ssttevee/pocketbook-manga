@@ -28,7 +28,11 @@ public final class FixtureSource extends HttpSource {
     try(var response=getClient().newCall(new Request.Builder().url(getBaseUrl()+"/metadata/"+stage).build()).execute()) {
       if(!response.isSuccessful()) throw new java.io.IOException("Metadata HTTP "+response.code());
       if(response.header("Content-Encoding")!=null || !response.body().string().equals("PocketManga zstd metadata fixture\n".repeat(2048))) throw new java.io.IOException("zstd metadata mismatch");
-      System.err.println("Pure Java zstd metadata decoded: "+stage);
+      if (System.getProperty("os.arch").equals("arm")) {
+        String maps=java.nio.file.Files.readString(java.nio.file.Path.of("/proc/self/maps"));
+        if(!maps.contains("/runtime/lib/libpocketmanga-zstd.so")) throw new java.io.IOException("bundled JNI zstd mapping missing");
+      }
+      System.err.println("Native libzstd metadata decoded: "+stage);
     } catch(java.io.IOException e) { throw new RuntimeException(e); }
   }
   public boolean getSupportsLatest() { return true; }

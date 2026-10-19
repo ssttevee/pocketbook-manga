@@ -5,6 +5,7 @@ const protocol = @import("protocol.zig");
 const lib = @import("library.zig");
 pub const Request = protocol.Request;
 pub const Result = protocol.Result;
+pub const Phase = enum(u8) { operation, worker_starting };
 pub const Job = struct {
     arena: std.heap.ArenaAllocator,
     engine: *Engine,
@@ -13,12 +14,14 @@ pub const Job = struct {
     failure: ?[]const u8 = null,
     future: ?Io.Future(void) = null,
     done: std.atomic.Value(bool) = .init(false),
+    phase: std.atomic.Value(Phase) = .init(.operation),
+    // Nested JVM image requests report startup on the owning download job.
+    phase_target: ?*std.atomic.Value(Phase) = null,
     pages_done: std.atomic.Value(usize) = .init(0),
     pages_total: std.atomic.Value(usize) = .init(0),
     pub fn start(engine: *Engine, request: Request) !*Job {
         if (engine.paused.load(.acquire)) return error.WorkerStopped;
         engine.client.interrupted.store(false, .release);
-        if (request != .scan and engine.execute_fn == null) try engine.client.prepare(engine);
         const job = try engine.gpa.create(Job);
         errdefer engine.gpa.destroy(job);
         job.* = .{ .arena = .init(engine.gpa), .engine = engine, .request = undefined };
@@ -26,6 +29,10 @@ pub const Job = struct {
         const a = job.arena.allocator();
         const json = try std.json.Stringify.valueAlloc(a, request, .{});
         job.request = try std.json.parseFromSliceLeaky(Request, a, json, .{ .allocate = .alloc_always });
+        if (request != .scan and engine.execute_fn == null) {
+            try engine.client.prepare(engine);
+            if (!engine.client.ready.load(.acquire)) job.setPhase(.worker_starting);
+        }
         job.future = try engine.io.concurrent(run, .{job});
         return job;
     }
@@ -37,11 +44,16 @@ pub const Job = struct {
             if (!@import("builtin").is_test) std.log.warn("{s}", .{self.failure.?});
         };
     }
+    pub fn setPhase(self: *Job, phase: Phase) void {
+        (self.phase_target orelse &self.phase).store(phase, .release);
+    }
     pub fn checkCancelled(self: *Job) !void {
         try self.engine.io.checkCancel();
     }
     pub fn cancel(self: *Job) void {
         if (self.future) |*future| future.cancel(self.engine.io);
+        // Cancellation may arrive before run installs its IPC cleanup.
+        if (self.engine.execute_fn == null and self.request != .scan) self.engine.client.close();
     }
     pub fn join(self: *Job) void {
         // Forks must stay on the event thread. A challenge may need a fresh worker

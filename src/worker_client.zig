@@ -11,6 +11,7 @@ extern "c" fn pm_reap(c_int, c_int) c_int;
 pub const Client = struct {
     mutex: std.atomic.Mutex = .unlocked,
     interrupted: std.atomic.Value(bool) = .init(false),
+    ready: std.atomic.Value(bool) = .init(false),
     pid: c_int = -1,
     fd: c_int = -1,
     next_id: u64 = 1,
@@ -43,6 +44,7 @@ pub const Client = struct {
         if (self.fd >= 0) _ = std.c.close(self.fd);
         self.pid = -1;
         self.fd = -1;
+        self.ready.store(false, .release);
     }
     fn waitExit(self: *Client) bool {
         return self.waitExitFor(1500);
@@ -92,6 +94,7 @@ pub const Client = struct {
         if (emulator) |exe| try argv.append(a, (try a.dupeSentinel(u8, exe, 0)).ptr);
         try argv.appendSlice(a, &.{ loader.ptr, "--inhibit-cache", "--library-path", libraries.ptr, "--argv0", binary.ptr, binary.ptr, "--serve", root.ptr });
         try argv.append(a, null);
+        self.ready.store(false, .release);
         self.pid = pm_spawn(argv.items[0].?, @ptrCast(argv.items.ptr), &self.fd);
         if (self.pid < 0) return error.WorkerStartFailed;
     }
@@ -106,6 +109,7 @@ pub const Client = struct {
         return self.call(engine, job, job.request);
     }
     pub fn call(self: *Client, engine: *online.Engine, job: *online.Job, request: p.Request) !void {
+        if (!self.alive() or !self.ready.load(.acquire)) job.setPhase(.worker_starting);
         try engine.requireWorker();
         const a = job.arena.allocator();
         if (self.pid <= 0 or self.interrupted.load(.acquire)) return error.WorkerStopped;
@@ -124,10 +128,16 @@ pub const Client = struct {
         while (true) {
             const response = try wire.receiveTimed(engine.io, self.fd, a);
             if (response.version != p.version or response.id != id) return error.WorkerProtocolMismatch;
+            if (response.kind == .ready) {
+                self.ready.store(true, .release);
+                job.setPhase(.operation);
+                continue;
+            }
             job.pages_done.store(response.pages_done, .release);
             job.pages_total.store(response.pages_total, .release);
             self.last_rss_kib = response.rss_kib;
             switch (response.kind) {
+                .ready => unreachable,
                 .progress => {},
                 .failure => {
                     job.failure = response.failure orelse "Worker failed";

@@ -98,7 +98,10 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
             if (event.phase != .press and event.phase != .repeat) return;
             const model = session.model;
             if (session.browser.busy != null) {
-                if (event.key == .escape) session.browser.busy.?.cancel();
+                if (event.key == .escape) {
+                    session.browser.busy.?.cancel();
+                    session.updateActivity();
+                }
                 return;
             }
             if (model.screen == .sources or model.screen == .extensions or model.screen == .catalog or model.screen == .source_settings) {
@@ -141,11 +144,28 @@ fn rowFill(ui: *app.Ui, key: anytype) f.Color {
     return .gray(246);
 }
 fn downloadIdentity(ui: *app.Ui, series: []const u8, chapter: []const u8) !void {
-    try ui.text(series, .{ .font_size = 17, .wrap_mode = .words });
-    try ui.text(chapter, .{ .font_size = 14, .wrap_mode = .words });
+    const style: f.layout.text.Style = .{ .font_size = 17, .wrap_mode = .words };
+    const width = @max(1, ui.core.viewport.x - 24);
+    const lines = try ui.core.make_lines(ui.core, series, style, width);
+    {
+        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y } });
+        defer ui.close();
+        if (lines.len > 2) {
+            try text(ui, series[0..lines[0].end], 17, 0);
+            try text(ui, try ui.fmt("{s}…", .{series[lines[1].start..]}), 17, 0);
+        } else try ui.text(series, style);
+    }
+    try text(ui, chapter, 14, 0);
 }
 fn text(ui: *app.Ui, value: []const u8, size: f32, gray: u8) !void {
-    try ui.text(value, .{ .font_size = size, .color = .gray(gray), .overflow = .ellipsis_end, .wrap_mode = .none });
+    const line = if (std.mem.indexOfAny(u8, value, "\r\n") != null) blk: {
+        const copy = try ui.arena().dupe(u8, value);
+        for (copy) |*byte| if (byte.* == '\r' or byte.* == '\n') {
+            byte.* = ' ';
+        };
+        break :blk copy;
+    } else value;
+    try ui.text(line, .{ .font_size = size, .color = .gray(gray), .overflow = .ellipsis_end, .wrap_mode = .none });
 }
 fn button(ui: *app.Ui, key: anytype, label: []const u8, action: lib.Action) !void {
     try app.widgets.button(ui, key, .{ .label = label, .on_click = ui.messages(Root).bind(.{ .act = action }) });
@@ -183,9 +203,9 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
     }
     if (session.download_error and session.browser.busy == null) {
         try ui.open("download-error", .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .all(10), .child_gap = 5 }, .border = .{ .color = .black, .widths = .outside(2) } });
-        try text(ui, if (std.mem.startsWith(u8, session.status, "Download canceled")) "Download canceled - tap chapter to resume" else "Download failed - tap chapter to resume", 15, 0);
-        if (session.download_identity) |identity| try downloadIdentity(ui, identity.series, identity.chapter);
-        try ui.text(session.status[0..@min(session.status.len, 240)], .{ .font_size = 13, .wrap_mode = .words });
+        try text(ui, if (session.download_canceled) "Download canceled - tap chapter to resume" else "Download failed - tap chapter to resume", 15, 0);
+        if (session.download_identity) |identity| try text(ui, identity.chapter, 14, 0);
+        try text(ui, session.status, 13, 0);
         ui.close();
     }
     if (session.browser.busy) |job| {
@@ -194,21 +214,23 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         try text(ui, if (job.request == .download) "Downloading chapter" else "Working on your reader", 18, 0);
         if (job.request == .download) {
             try downloadIdentity(ui, job.request.download.book.title, job.request.download.chapter.title);
-        } else try text(ui, switch (job.request) {
+        }
+        const starting = job.phase.load(.acquire) == .worker_starting;
+        const total = job.pages_total.load(.acquire);
+        try text(ui, if (starting) "Loading libtachi worker" else switch (job.request) {
             .sources => "Loading extensions...",
             .extensions => "Loading extension repository...",
             .install => "Downloading and installing extension...",
             .uninstall => "Removing extension...",
-            .titles => "Loading titles...",
-            .download => "Downloading chapter...",
+            .titles => if (session.browser.source_name.len > 0) try ui.fmt("Loading {s}...", .{session.browser.source_name}) else "Loading titles...",
+            .download => if (total == 0) "Fetching page list" else "Downloading pages",
             .scan => "Scanning local manga...",
             .preferences, .set_preference => "Loading source settings...",
             else => "Updating chapter lists...",
         }, 13, 40);
-        const total = job.pages_total.load(.acquire);
         if (total > 0) try ui.print(.{ .font_size = 14 }, "{d} / {d} pages", .{ job.pages_done.load(.acquire), total });
         try onlineButton(ui, "cancel-job", "Cancel", .cancel);
-        if (job.request != .download) try text(ui, "Java startup can take a while on the Verse.", 12, 40) else if (total == 0) try text(ui, "Preparing page list...", 12, 40);
+        if (starting) try text(ui, "Java startup can take a while on the Verse.", 12, 40);
     } else switch (model.screen) {
         .library, .chapters => try list(ui, model),
         .reader => try reader(ui, session),
@@ -327,7 +349,10 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
     const model = session.model;
     const a = model.gpa;
     if (b.busy != null) {
-        if (command == .cancel) b.busy.?.cancel();
+        if (command == .cancel) {
+            b.busy.?.cancel();
+            session.updateActivity();
+        }
         return;
     }
     switch (command) {

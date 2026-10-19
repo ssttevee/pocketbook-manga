@@ -30,11 +30,11 @@ Native transfer waits a complete applicable window initially, draining metadata 
 
 `online.Job` is an `Io.concurrent` future. Canceling it cancels nested transfer/timeout tasks and in-flight socket reads/writes through std.Io; no native download cancellation flag is polled between pages. IPC framing also uses cancellable Io socket operations, including incomplete-frame waits. Cleanup sends a nonblocking cancel command, lets the worker stop for up to 75 ms (plus its small poll granularity), then kills/reaps it if needed. The host cancel call invokes the source client's dispatcher.cancelAll; the worker exits after acknowledging cancellation. Native-only cancellation has no worker to wait for.
 
-Pages stream through a 64 KiB buffer into a deterministic chapter/generation directory. Each page is synced and renamed from .tmp to .png/.jpg only after the complete successful body arrives. Retry skips completed files; incomplete temps are overwritten. Failures/cancellation never delete completed pages. Stable page URLs and indices identify a generation; when no page URL exists, image origin/path is used and expiring query tokens are ignored. Changed stable page identity creates another generation, retaining earlier partial data. The library manifest is atomically replaced only after every page is present.
+Pages stream through a 64 KiB buffer into a deterministic chapter/generation directory. Each page is synced and renamed from .tmp to .png/.jpg only after the complete successful body arrives. Retry skips completed files; incomplete temps are overwritten. Failures/cancellation never delete completed pages. Page count, indices and stable page URLs identify a generation. When no page URL exists, only the final image filename (without query/fragment) is hashed: MangaDex changes both its image node and token directory on every resolution. A changed count, index, filename or stable page URL creates another generation, retaining earlier partial data. This deliberately relies on source filenames identifying content; generic filenames cannot detect content replaced in place. Older generation folders remain on disk but are not adopted: the previous store did not persist enough page identity metadata to prove a match safely. The library manifest is atomically replaced only after every page is present.
 
 The store and `pagePath` resolver centralize download paths and reader resolution, providing one location for a future SD-card policy. No SD-card setting is introduced now.
 
-The prior reader transition already worked on successful downloads, as its existing end-to-end UI test confirms. The device failure prevented publication and therefore prevented that transition. The other observed issue was error visibility: the old footer was one small ellipsized line. The new persistent, wrapped failure/cancellation banner includes n/m and resume instructions. Successful download reloads the manifest and opens the pending chapter; entering the reader clears stale notices.
+The prior reader transition already worked on successful downloads, as its existing end-to-end UI test confirms. The device failure prevented publication and therefore prevented that transition. The other observed issue was error visibility: the old footer was one small ellipsized line. The persistent failure/cancellation banner includes chapter, n/m and resume instructions in three ellipsized lines. The series title is already on the chapter page and is omitted from that banner. During downloading, its title is measured with the renderer and limited to two lines. Successful download reloads the manifest and opens the pending chapter; entering the reader clears stale notices.
 
 ## Compression and measurements
 
@@ -77,3 +77,84 @@ Isolated libtachi worktree: `host/build.gradle.kts`, `host/gradle/libs.versions.
 ## Device follow-up
 
 Deploy the rebuilt archive yourself, preserving library/progress/extensions/downloads. Use pocketmanga-log. Confirm MangaFox pages log native transfers rather than an unexpected interceptor fallback, with roughly 1-second minimum dispatch spacing. Check planning_ms versus head_ms/body_ms/disk_ms to distinguish metadata, connection/TLS/transfer and storage costs. Cancel during an image, retry, confirm n/m resumes and the reader opens on success. Verify clear persistent messages for a failed chapter and any CloudflareSolver failure. Actual firmware 6.8 networking, Wi-Fi/panel lifecycle, peak RAM and website behavior still need a device run; containers stop before InkViewMain.
+
+
+## Worker startup and power management (October 2026)
+
+Protocol v3 adds a `ready` response for each request after `initRuntime` has
+created the JVM and restored installed extensions. Worker initialization remains
+inside its cancellable request lifecycle. The worker event loop observes an
+atomic `runtime_ready` flag and sends readiness before progress/results.
+`worker_client` sets the UI job's atomic phase to `worker_starting` for a cold
+child and returns it to `operation` only on this response. A warm child skips
+the loading stage. The same busy view handles sources, popular/latest/search,
+source settings, extension operations, chapter refresh and downloads. It shows
+**Loading libtachi worker**, then the actual operation, such as **Fetching page
+list** or **Loading <source>**. Native-to-JVM fallback forwards its nested job's
+phase to the original download job, preserving series/chapter/page progress.
+Fork stays on the UI thread; readiness/socket waits stay in the Io task. Cancel
+interrupts those waits and reaps the child, including cancellation before the
+task has installed its IPC cleanup. UI and worker must be deployed together.
+
+`Session` reports active work from start/poll/cancel/deinit on the UI thread.
+`inkview.zig` binds `power.Guard` to it. A balanced
+`iv_sleep_preventor_start`/`stop` pair inhibits sleep while a job is active;
+firmware 6.8's preventor maintains its own repeating timer. Separately,
+`PostponeTimedPoweroff` runs immediately and every five seconds during work.
+The 6.8 header describes this call as postponing timed poweroff for long-running
+background tasks; the SDK library updates the inactivity clock. Stopping a job
+releases the preventor and stops postponement. Background/exit also releases
+it. No automatic power-off preference is changed with `SetAutoPowerOff`.
+
+All four optional entry points (the preventor pair, postponement and `BanSleep`)
+are resolved through `std.DynLib.lookup`/dlsym. An incomplete/missing preventor
+pair falls back to a ten-second `BanSleep` refreshed every five seconds and
+cleared with `BanSleep(0)` on completion; absent symbols are safe no-ops. Fake hosts use the default null activity callback and
+need no extra InkView exports. Physical suspend/poweroff behavior still needs a
+reader run; firmware tests stop before `InkViewMain`.
+
+MangaDex exposes **Data saver**, off by default, in **Source settings**. The
+installed 1.6.0 extension declares a `SwitchPreferenceCompat` with that title;
+the existing generic settings UI exposes and saves switches. Enable it via
+Browse → MangaDex → Source settings → Data saver for smaller, more compressed
+pages. Device logs showed full-size pages of roughly 0.5–2.6 MB each. Changing
+this setting can select different filenames, correctly starting a new generation
+rather than mixing full-size and data-saver images.
+
+Follow-up previews:
+
+- [Download: loading worker](../preview/downloading-worker-loading.png).
+- [Browse: loading worker](../preview/browse-worker-loading.png).
+- [Long series title: compact failure](../preview/download-failed-long-title.png).
+
+
+Follow-up verification:
+
+- Zig 0.17 `zig build test --summary all`: **29/29 passed**. New coverage
+  includes MangaDex-shaped node/token renewal and changed identity rejection,
+  compact long-title failure geometry, worker-start labels/cancellation, balanced
+  power guards, periodic postponement and missing/unpaired optional APIs.
+- `zig build -Doptimize=small`: ARM UI/worker passed. Final binaries were staged
+  in `dist/applications/pocketmanga/bin/`; packaging scripts were not edited.
+- `python3 tools/test_arm_runtime.py fixture`: passed on retry. The first attempt
+  completed planning/authenticated image checks, then hit `FileNotFound` in the
+  mapping audit while the shared runtime was being regenerated in parallel.
+- Strict firmware 6.9 `--cancel-resume`: passed; stalled-body cancel took 1 ms,
+  retry logged `resumed=1`, and only two remaining pages were fetched.
+- Strict firmware 6.10 `--redirect`: passed; all three pages restarted workers
+  and used JVM fallback. Both fixtures verified cold-start cancellation,
+  readiness after restore, warm startup skipping, crashes/retry, protocol version
+  rejection, EOF, idle shutdown, native/JVM mapping isolation and denied newer
+  ARM syscalls.
+- Final-binary strict firmware 6.9 `--mode sources`: passed, including relocation
+  and the same startup/lifecycle checks. Logs are in `dist/firmware-tests/`.
+- `zig build preview -Doptimize=small` and `python3 tools/preview_png.py`: passed.
+  The three linked 758×1024 PNGs were visually inspected. Zig format and diff
+  whitespace checks passed.
+
+One intermediate macOS unit run failed the existing stalled-body cancellation
+test with `ConnectionResetByPeer` after its server timeout. Two subsequent full
+runs passed, as did ARM stalled-body cancellation. No runtime test script or
+fixture changes were needed for these UI changes; their concurrent libzstd
+updates belong to the other implementation task. No commits, pushes, stashes or
+physical-reader writes were made.

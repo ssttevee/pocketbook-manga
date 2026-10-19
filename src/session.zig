@@ -11,7 +11,9 @@ pub const Session = struct {
     image: ?Image = null,
     load_image: ?*const fn (*Session, []const u8) anyerror!void = null,
     status: []const u8 = "",
+    activity: ?*const fn (bool) void = null,
     download_error: bool = false,
+    download_canceled: bool = false,
     download_identity: ?struct { series: []const u8, chapter: []const u8 } = null,
     browser: Browser = .{},
     library_snapshot: ?std.json.Parsed(lib.Library) = null,
@@ -29,21 +31,35 @@ pub const Session = struct {
         self.clearDownloadIdentity();
         self.download_identity = .{ .series = series, .chapter = chapter };
     }
+    /// The banner's headline already says failed or canceled; this is the detail.
+    fn downloadDetail(self: *Session, job: *online.Job, failure: []const u8) ![]u8 {
+        const done = job.pages_done.load(.acquire);
+        const total = job.pages_total.load(.acquire);
+        if (self.download_canceled) return std.fmt.allocPrint(self.model.gpa, "{d}/{d} pages saved", .{ done, total });
+        return std.fmt.allocPrint(self.model.gpa, "{d}/{d} pages saved. {s}", .{ done, total, failure });
+    }
+    pub fn updateActivity(self: *Session) void {
+        if (self.activity) |activity| activity(if (self.browser.busy) |job| !job.done.load(.acquire) else false);
+    }
     pub fn start(self: *Session, request: online.Request) void {
+        defer self.updateActivity();
         if (request == .download and self.browser.busy == null) self.rememberDownload(request) catch {
             self.status = "Cannot start download: out of memory";
             self.download_error = true;
+            self.download_canceled = false;
             return;
         };
         self.browser.start(request) catch |err| {
             self.download_error = request == .download;
+            self.download_canceled = false;
             self.status = if (self.download_error)
-                std.fmt.allocPrint(self.model.gpa, "Download failed: {s}. Tap chapter to resume.", .{@errorName(err)}) catch "Download failed"
+                std.fmt.allocPrint(self.model.gpa, "{s}", .{@errorName(err)}) catch "OutOfMemory"
             else
                 std.fmt.allocPrint(self.model.gpa, "{s}", .{@errorName(err)}) catch "Operation failed";
         };
     }
     pub fn poll(self: *Session) !void {
+        defer self.updateActivity();
         if (self.browser.engine) |engine| engine.serviceWorker();
         const job = self.browser.busy orelse return;
         if (!job.done.load(.acquire)) return;
@@ -51,9 +67,10 @@ pub const Session = struct {
         self.browser.busy = null;
         if (job.result.library_changed) try self.reloadLibrary();
         self.download_error = job.failure != null and job.request == .download;
+        self.download_canceled = self.download_error and std.mem.eql(u8, job.failure.?, "Canceled");
         if (self.download_error) try self.rememberDownload(job.request);
         self.status = if (job.failure) |failure|
-            if (job.request == .download) try std.fmt.allocPrint(self.model.gpa, "{s} ({d}/{d} pages): {s}. Tap chapter to resume.", .{ if (std.mem.eql(u8, failure, "Canceled")) "Download canceled" else "Download failed", job.pages_done.load(.acquire), job.pages_total.load(.acquire), failure }) else try self.model.gpa.dupe(u8, failure)
+            if (job.request == .download) try self.downloadDetail(job, failure) else try self.model.gpa.dupe(u8, failure)
         else
             try self.model.gpa.dupe(u8, job.result.message);
         if (job.failure != null) {
@@ -104,6 +121,7 @@ pub const Session = struct {
     pub fn deinit(self: *Session) void {
         self.clearDownloadIdentity();
         self.browser.deinit(self.model.gpa);
+        if (self.activity) |activity| activity(false);
         if (self.library_snapshot) |parsed| parsed.deinit();
     }
     pub fn act(self: *Session, action: lib.Action) !void {

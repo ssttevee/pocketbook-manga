@@ -8,6 +8,10 @@ public final class RateLimitInterceptor implements Interceptor {
     private final int permits=3;
     private final long period=200000000L; // 100 ms in Kotlin Duration's nanosecond representation
     private final long interval=40000000L; // 20 ms
+    private final java.util.ArrayDeque<kotlin.time.Duration> queue = new java.util.ArrayDeque<>();
+    private final java.util.concurrent.locks.ReentrantLock lock = new java.util.concurrent.locks.ReentrantLock();
+    private final java.util.concurrent.locks.Condition condition = lock.newCondition();
+    private kotlin.time.Duration last = null;
     private final Function1<HttpUrl,Boolean> shouldLimit = url -> true;
   }
   private final List<RateLimit> rateLimits=List.of(new RateLimit());

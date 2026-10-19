@@ -54,19 +54,20 @@ pub const Store = struct {
     root: []const u8,
     folder: []const u8,
     pub fn init(a: std.mem.Allocator, io: Io, root: []const u8, chapter: []const u8, requests: []const p.ImageRequest) !Store {
-        // A changed page list gets its own generation. Never reuse old chapter
-        // content just because the count happens to match. Request headers and
-        // expiring cookies are deliberately absent from this identity.
+        // Page URLs are stable when supplied. Otherwise use image filenames:
+        // MangaDex rotates both its node and token path on every resolution.
         var identity = std.hash.Wyhash.init(0);
+        identity.update(std.mem.asBytes(&requests.len));
         for (requests) |request| {
             identity.update(std.mem.asBytes(&request.page.index));
             identity.update(request.page.url);
             identity.update(&.{0});
             if (request.page.url.len == 0) {
                 const image_url = request.page.imageUrl orelse request.url;
-                // Signed query tokens can change on every page-list resolution.
-                // The chapter/index and image origin/path identify cached pages.
-                identity.update(image_url[0 .. std.mem.indexOfAny(u8, image_url, "?#") orelse image_url.len]);
+                const path = image_url[0 .. std.mem.indexOfAny(u8, image_url, "?#") orelse image_url.len];
+                const filename = path[(std.mem.lastIndexOfScalar(u8, path, '/') orelse return error.InvalidImageUrl) + 1 ..];
+                if (filename.len == 0) return error.InvalidImageUrl;
+                identity.update(filename);
             }
             identity.update(&.{0});
         }
@@ -278,7 +279,7 @@ pub fn download(engine: *online.Engine, job: *online.Job) !void {
                 for (image_request.rates) |rate| drain = @max(drain, rate.initialWaitMs);
                 if (drain > 0) try io.sleep(.fromMilliseconds(@intCast(drain)), .awake);
                 const network_start = millis(io);
-                var fallback_job: online.Job = .{ .arena = .init(engine.gpa), .engine = engine, .request = .{ .image = .{ .source = source, .page = image_request.page, .url = image_request.url, .cookies = image_request.cookies } } };
+                var fallback_job: online.Job = .{ .arena = .init(engine.gpa), .engine = engine, .request = .{ .image = .{ .source = source, .page = image_request.page, .url = image_request.url, .cookies = image_request.cookies } }, .phase_target = &job.phase };
                 defer fallback_job.arena.deinit();
                 engine.client.call(engine, &fallback_job, fallback_job.request) catch |err| {
                     if (fallback_job.failure) |failure| job.failure = try a.dupe(u8, failure);
@@ -431,4 +432,41 @@ test "IPC cancellation interrupts a partial frame through std.Io" {
     const started = millis(io);
     try std.testing.expectError(error.Canceled, pending.cancel(io));
     try std.testing.expect(millis(io) - started < 500);
+}
+
+test "MangaDex resume ignores node and token but detects changed filenames, order and count" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const old: p.ImageRequest = .{ .page = .{ .index = 0, .imageUrl = "https://old.mangadex.network/old-token/data/hash/001-content.jpg?old#fragment" }, .url = "https://old.mangadex.network/old-token/data/hash/001-content.jpg", .method = "GET", .headers = &.{} };
+    var renewed = old;
+    renewed.page.imageUrl = "https://new.mangadex.network/new-token/data/hash/001-content.jpg?new#other";
+    renewed.url = renewed.page.imageUrl.?;
+    const store = try Store.init(a, io, root, "chapter", &.{old});
+    const path = try store.put(0, "\x89PNG\r\n\x1a\ncompleted-image");
+    const retry = try Store.init(a, io, root, "chapter", &.{renewed});
+    try std.testing.expectEqualStrings(path, (try retry.complete(0)).?);
+    var changed = renewed;
+    changed.page.imageUrl = "https://new.mangadex.network/token/data/hash/replaced-content.jpg";
+    const replaced = try Store.init(a, io, root, "chapter", &.{changed});
+    try std.testing.expect(try replaced.complete(0) == null);
+    changed = renewed;
+    changed.page.index = 1;
+    const reordered = try Store.init(a, io, root, "chapter", &.{changed});
+    try std.testing.expect(try reordered.complete(0) == null);
+    const longer = try Store.init(a, io, root, "chapter", &.{ renewed, changed });
+    try std.testing.expect(try longer.complete(0) == null);
+    var stable = old;
+    stable.page.url = "/stable/page/1";
+    const stable_store = try Store.init(a, io, root, "stable", &.{stable});
+    stable.page.imageUrl = changed.page.imageUrl;
+    const stable_retry = try Store.init(a, io, root, "stable", &.{stable});
+    try std.testing.expectEqualStrings(stable_store.folder, stable_retry.folder);
+    stable.page.url = "/stable/page/2";
+    const stable_changed = try Store.init(a, io, root, "stable", &.{stable});
+    try std.testing.expect(!std.mem.eql(u8, stable_store.folder, stable_changed.folder));
 }

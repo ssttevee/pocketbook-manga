@@ -3,7 +3,7 @@
 const std = @import("std");
 const lib = @import("library.zig");
 const models = @import("source_models.zig");
-pub const version = 2;
+pub const version = 3;
 const protocol_version = version;
 pub const max_frame = 32 << 20;
 pub const RepoEntry = struct {
@@ -62,7 +62,7 @@ pub const Command = struct {
 pub const Response = struct {
     version: u32 = protocol_version,
     id: u64,
-    kind: enum { progress, result, failure },
+    kind: enum { ready, progress, result, failure },
     result: ?Result = null,
     failure: ?[]const u8 = null,
     pages_done: usize = 0,

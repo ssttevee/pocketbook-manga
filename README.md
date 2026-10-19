@@ -23,7 +23,8 @@ After installation, normal use needs only the reader and Wi-Fi. The UI starts th
 - Tap an installed **source** to view popular titles. Use the reader's system keyboard and **Search**, or switch to **Latest**. **Previous / Next** browse results and source pages.
 - Tap a **title** to add it to your library and fetch its chapters. Tap an undownloaded **chapter** to download it and begin reading. Zig downloads plain GET images using the source's resolved requests, headers, cookies and rate limits. Unsupported requests and unknown response-transforming interceptors use the extension's JVM client. Each completed page is saved atomically; retry keeps completed pages, including after cancellation. Failures remain visible with progress and resume instructions.
 - **Refresh chapters** updates a title; **Update library** refreshes online titles. Existing page downloads and reading progress survive metadata updates.
-- **Source settings** supports text, toggle, list and multi-select preferences, plus extension removal. Removing an extension preserves downloaded chapters.
+- **Source settings** supports text, toggle, list and multi-select preferences, plus extension removal. MangaDex’s **Data saver** toggle selects smaller, more compressed pages. Removing an extension preserves downloaded chapters.
+- Cold online requests first show **Loading libtachi worker**, then their actual operation when the JVM and extensions are ready. Active jobs keep the reader awake and postpone timed power-off; finishing, failure or cancellation releases the guard.
 - During background work, **Cancel** interrupts the active `std.Io` operation immediately. An unresponsive JVM worker is terminated after a short cancellation grace period. Tap the chapter again to resume.
 - Hardware **Next / Prev** always move in reading order. In RTL mode, tap the page's left half to advance; in LTR mode, tap the right half. At the last page, **Chapter >** opens or downloads the next chapter.
 - **Back** returns to chapters, the library, then exits. **Aa** changes direction and full/partial refresh. Progress is saved on each page change.
@@ -58,9 +59,9 @@ The archive URL and SHA256 are in `tools/runtime-packages.json`. Then:
 
 ```
 ZIG=/Users/steve/Programs/Zig/v0.17.0/zig
-"$ZIG" build -Doptimize=ReleaseSmall         # native UI and isolated ARM JVM worker
+"$ZIG" build -Doptimize=small                # native UI and isolated ARM JVM worker
 "$ZIG" build test                           # model, persistence, UI and background flows
-"$ZIG" build preview -Doptimize=ReleaseSmall # fake-InkView screenshots in preview/*.pgm
+"$ZIG" build preview -Doptimize=small        # fake-InkView screenshots in preview/*.pgm
 python3 tools/preview_png.py                # lossless preview/*.png for review
 python3 tools/package_device.py --firmware-root /tmp/pocketmanga-prepared610
 ```
@@ -72,7 +73,7 @@ The former desktop companion has been removed from the source and build. All shi
 ## Verification
 
 ```
-"$ZIG" build runtime-probe -Doptimize=ReleaseSmall
+"$ZIG" build runtime-probe -Doptimize=small
 python3 tools/package_device.py --firmware-root /tmp/pocketmanga-prepared610 --test-sysroot
 docker build -f tools/Dockerfile.arm-test -t pocketmanga-arm-test:local .
 python3 tools/test_arm_runtime.py sources
@@ -115,7 +116,7 @@ UI tests drive the actual fabrum InkView host through its fake framebuffer: sour
 
 This is an initial implementation, not feature parity with Mihon. There are no trackers, categories, cover grids, CBZ import, zoom, webtoon scrolling or custom repository UI yet. libtachi supports extensions-lib **1.6**; WebView/Cloudflare challenges, Android bitmap descrambling and some source-specific native compression remain libtachi limitations. JPEG and PNG images are supported; WebP/AVIF chapters fail explicitly.
 
-Zero interprets Java bytecode. Startup and extension loading can be slow on the Verse, especially with large multi-source extensions. The worker starts with a 16 MiB heap, capped at 128 MiB, with 96 MiB for class metadata and 512 KiB Java thread stacks (Serial GC, two active processors); installing many large extensions can exhaust that budget. Network responses have the source client's normal timeouts. Downloads publish their manifest only after every page succeeds; cancelled or failed chapter folders are removed.
+Zero interprets Java bytecode. Startup and extension loading can be slow on the Verse, especially with large multi-source extensions. The worker starts with a 16 MiB heap, capped at 128 MiB, with 96 MiB for class metadata and 512 KiB Java thread stacks (Serial GC, two active processors); installing many large extensions can exhaust that budget. Network responses have the source client's normal timeouts. Downloads publish their manifest only after every page succeeds; completed pages survive failure or cancellation for retry.
 
 The ARM runtime, JNI bridge, repository connection and UI flows are tested in emulation. **Physical Verse verification is still needed** for real panel refresh, Wi-Fi dialogs, suspend behavior, startup time and peak RAM. Failed startup or corrupt JSON is reported in the log rather than silently resetting user data. Keep the runtime directory and launch through the provided `.app` script.
 
