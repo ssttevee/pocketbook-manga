@@ -1,0 +1,105 @@
+const std = @import("std");
+const f = @import("fabrum");
+const lib = @import("library.zig");
+const Root = @import("ui.zig");
+const Session = @import("session.zig").Session;
+const fixture: lib.Library = .{ .manga = &.{.{ .id = "story", .title = "Test Story", .chapters = &.{
+    .{ .id = "c1", .title = "Chapter 1", .pages = &.{ "story/1/001.png", "story/1/002.png" } },
+    .{ .id = "c2", .title = "Chapter 2", .pages = &.{"story/2/001.png"} },
+} }} };
+test "paths and schema reject unsafe or ambiguous content" {
+    try lib.validate(fixture);
+    for ([_][]const u8{ "../a", "/a", "a/../b", "a\\b", "a//b", "" }) |path| try std.testing.expect(!lib.safePath(path));
+    try std.testing.expectError(error.UnsupportedLibraryVersion, lib.validate(.{ .version = 2 }));
+}
+test "drawn UI opens chapters, turns pages, resumes and saves completion" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var model: lib.Model = .{ .gpa = arena.allocator(), .library = fixture };
+    var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io };
+    var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try h.click("Test Story");
+    try h.click("Chapter 1");
+    try std.testing.expectEqual(lib.Screen.reader, model.screen);
+    try h.click("Next");
+    try std.testing.expectEqual(1, model.page);
+    try std.testing.expect(model.progress("c1").?.completed);
+    try h.click("Back");
+    try h.click("Chapter 1");
+    try std.testing.expectEqual(1, model.page);
+    try h.click("Chapter >");
+    try std.testing.expectEqual(1, model.chapter);
+    try std.testing.expectEqual(0, model.page);
+    try h.click("Aa");
+    try h.click("Right to left (manga)");
+    try std.testing.expect(!model.prefs.rtl);
+}
+test "page bounds and stale progress are clamped" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var model: lib.Model = .{ .gpa = arena.allocator(), .library = fixture, .prefs = .{ .progress = &.{.{ .id = "c1", .page = 900 }} } };
+    try model.dispatch(.{ .open = 0 });
+    try model.dispatch(.{ .read = 0 });
+    try std.testing.expectEqual(1, model.page);
+    try model.dispatch(.{ .turn = 99 });
+    try std.testing.expectEqual(1, model.page);
+    try model.dispatch(.{ .turn = -99 });
+    try std.testing.expectEqual(0, model.page);
+    try std.testing.expect(model.progress("c1").?.completed);
+}
+test {
+    _ = @import("smoke.zig");
+}
+test "local import uses natural order and storage survives an atomic rewrite" {
+    const local = @import("local.zig");
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const io = std.testing.io;
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    try temp.dir.createDirPath(io, "Story/Chapter 10");
+    try temp.dir.createDirPath(io, "Story/Chapter 2");
+    for ([_][]const u8{ "Story/Chapter 2/10.png", "Story/Chapter 2/2.png", "Story/Chapter 10/1.jpg" }) |path|
+        try temp.dir.writeFile(io, .{ .sub_path = path, .data = "fixture" });
+    const root = try temp.dir.realPathFileAlloc(io, ".", gpa);
+    const indexed = try local.scan(gpa, io, root);
+    try std.testing.expectEqualStrings("Chapter 2", indexed.manga[0].chapters[0].title);
+    try std.testing.expectEqualStrings("Story/Chapter 2/2.png", indexed.manga[0].chapters[0].pages[0]);
+    const path = try std.fs.path.join(gpa, &.{ root, "progress.json" });
+    try lib.writeJson(gpa, io, path, lib.Preferences{});
+    const expected: lib.Preferences = .{ .rtl = false, .progress = &.{.{ .id = "c1", .page = 7, .completed = true }} };
+    try lib.writeJson(gpa, io, path, expected);
+    const restored = try lib.readJson(lib.Preferences, gpa, io, path);
+    defer restored.deinit();
+    try std.testing.expect(!restored.value.rtl);
+    try std.testing.expectEqual(7, restored.value.progress[0].page);
+    try std.testing.expect(restored.value.progress[0].completed);
+}
+
+test "download merge replaces a chapter without losing other titles or chapter order" {
+    const companion = @import("sync.zig");
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const old: lib.Library = .{ .manga = &.{
+        .{ .id = "a", .title = "Title A", .chapters = &.{
+            .{ .id = "c10", .title = "Chapter 10", .pages = &.{"old.png"} },
+            .{ .id = "c2", .title = "Chapter 2", .pages = &.{"two.png"} },
+        } },
+        .{ .id = "b", .title = "Title B" },
+    } };
+    const merged = try companion.merge(gpa, old, .{ .id = "a", .title = "Title A updated", .chapters = &.{
+        .{ .id = "c10", .title = "Chapter 10", .pages = &.{"new.png"} },
+        .{ .id = "c3", .title = "Chapter 3", .pages = &.{"three.png"} },
+    } });
+    try lib.validate(merged);
+    try std.testing.expectEqual(2, merged.manga.len);
+    try std.testing.expectEqual(3, merged.manga[0].chapters.len);
+    try std.testing.expectEqualStrings("Chapter 2", merged.manga[0].chapters[0].title);
+    try std.testing.expectEqualStrings("Chapter 3", merged.manga[0].chapters[1].title);
+    try std.testing.expectEqualStrings("new.png", merged.manga[0].chapters[2].pages[0]);
+    try std.testing.expectEqualStrings("Title B", merged.manga[1].title);
+}
