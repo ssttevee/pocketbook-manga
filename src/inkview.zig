@@ -54,7 +54,8 @@ fn loadPage(session: *Session, relative: []const u8) !void {
 }
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
-    const io = init.io;
+    var device_io = @import("device_io.zig").DeviceIo.init(init.io);
+    const io = device_io.io();
     var args = init.minimal.args.iterate();
     _ = args.next();
     const root = args.next() orelse "/mnt/ext1/applications/pocketmanga";
@@ -81,7 +82,28 @@ pub fn main(init: std.process.Init) !void {
     network_connect = image_library.lookup(@TypeOf(network_connect), "NetConnect") orelse return error.MissingNetworkApi;
     jpeg = image_library.lookup(Jpeg, "LoadJPEG") orelse return error.MissingJpegDecoder;
     png = image_library.lookup(Png, "LoadPNGStretch") orelse return error.MissingPngDecoder;
-    try ink.run(Root, gpa, io, .{}, .{
+    // The packaged binary itself can verify JNI and every required InkView
+    // symbol without entering the hardware event loop. Nothing enables this
+    // during normal launch; the firmware integration tests set the variable.
+    if (init.minimal.environ.getPosix("POCKETMANGA_RUNTIME_CHECK")) |mode| {
+        const handle = std.c.dlopen(library_name, .{ .NOW = true }) orelse {
+            if (std.c.dlerror()) |message| std.debug.print("{s}\n", .{message});
+            return error.InkViewRelocationFailed;
+        };
+        defer _ = std.c.dlclose(handle);
+        _ = try ink.inkview.Api.load(library_name);
+        std.debug.print("InkView loaded with RTLD_NOW; required symbols resolved (stopping before InkViewMain).\n", .{});
+        try @import("runtime_probe.zig").run(gpa, io, init.minimal.environ, root, mode, init.minimal.environ.getPosix("POCKETMANGA_FIXTURE"));
+        return;
+    }
+    lifecycle_engine = &engine;
+    lifecycle_session = &session;
+    var api = try ink.inkview.Api.load(library_name);
+    actual_main = api.InkViewMain;
+    actual_close = api.CloseApp;
+    api.InkViewMain = mainWithLifecycle;
+    api.CloseApp = closeWithLifecycle;
+    try ink.App(Root).run(gpa, io, api, .{}, .{
         .library = library_name,
         .fonts = &.{.{ .name = "Go", .data = @embedFile("fonts/Go-Regular.ttf") }},
         .provide = &.{f.app.RootValue.of(&session)},
@@ -89,4 +111,32 @@ pub fn main(init: std.process.Init) !void {
         .close_key = null,
         .context = .{ .units = 512, .breadth = 64 },
     });
+}
+
+var lifecycle_engine: ?*@import("online.zig").Engine = null;
+var lifecycle_session: ?*Session = null;
+var actual_main: *const fn (ink.inkview.Handler) callconv(.c) void = undefined;
+var actual_close: *const fn () callconv(.c) void = undefined;
+var app_handler: ink.inkview.Handler = undefined;
+fn stopWorker() void {
+    if (lifecycle_engine) |engine| {
+        engine.interrupt();
+        if (lifecycle_session) |session| if (session.browser.busy) |job| job.join();
+        engine.deinit();
+    }
+}
+fn mainWithLifecycle(handler: ink.inkview.Handler) callconv(.c) void {
+    app_handler = handler;
+    actual_main(eventWithLifecycle);
+}
+fn closeWithLifecycle() callconv(.c) void {
+    stopWorker();
+    actual_close();
+}
+fn eventWithLifecycle(kind: c_int, p1: c_int, p2: c_int) callconv(.c) c_int {
+    if (kind == @backingInt(ink.inkview.Event.foreground)) if (lifecycle_engine) |engine| {
+        engine.paused.store(false, .release);
+    };
+    if (kind == @backingInt(ink.inkview.Event.exit) or kind == @backingInt(ink.inkview.Event.background)) stopWorker();
+    return app_handler(kind, p1, p2);
 }

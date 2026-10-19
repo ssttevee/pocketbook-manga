@@ -49,7 +49,7 @@ pub const Session = struct {
             self.browser.pending_chapter = null;
         };
         const slot: ?*?*online.Job = switch (job.request) {
-            .sources, .install, .uninstall => &self.browser.sources,
+            .sources, .install, .install_file, .uninstall => &self.browser.sources,
             .extensions => &self.browser.extensions,
             .titles => &self.browser.titles,
             .preferences, .set_preference => &self.browser.preferences,
@@ -81,6 +81,7 @@ pub const Session = struct {
         try self.model.dispatch(action);
         if (self.model.screen == .reader and (old_screen != .reader or old_page != self.model.page or before == null or !std.mem.eql(u8, before.?.id, self.model.current().?.id))) {
             self.status = "";
+            if (self.browser.busy == null) if (self.browser.engine) |engine| engine.client.shutdown(engine.gpa);
             if (self.load_image) |load| {
                 const path = self.model.current().?.pages[self.model.page];
                 load(self, path) catch |err| {

@@ -1,33 +1,10 @@
-//! Serialized background libtachi operations. No UI/model pointers cross threads.
+//! Background UI requests. Java and libtachi live only in the child worker.
 const std = @import("std");
 const Io = std.Io;
-const tachi = @import("tachi");
+const protocol = @import("protocol.zig");
 const lib = @import("library.zig");
-const catalog = @import("catalog.zig");
-const local = @import("local.zig");
-pub const Request = union(enum) {
-    sources,
-    extensions,
-    scan,
-    update_all,
-    install: []const u8,
-    uninstall: []const u8,
-    titles: struct { source: i64, query: []const u8 = "", page: i32 = 1, latest: bool = false },
-    add: struct { source: i64, manga: tachi.models.Manga },
-    refresh: lib.Manga,
-    download: struct { book: lib.Manga, chapter: lib.Chapter },
-    preferences: i64,
-    set_preference: struct { source: i64, key: []const u8, value: std.json.Value },
-};
-pub const Result = struct {
-    sources: []const tachi.models.SourceInfo = &.{},
-    extensions: []const tachi.Runtime.RepoEntry = &.{},
-    titles: ?tachi.models.MangasPage = null,
-    preferences: []const tachi.models.Preference = &.{},
-    library_changed: bool = false,
-    open_id: ?[]const u8 = null,
-    message: []const u8 = "Ready",
-};
+pub const Request = protocol.Request;
+pub const Result = protocol.Result;
 pub const Job = struct {
     arena: std.heap.ArenaAllocator,
     engine: *Engine,
@@ -40,6 +17,9 @@ pub const Job = struct {
     pages_done: std.atomic.Value(usize) = .init(0),
     pages_total: std.atomic.Value(usize) = .init(0),
     pub fn start(engine: *Engine, request: Request) !*Job {
+        if (engine.paused.load(.acquire)) return error.WorkerStopped;
+        engine.client.interrupted.store(false, .release);
+        if (request != .scan and engine.execute_fn == null) try engine.client.prepare(engine);
         const job = try engine.gpa.create(Job);
         errdefer engine.gpa.destroy(job);
         job.* = .{ .arena = .init(engine.gpa), .engine = engine, .request = undefined };
@@ -52,11 +32,9 @@ pub const Job = struct {
     }
     fn run(self: *Job) void {
         defer self.done.store(true, .release);
-        tachi.setLastError("");
-        defer if (self.engine.runtime) |rt| rt.detachThread();
         const execute = self.engine.execute_fn orelse Engine.execute;
         execute(self.engine, self) catch |err| {
-            self.failure = std.fmt.allocPrint(self.arena.allocator(), "{s}: {s}", .{ @errorName(err), tachi.lastError() }) catch "Operation failed (out of memory)";
+            self.failure = std.fmt.allocPrint(self.arena.allocator(), "{s}", .{@errorName(err)}) catch "Operation failed (out of memory)";
             if (!@import("builtin").is_test) std.log.warn("{s}", .{self.failure.?});
         };
     }
@@ -76,209 +54,42 @@ pub const Job = struct {
         gpa.destroy(self);
     }
 };
+
 pub const Engine = struct {
     gpa: std.mem.Allocator,
     io: Io,
     root: []const u8,
     environ: std.process.Environ = .empty,
-    runtime: ?*tachi.Runtime = null,
-    attempted_runtime: bool = false,
-    // Injectable executor for deterministic UI/thread tests without network or Java.
     execute_fn: ?*const fn (*Engine, *Job) anyerror!void = null,
-    // Optional overrides are for local runtime diagnostics; the device uses its bundle.
-    java_home: ?[]const u8 = null,
-    host_jar: ?[]const u8 = null,
+    paused: std.atomic.Value(bool) = .init(false),
+    client: @import("worker_client.zig").Client = .{},
 
-    fn initRuntime(self: *Engine) !*tachi.Runtime {
-        if (self.runtime) |rt| return rt;
-        if (self.attempted_runtime) return error.RuntimeStartupFailedRestartApp;
-        self.attempted_runtime = true;
-        const a = self.gpa;
-        const data = try std.fs.path.join(a, &.{ self.root, "extensions" });
-        defer a.free(data);
-        const jar = try std.fs.path.join(a, &.{ self.root, "runtime/tachi-host.jar" });
-        defer a.free(jar);
-        const home = try std.fs.path.join(a, &.{ self.root, "runtime/jre" });
-        defer a.free(home);
-        const ca = try std.fs.path.join(a, &.{ self.root, "runtime/ca.pem" });
-        defer a.free(ca);
-        const trust = try std.fmt.allocPrint(a, "-Djavax.net.ssl.trustStore={s}/runtime/jre/lib/security/cacerts", .{self.root});
-        defer a.free(trust);
-        const rt = try tachi.Runtime.init(a, self.io, .{
-            .data_dir = data,
-            .host_jar = self.host_jar orelse jar,
-            .java_home = self.java_home orelse home,
-            .ca_file = if (self.java_home != null) null else ca,
-            .class_data_sharing = false,
-            .environ = self.environ,
-            .jvm_options = &.{ "-Xms16m", "-Xmx128m", "-Xss512k", "-XX:MaxMetaspaceSize=96m", "-XX:+UseSerialGC", "-XX:ActiveProcessorCount=2", trust },
-        });
-        // Never attempt to recreate HotSpot in this process, even if restore fails.
-        self.runtime = rt;
-        const restored = try rt.restore();
-        defer a.free(restored);
-        const report = try std.json.parseFromSlice(tachi.manage.RestoreResult, a, restored, tachi.models.parse_options);
-        defer report.deinit();
-        for (report.value.failed) |failure| std.log.warn("Extension restore {s}: {s}", .{ failure.pkg, failure.@"error" });
-        return rt;
-    }
     pub fn execute(self: *Engine, job: *Job) !void {
         const a = job.arena.allocator();
         try job.checkCancelled();
         if (job.request == .scan) {
-            const indexed = try local.scan(a, self.io, self.root);
-            var library = try self.readLibrary(a);
-            for (indexed.manga) |m| library = try catalog.merge(a, library, m);
-            try self.saveLibrary(a, library);
+            const indexed = try @import("local.zig").scan(a, self.io, self.root);
+            const path = try std.fs.path.join(a, &.{ self.root, "library.json" });
+            const parsed = lib.readJson(lib.Library, a, self.io, path) catch |err| switch (err) {
+                error.FileNotFound => null,
+                else => return err,
+            };
+            var library: lib.Library = if (parsed) |p| p.value else .{};
+            for (indexed.manga) |m| library = try @import("catalog.zig").merge(a, library, m);
+            try lib.validate(library);
+            try lib.writeJson(a, self.io, path, library);
             job.result = .{ .library_changed = true, .message = "Local manga indexed" };
             return;
         }
-        const rt = try self.initRuntime();
-        switch (job.request) {
-            .sources => try self.sources(job),
-            .extensions => job.result.extensions = try rt.repoList(a, .{}),
-            .install => |pkg| {
-                const json = try rt.repoInstall(pkg, .{});
-                defer self.gpa.free(json);
-                try self.sources(job);
-                job.result.message = "Extension installed";
-            },
-            .uninstall => |pkg| {
-                _ = try rt.uninstallExtension(pkg);
-                try self.sources(job);
-                job.result.message = "Extension removed";
-            },
-            .titles => |request| {
-                const args = try std.json.Stringify.valueAlloc(a, .{ .page = request.page, .query = request.query }, .{});
-                const method: []const u8 = if (request.query.len > 0) "search" else if (request.latest) "latest" else "popular";
-                const json = try rt.call(request.source, method, args);
-                defer self.gpa.free(json);
-                job.result.titles = try parse(tachi.models.MangasPage, a, json);
-            },
-            .add => |request| {
-                const manga = try self.refreshBook(job, request.source, request.manga);
-                job.result.open_id = manga.id;
-                job.result.library_changed = true;
-                job.result.message = "Added to library";
-            },
-            .refresh => |book| {
-                _ = try self.refreshBook(job, book.source_id orelse return error.LocalTitle, book.remote orelse return error.LocalTitle);
-                job.result.library_changed = true;
-                job.result.message = "Chapter list updated";
-            },
-            .update_all => {
-                const library = try self.readLibrary(a);
-                for (library.manga) |book| {
-                    try job.checkCancelled();
-                    if (book.source_id) |id| if (book.remote) |manga| {
-                        _ = try self.refreshBook(job, id, manga);
-                        job.result.library_changed = true;
-                    };
-                }
-                job.result.message = "Library updated";
-            },
-            .download => |request| try self.download(job, request.book, request.chapter),
-            .preferences => |id| try self.preferences(job, id),
-            .set_preference => |request| {
-                const args = try std.json.Stringify.valueAlloc(a, .{ .key = request.key, .value = request.value }, .{});
-                const json = try rt.call(request.source, "setPreference", args);
-                self.gpa.free(json);
-                try self.preferences(job, request.source);
-                job.result.message = "Source setting saved";
-            },
-            .scan => unreachable,
-        }
+        try self.client.execute(self, job);
     }
-    fn sources(self: *Engine, job: *Job) !void {
-        const a = job.arena.allocator();
-        const json = try self.runtime.?.listExtensions();
-        defer self.gpa.free(json);
-        const extensions = try parse([]const tachi.models.ExtensionInfo, a, json);
-        var sources_list: std.ArrayList(tachi.models.SourceInfo) = .empty;
-        for (extensions) |ext| try sources_list.appendSlice(a, ext.sources);
-        job.result.sources = sources_list.items;
+    // Interrupt first, join the UI's request thread, then close/reap. The
+    // worker socket cannot be recycled while a request still reads it.
+    pub fn interrupt(self: *Engine) void {
+        self.paused.store(true, .release);
+        self.client.interrupt();
     }
-    fn preferences(self: *Engine, job: *Job, id: i64) !void {
-        const json = try self.runtime.?.call(id, "preferences", "{}");
-        defer self.gpa.free(json);
-        job.result.preferences = try parse([]const tachi.models.Preference, job.arena.allocator(), json);
-    }
-    fn readLibrary(self: *Engine, a: std.mem.Allocator) !lib.Library {
-        const path = try std.fs.path.join(a, &.{ self.root, "library.json" });
-        const parsed = lib.readJson(lib.Library, a, self.io, path) catch |err| switch (err) {
-            error.FileNotFound => return .{},
-            else => return err,
-        };
-        try lib.validate(parsed.value);
-        return parsed.value;
-    }
-    fn saveLibrary(self: *Engine, a: std.mem.Allocator, library: lib.Library) !void {
-        try lib.validate(library);
-        const path = try std.fs.path.join(a, &.{ self.root, "library.json" });
-        try lib.writeJson(a, self.io, path, library);
-    }
-    fn refreshBook(self: *Engine, job: *Job, id: i64, manga: tachi.models.Manga) !lib.Manga {
-        const a = job.arena.allocator();
-        const args = try std.json.Stringify.valueAlloc(a, .{ .manga = manga }, .{});
-        const detail_json = try self.runtime.?.call(id, "details", args);
-        defer self.gpa.free(detail_json);
-        const details = try parse(tachi.models.Manga, a, detail_json);
-        const chapter_args = try std.json.Stringify.valueAlloc(a, .{ .manga = details }, .{});
-        const chapter_json = try self.runtime.?.call(id, "chapters", chapter_args);
-        defer self.gpa.free(chapter_json);
-        const chapters = try parse([]const tachi.models.Chapter, a, chapter_json);
-        const list = try a.alloc(lib.Chapter, chapters.len);
-        for (chapters, list) |ch, *dst| dst.* = .{ .id = try std.fmt.allocPrint(a, "{d}:{s}", .{ id, ch.url }), .title = ch.name, .remote = ch };
-        const book: lib.Manga = .{
-            .id = try std.fmt.allocPrint(a, "{d}:{s}", .{ id, manga.url }),
-            .title = details.title,
-            .author = details.author orelse "",
-            .description = details.description orelse "",
-            .chapters = list,
-            .source_id = id,
-            .remote = details,
-        };
-        try job.checkCancelled();
-        try self.saveLibrary(a, try catalog.merge(a, try self.readLibrary(a), book));
-        return book;
-    }
-    fn download(self: *Engine, job: *Job, book: lib.Manga, chapter: lib.Chapter) !void {
-        const a = job.arena.allocator();
-        const id = book.source_id orelse return error.LocalTitle;
-        const remote = chapter.remote orelse return error.MissingChapterMetadata;
-        const args = try std.json.Stringify.valueAlloc(a, .{ .chapter = remote }, .{});
-        const json = try self.runtime.?.call(id, "pages", args);
-        defer self.gpa.free(json);
-        const pages = try parse([]const tachi.models.Page, a, json);
-        if (pages.len == 0) return error.EmptyChapter;
-        job.pages_total.store(pages.len, .release);
-        const folder = try std.fmt.allocPrint(a, "downloads/{x}/{d}", .{ std.hash.Wyhash.hash(0, chapter.id), Io.Clock.real.now(self.io).nanoseconds });
-        const absolute = try std.fs.path.join(a, &.{ self.root, folder });
-        try Io.Dir.cwd().createDirPath(self.io, absolute);
-        var published = false;
-        defer if (!published) Io.Dir.cwd().deleteTree(self.io, absolute) catch {};
-        const files = try a.alloc([]const u8, pages.len);
-        for (pages, 0..) |page, i| {
-            try job.checkCancelled();
-            const page_json = try std.json.Stringify.valueAlloc(a, page, .{});
-            const image = try self.runtime.?.fetchImage(id, page_json);
-            defer image.deinit(self.gpa);
-            const ext = if (std.mem.startsWith(u8, image.bytes, "\x89PNG\r\n\x1a\n")) "png" else if (std.mem.startsWith(u8, image.bytes, "\xff\xd8\xff")) "jpg" else return error.UnsupportedImageFormat;
-            files[i] = try std.fmt.allocPrint(a, "{s}/{d:0>4}.{s}", .{ folder, i + 1, ext });
-            const path = try std.fs.path.join(a, &.{ self.root, files[i] });
-            try Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = image.bytes });
-            job.pages_done.store(i + 1, .release);
-        }
-        try job.checkCancelled();
-        var downloaded = chapter;
-        downloaded.pages = files;
-        var update = book;
-        update.chapters = &.{downloaded};
-        try self.saveLibrary(a, try catalog.merge(a, try self.readLibrary(a), update));
-        published = true;
-        job.result = .{ .library_changed = true, .open_id = book.id, .message = "Chapter downloaded" };
+    pub fn deinit(self: *Engine) void {
+        self.client.close();
     }
 };
-fn parse(comptime T: type, a: std.mem.Allocator, json: []const u8) !T {
-    return std.json.parseFromSliceLeaky(T, a, json, tachi.models.parse_options);
-}

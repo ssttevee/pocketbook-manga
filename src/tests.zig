@@ -125,3 +125,27 @@ test "metadata refresh preserves downloaded pages" {
     try std.testing.expectEqual(2, refreshed.manga[0].chapters[1].pages.len);
     try std.testing.expectEqualStrings("New chapter name", refreshed.manga[0].chapters[1].title);
 }
+
+test "local scanning works without a JVM bundle or a worker" {
+    const online = @import("online.zig");
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    try temp.dir.createDirPath(std.testing.io, "Offline/Chapter 1");
+    try temp.dir.writeFile(std.testing.io, .{ .sub_path = "Offline/Chapter 1/001.png", .data = "fixture" });
+    const root = try temp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: online.Engine = .{ .gpa = a, .io = std.testing.io, .root = root };
+    defer engine.deinit();
+    const job = try online.Job.start(&engine, .scan);
+    defer job.deinit();
+    job.join();
+    try std.testing.expect(job.failure == null);
+    try std.testing.expect(job.result.library_changed);
+    try std.testing.expectEqual(-1, engine.client.pid);
+    const path = try std.fs.path.join(a, &.{ root, "library.json" });
+    const saved = try lib.readJson(lib.Library, a, std.testing.io, path);
+    defer saved.deinit();
+    try std.testing.expectEqualStrings("Offline", saved.value.manga[0].title);
+}

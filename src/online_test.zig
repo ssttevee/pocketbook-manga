@@ -3,13 +3,13 @@ const lib = @import("library.zig");
 const Session = @import("session.zig").Session;
 const online = @import("online.zig");
 const smoke = @import("smoke.zig");
-const Source = @import("tachi").models.SourceInfo;
+const Source = @import("source_models.zig").SourceInfo;
 const fixture_source: Source = .{ .id = "42", .name = "Fixture Source", .lang = "en", .supportsLatest = true, .isConfigurable = true, .className = "Fixture", .extensionPkg = "fixture.extension" };
 pub fn fixtureExecutor(engine: *online.Engine, job: *online.Job) !void {
     const a = job.arena.allocator();
     try job.checkCancelled();
     switch (job.request) {
-        .sources, .install, .uninstall => job.result.sources = &.{fixture_source},
+        .sources, .install, .install_file, .uninstall => job.result.sources = &.{fixture_source},
         .extensions => job.result.extensions = &.{.{ .pkg = "fixture.extension", .name = "Fixture Extension", .versionName = "1.6.1", .versionCode = 1, .libVersion = "1.6", .nsfw = false, .lang = "en", .jarUrl = "https://fixture/extension.jar", .apkUrl = "", .iconUrl = "", .supported = true, .installed = false, .installedVersionCode = null, .hasUpdate = false, .sources = &.{} }},
         .titles => |request| {
             // Query text must be copied into the worker request, not borrowed.
@@ -33,7 +33,7 @@ pub fn fixtureExecutor(engine: *online.Engine, job: *online.Job) !void {
         },
         .preferences => job.result.preferences = &.{.{ .type = "switch", .key = "mirror", .title = "Use mirror", .value = .{ .bool = false } }},
         .set_preference => |request| {
-            const prefs = try a.alloc(@import("tachi").models.Preference, 1);
+            const prefs = try a.alloc(@import("source_models.zig").Preference, 1);
             prefs[0] = .{ .type = "switch", .key = "mirror", .title = "Use mirror", .value = request.value };
             job.result.preferences = prefs;
         },

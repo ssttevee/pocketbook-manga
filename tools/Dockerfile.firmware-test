@@ -1,0 +1,11 @@
+# Test context is generated outside the repo by test_firmware_runtime.py.
+# These proprietary rootfs files are local developer artifacts, never shipped.
+FROM scratch
+ADD rootfs.tar /
+COPY --chown=1000:1000 applications/ /mnt/ext1/applications/
+COPY source.jar /var/tmp/source.jar
+COPY qemu-arm /qemu-arm
+COPY kernel310-launch.sh /kernel310-launch.sh
+WORKDIR /
+USER 1000:1000
+ENTRYPOINT ["/bin/sh", "/mnt/ext1/applications/pocketmanga.app"]

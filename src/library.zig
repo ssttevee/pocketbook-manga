@@ -1,6 +1,6 @@
 const std = @import("std");
 const Io = std.Io;
-const models = @import("tachi").models;
+const models = @import("source_models.zig");
 pub const Chapter = struct { id: []const u8, title: []const u8, pages: []const []const u8 = &.{}, remote: ?models.Chapter = null };
 pub const Manga = struct { id: []const u8, title: []const u8, author: []const u8 = "", description: []const u8 = "", chapters: []const Chapter = &.{}, source_id: ?i64 = null, remote: ?models.Manga = null };
 pub const Library = struct { version: u32 = 1, manga: []const Manga = &.{} };

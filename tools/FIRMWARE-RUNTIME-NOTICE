@@ -1,0 +1,21 @@
+PocketManga firmware runtime
+
+The runtime/lib files listed in runtime/packages.json are copied unchanged
+from official PocketBook Verse U629.6.10.1461 firmware (B288, ARM soft-float).
+Only GNU C Library and GCC runtime files are included. No PocketBook InkView
+or other proprietary libraries are redistributed in this bundle.
+
+GNU C Library 2.39: LGPL-2.1-or-later (some files also have other notices).
+GCC 13.3.0 libstdc++, libgcc_s and libatomic: GPL-3.0-or-later with the GCC
+Runtime Library Exception 3.1. Upstream license texts and sources:
+https://www.gnu.org/software/libc/
+https://gcc.gnu.org/onlinedocs/libstdc++/manual/license.html
+https://gcc.gnu.org/onlinedocs/libstdc++/manual/appendix_gpl.html
+https://gcc.gnu.org/onlinedocs/libstdc++/manual/appendix_gpl.html#appendix.gpl.runtime
+
+PocketBook's modified corresponding sources (rather than upstream alone)
+are required when redistributing these binaries. PocketBook's source-offer notice in ebrmain/license/about_firmware.txt directs
+source requests to help@pocketbook-int.com. No source request is made by this
+bundler.
+The source firmware URL and binary checksums are in runtime/packages.json.
+Keep the JRE's legal/ and runtime/licenses/ notices with the application.

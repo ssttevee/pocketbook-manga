@@ -1,0 +1,12 @@
+# Developer-only QEMU with guest syscall injection; no files from this image ship.
+FROM debian:bookworm-slim AS builder
+RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources && apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc g++ make ninja-build meson python3 pkg-config libglib2.0-dev zlib1g-dev libpixman-1-dev dpkg-dev ca-certificates
+WORKDIR /src
+RUN apt-get source qemu && mv qemu-*/ qemu/
+COPY tools/patch_qemu_kernel310.py /src/patch.py
+RUN python3 /src/patch.py /src/qemu/linux-user/syscall.c
+WORKDIR /src/qemu
+RUN ./configure --target-list=arm-linux-user --static --disable-system --disable-tools --disable-docs --disable-guest-agent --disable-werror --disable-pie && make -j4
+FROM scratch
+COPY --from=builder /src/qemu/build/qemu-arm /qemu-arm
+ENTRYPOINT ["/qemu-arm"]

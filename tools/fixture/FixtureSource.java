@@ -8,7 +8,7 @@ public final class FixtureSource extends HttpSource {
   public String getName() { return "PocketManga Test Source"; }
   public long getId() { return 424242; }
   public String getLang() { return "en"; }
-  public String getBaseUrl() { return "http://127.0.0.1:8765"; }
+  public String getBaseUrl() { return "http://" + System.getenv().getOrDefault("POCKETMANGA_FIXTURE_HOST", "127.0.0.1") + ":8765"; }
   public boolean getSupportsLatest() { return true; }
   public String getMangaUrl(SManga m) { return getBaseUrl()+m.getUrl(); }
   public String getChapterUrl(SChapter c) { return getBaseUrl()+c.getUrl(); }

@@ -1,0 +1,132 @@
+//! One on-demand child, serialized by online.Job. The UI thread may interrupt
+//! it at any time; descriptors close only after the request thread joins.
+const std = @import("std");
+const online = @import("online.zig");
+const p = @import("protocol.zig");
+const wire = @import("worker_wire.zig");
+extern "c" fn pm_spawn([*:0]const u8, [*:null]const ?[*:0]const u8, *c_int) c_int;
+extern "c" fn pm_interrupt(c_int, c_int) void;
+extern "c" fn pm_eof(c_int) void;
+extern "c" fn pm_reap(c_int, c_int) c_int;
+pub const Client = struct {
+    mutex: std.atomic.Mutex = .unlocked,
+    interrupted: std.atomic.Value(bool) = .init(false),
+    pid: c_int = -1,
+    fd: c_int = -1,
+    next_id: u64 = 1,
+    test_crash_next: bool = false,
+    last_rss_kib: usize = 0,
+    fn lock(self: *Client) void {
+        while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
+    }
+    pub fn interrupt(self: *Client) void {
+        self.interrupted.store(true, .release);
+        self.lock();
+        defer self.mutex.unlock();
+        pm_interrupt(self.pid, self.fd);
+    }
+    pub fn close(self: *Client) void {
+        self.lock();
+        defer self.mutex.unlock();
+        pm_interrupt(self.pid, self.fd);
+        if (self.pid > 0) _ = pm_reap(self.pid, 1);
+        if (self.fd >= 0) _ = std.c.close(self.fd);
+        self.pid = -1;
+        self.fd = -1;
+    }
+    fn waitExit(self: *Client) bool {
+        const until = wire.pm_now_ms() + 1500;
+        while (self.pid > 0 and wire.pm_now_ms() < until) {
+            if (pm_reap(self.pid, 0) != 0) {
+                self.pid = -1;
+                return true;
+            }
+            _ = wire.ready(self.fd, 20) catch false;
+        }
+        return self.pid <= 0;
+    }
+    pub fn shutdown(self: *Client, gpa: std.mem.Allocator) void {
+        if (self.fd >= 0) wire.send(self.fd, gpa, p.Command{ .id = 0, .kind = .shutdown }) catch {};
+        _ = self.waitExit();
+        self.close();
+    }
+    pub fn testEof(self: *Client) !void {
+        if (self.fd < 0) return error.NoWorker;
+        pm_eof(self.fd);
+        if (!self.waitExit()) return error.WorkerIgnoredEof;
+        self.close();
+    }
+    pub fn testIdle(self: *Client) !void {
+        if (!self.waitExit()) return error.WorkerIgnoredIdleTimeout;
+        self.close();
+    }
+    fn ensure(self: *Client, engine: *online.Engine, a: std.mem.Allocator) !void {
+        self.lock();
+        defer self.mutex.unlock();
+        if (self.interrupted.load(.acquire)) return error.WorkerStopped;
+        if (self.pid > 0 and pm_reap(self.pid, 0) != 0) {
+            _ = std.c.close(self.fd);
+            self.fd = -1;
+            self.pid = -1;
+        }
+        if (self.pid > 0) return;
+        const loader = try std.fmt.allocPrintSentinel(a, "{s}/runtime/lib/ld-linux.so.3", .{engine.root}, 0);
+        const binary = try std.fmt.allocPrintSentinel(a, "{s}/bin/pocketmanga-worker", .{engine.root}, 0);
+        const root = try a.dupeSentinel(u8, engine.root, 0);
+        const libraries = try std.fmt.allocPrintSentinel(a, "{s}/runtime/lib:{s}/runtime/jre/lib:{s}/runtime/jre/lib/server:/ebrmain/lib:/usr/lib:/ebrmain/cramfs/lib", .{ engine.root, engine.root, engine.root }, 0);
+        const emulator = engine.environ.getPosix("POCKETMANGA_WORKER_EMULATOR");
+        var argv: std.ArrayList(?[*:0]const u8) = .empty;
+        if (emulator) |exe| try argv.append(a, (try a.dupeSentinel(u8, exe, 0)).ptr);
+        try argv.appendSlice(a, &.{ loader.ptr, "--inhibit-cache", "--library-path", libraries.ptr, "--argv0", binary.ptr, binary.ptr, "--serve", root.ptr });
+        try argv.append(a, null);
+        self.pid = pm_spawn(argv.items[0].?, @ptrCast(argv.items.ptr), &self.fd);
+        if (self.pid < 0) return error.WorkerStartFailed;
+    }
+    // Linux PDEATHSIG follows the thread that forks, so prepare is called
+    // by Job.start on the long-lived UI thread, never its request thread.
+    pub fn prepare(self: *Client, engine: *online.Engine) !void {
+        var arena: std.heap.ArenaAllocator = .init(engine.gpa);
+        defer arena.deinit();
+        try self.ensure(engine, arena.allocator());
+    }
+    pub fn execute(self: *Client, engine: *online.Engine, job: *online.Job) !void {
+        _ = engine;
+        const a = job.arena.allocator();
+        if (self.pid <= 0 or self.interrupted.load(.acquire)) return error.WorkerStopped;
+        errdefer self.close();
+        const id = self.next_id;
+        self.next_id += 1;
+        const crash = self.test_crash_next;
+        self.test_crash_next = false;
+        try wire.send(self.fd, a, p.Command{ .id = id, .kind = if (crash) .crash else .request, .request = if (crash) null else job.request });
+        var sent_cancel = false;
+        var last_message = wire.pm_now_ms();
+        while (true) {
+            if (job.cancelled.load(.acquire) and !sent_cancel) {
+                try wire.send(self.fd, a, p.Command{ .id = id, .kind = .cancel });
+                sent_cancel = true;
+            }
+            if (!try wire.ready(self.fd, 100)) {
+                if (wire.pm_now_ms() - last_message > 300_000) return error.WorkerTimedOut;
+                continue;
+            }
+            const response = try wire.receive(p.Response, self.fd, a);
+            last_message = wire.pm_now_ms();
+            if (response.version != p.version or response.id != id) return error.WorkerProtocolMismatch;
+            job.pages_done.store(response.pages_done, .release);
+            job.pages_total.store(response.pages_total, .release);
+            self.last_rss_kib = response.rss_kib;
+            switch (response.kind) {
+                .progress => {},
+                .failure => {
+                    job.failure = response.failure orelse "Worker failed";
+                    return;
+                },
+                .result => {
+                    job.result = response.result orelse return error.InvalidWorkerResult;
+                    return;
+                },
+            }
+        }
+    }
+};

@@ -49,10 +49,15 @@ def main():
     parser.add_argument('--cache', type=pathlib.Path, default=ROOT / '.runtime-cache')
     parser.add_argument('--output', type=pathlib.Path, default=ROOT / 'dist')
     parser.add_argument('--host-jar', type=pathlib.Path, default=ROOT.parent / 'zig-tachi/host/build/libs/tachi-host.jar')
+    parser.add_argument('--firmware-root', type=pathlib.Path, required=True, help='Extracted official Verse 6.10.1461 root, including ebrmain/cramfs/lib (outside this repo)')
     parser.add_argument('--test-sysroot', action='store_true', help='Also unpack ARM libc for emulation; never shipped to the reader')
     args=parser.parse_args()
     args.cache.mkdir(parents=True, exist_ok=True)
     if not args.host_jar.is_file(): raise SystemExit('Build zig-tachi/host first: zig build host in that repository')
+    for entry in LOCK['firmware']['libraries'].values():
+        source = args.firmware_root / entry['path'].lstrip('/')
+        if hashlib.sha256(source.read_bytes()).hexdigest() != entry['SHA256']:
+            raise RuntimeError(f'Firmware runtime SHA256 mismatch: {source}')
     app=args.output / 'applications' / 'pocketmanga'
     runtime=app / 'runtime'
     # Preserve any existing user library when rebuilding a staging directory.
@@ -60,19 +65,26 @@ def main():
     runtime.mkdir(parents=True)
     with tempfile.TemporaryDirectory(prefix='pocketmanga-runtime-') as tmp:
         extracted=pathlib.Path(tmp)
-        for name in ('openjdk-17-jre-headless','libatomic1','gcc-12-base','ca-certificates'):
+        for name in ('openjdk-17-jre-headless','ca-certificates'):
             extract(fetch(name,args.cache),extracted)
         materialize(extracted / 'usr/lib/jvm/java-17-openjdk-armel', runtime / 'jre', extracted)
-        # Keep the firmware's newer C++ runtime: overriding it with GCC 12's
-        # copy breaks libinkview, which needs GLIBCXX_3.4.31 on firmware 6.10.
+        # Copy only this allowlist of glibc/GCC runtime files, never InkView
+        # or other proprietary firmware libraries. Pin each exact file as well
+        # as the source firmware archive; reject partial/mixed extractions.
         (runtime / 'lib').mkdir()
-        for source in (extracted / 'usr/lib/arm-linux-gnueabi').glob('libatomic.so*'):
-            materialize(source,runtime / 'lib' / source.name,extracted)
+        for name, entry in LOCK['firmware']['libraries'].items():
+            source = args.firmware_root / entry['path'].lstrip('/')
+            if hashlib.sha256(source.read_bytes()).hexdigest() != entry['SHA256']:
+                raise RuntimeError(f'Firmware runtime SHA256 mismatch: {source}')
+            shutil.copy2(source, runtime / 'lib' / name)
+            (runtime / 'lib' / name).chmod(0o755)
         certs=extracted / 'usr/share/ca-certificates'
         (runtime / 'ca.pem').write_bytes(b'\n'.join(p.read_bytes() for p in sorted(certs.rglob('*.crt'))))
         cacerts=runtime / 'jre/lib/security/cacerts'
         subprocess.run(['java', str(ROOT/'tools/BuildTrustStore.java'),str(certs),str(cacerts)],check=True)
         shutil.copytree(extracted / 'usr/share/doc', runtime / 'licenses', dirs_exist_ok=True, symlinks=True)
+        shutil.copy2(ROOT / 'tools/FIRMWARE-RUNTIME-NOTICE', runtime / 'licenses/FIRMWARE-RUNTIME-NOTICE')
+        shutil.copytree(ROOT / 'tools/runtime-licenses', runtime / 'licenses/firmware-runtime')
         if args.test_sysroot:
             sysroot=args.output / 'test-sysroot'
             for name in ('libc6','libstdc++6','libgcc-s1','zlib1g'):
@@ -82,11 +94,16 @@ def main():
     if not binary.is_file(): raise SystemExit('Run zig build device -Doptimize=ReleaseSmall first')
     (app/'bin').mkdir(exist_ok=True)
     shutil.copy2(binary, app/'bin/pocketmanga')
+    shutil.copy2(ROOT/'zig-out/bin/pocketmanga-worker', app/'bin/pocketmanga-worker')
     shutil.copy2(ROOT/'tools/pocketmanga.app',args.output/'applications/pocketmanga.app')
     shutil.copy2(ROOT/'tools/pocketmanga-log.app',args.output/'applications/pocketmanga-log.app')
     (runtime/'packages.json').write_text(json.dumps(LOCK,indent=2)+'\n')
     archive=args.output/'pocketmanga-verse.tar.gz'
     with tarfile.open(archive,'w:gz') as tar: tar.add(args.output/'applications',arcname='applications')
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    (args.output/(archive.name+'.sha256')).write_text(f'{digest}  {archive.name}\n')
+    print('Bundle bytes:', sum(p.stat().st_size for p in (args.output/'applications').rglob('*') if p.is_file()), flush=True)
+    print('Archive bytes:', archive.stat().st_size, flush=True)
     print('Archive:',archive,flush=True)
     print('Ready:',args.output/'applications',flush=True)
     print('Copy this applications/ folder to the Verse once; all browsing and downloads then run on the reader.')

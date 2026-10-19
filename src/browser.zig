@@ -24,7 +24,7 @@ pub const Browser = struct {
         if (self.busy != null) return error.Busy;
         const engine = self.engine orelse return error.RuntimeNotConfigured;
         switch (request) {
-            .sources, .scan, .preferences, .set_preference, .uninstall => {},
+            .sources, .install_file, .scan, .preferences, .set_preference, .uninstall => {},
             else => if (self.ensure_network) |connect| try connect(),
         }
         self.busy = try online.Job.start(engine, request);
@@ -63,6 +63,8 @@ pub const Browser = struct {
         unreachable;
     }
     pub fn deinit(self: *Browser, gpa: std.mem.Allocator) void {
+        if (self.engine) |engine| engine.interrupt();
+        defer if (self.engine) |engine| engine.deinit();
         if (self.busy) |job| {
             job.cancelled.store(true, .release);
             job.deinit();

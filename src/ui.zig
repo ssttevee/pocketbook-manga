@@ -5,7 +5,7 @@ const lib = @import("library.zig");
 const Session = @import("session.zig").Session;
 const Root = @This();
 const online = @import("online.zig");
-const tachi = @import("tachi");
+const models = @import("source_models.zig");
 pub const OnlineCommand = union(enum) { extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel };
 pub const State = struct { focused: bool = false, tapping: bool = false };
 pub const Props = struct {};
@@ -283,7 +283,7 @@ fn onlineButton(ui: *app.Ui, key: anytype, label: []const u8, command: OnlineCom
 fn startTitles(session: *Session) void {
     session.start(.{ .titles = .{ .source = session.browser.source_id, .query = session.browser.query, .page = session.browser.page, .latest = session.browser.latest } });
 }
-fn selectedPreference(session: *Session) ?tachi.models.Preference {
+fn selectedPreference(session: *Session) ?models.Preference {
     const job = session.browser.preferences orelse return null;
     const i = session.browser.edited_preference orelse return null;
     if (i >= job.result.preferences.len) return null;
