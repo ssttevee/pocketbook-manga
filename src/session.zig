@@ -206,6 +206,11 @@ pub const Session = struct {
             },
             .search => |id| {
                 self.tracker_id = id;
+                // Server trackers find the title by its source, not its name.
+                if ((tachi.tracking.get(id) orelse return).enhanced) {
+                    self.start(.{ .track_match = .{ .manga_id = (manga orelse return).id } });
+                    return;
+                }
                 model.screen = .track_search;
                 self.start(.{ .tracker = .{ .id = id, .operation = .{ .search = (manga orelse return).title } } });
             },
