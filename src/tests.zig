@@ -341,3 +341,27 @@ test "session snapshots retain ownership across every allocation failure" {
     try std.testing.checkAllAllocationFailures(a, pollSourcesWithAllocationFailures, .{root});
     try std.testing.checkAllAllocationFailures(a, pollOnlineWithAllocationFailures, .{root});
 }
+
+fn scanlatorsWithAllocationFailures(a: std.mem.Allocator) !void {
+    const library: lib.Library = .{ .manga = &.{.{ .id = "story", .title = "Story", .chapters = &.{
+        .{ .id = "1", .title = "One", .scanlator = "First" },
+        .{ .id = "2", .title = "Two", .scanlator = "Second" },
+        .{ .id = "3", .title = "Three", .scanlator = "First" },
+        .{ .id = "4", .title = "Four" },
+    } }} };
+    var model: lib.Model = .{ .gpa = a, .library = library };
+    var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io };
+    const groups = try session.scanlators(a);
+    defer a.free(groups);
+    try std.testing.expectEqual(2, groups.len);
+    try std.testing.expectEqualStrings("First", groups[0]);
+    try std.testing.expectEqualStrings("Second", groups[1]);
+    model.manga = 1;
+    const empty = try session.scanlators(a);
+    defer a.free(empty);
+    try std.testing.expectEqual(0, empty.len);
+}
+
+test "scanlator slices work with a general allocator and clean up on failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, scanlatorsWithAllocationFailures, .{});
+}

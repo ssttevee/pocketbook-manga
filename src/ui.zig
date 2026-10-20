@@ -547,9 +547,7 @@ fn titleOptionsView(ui: *app.Ui, session: *const Session) !void {
         .{ .label = try ui.fmt("Bookmarks: {s}", .{tri(flags.bookmarked, "bookmarked only", "not bookmarked")}), .edit = .filter_bookmarked },
         .{ .label = if (manga.fetch_interval < 0) try ui.fmt("Update every {d} days", .{-manga.fetch_interval}) else if (manga.fetch_interval > 0) try ui.fmt("Update every {d} days (estimated)", .{manga.fetch_interval}) else "Update interval: estimated", .edit = .interval },
     }, 0..) |choice, n| try app.widgets.button(ui, .{ .option = n }, .{ .label = choice.label, .on_click = on.bind(.{ .edit = choice.edit }) });
-    var arena: std.heap.ArenaAllocator = .init(model.gpa);
-    defer arena.deinit();
-    const groups = try session.scanlators(arena.allocator());
+    const groups = try session.scanlators(ui.arena());
     if (groups.len > 0) try text(ui, "Scanlation groups", 14, 0);
     for (groups, 0..) |group, i| {
         const excluded = manga.excludes(group);

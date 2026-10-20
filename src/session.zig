@@ -390,18 +390,20 @@ pub const Session = struct {
 
     pub const Edit = union(enum) { mark_read, mark_unread, mark_previous, bookmark, unbookmark, download, delete_download, title_read, title_unread, remove_title, toggle_category: u32, migrate, read_online, options, chapter_sort, chapter_direction, filter_unread, filter_downloaded, filter_bookmarked, toggle_scanlator: u32, interval };
 
-    /// A title's scanlation groups, for the title options screen.
+    /// A title's scanlation groups. The caller owns the slice; strings borrow
+    /// from the library.
     pub fn scanlators(self: *const Session, a: std.mem.Allocator) ![]const []const u8 {
         const model = self.model;
         if (model.manga >= model.library.manga.len) return &.{};
         var groups: std.ArrayList([]const u8) = .empty;
+        errdefer groups.deinit(a);
         for (model.library.manga[model.manga].chapters) |ch| if (ch.scanlator) |group| {
             const seen = for (groups.items) |g| {
                 if (std.mem.eql(u8, g, group)) break true;
             } else false;
             if (!seen) try groups.append(a, group);
         };
-        return groups.items;
+        return groups.toOwnedSlice(a);
     }
 
     /// Searches every enabled source, or only pinned ones if the settings
