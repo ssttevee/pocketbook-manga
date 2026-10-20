@@ -365,3 +365,29 @@ fn scanlatorsWithAllocationFailures(a: std.mem.Allocator) !void {
 test "scanlator slices work with a general allocator and clean up on failure" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, scanlatorsWithAllocationFailures, .{});
 }
+
+test "category pagination sorts and displays entries beyond sixty four" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var categories: [70]tachi.library.Category = undefined;
+    for (&categories, 0..) |*category, i| {
+        const n = categories.len - i;
+        category.* = .{ .id = @intCast(n), .order = @intCast(n), .name = try std.fmt.allocPrint(a, "Category {d}", .{n}) };
+    }
+    var model: lib.Model = .{ .gpa = a, .library = .{ .categories = &categories }, .screen = .categories, .offset = 63 };
+    var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io };
+    var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try h.expectText("Category 64");
+    try h.expectText("Category 65");
+    try h.expectText("Category 70");
+    try std.testing.expect(h.findText("Category 63") == null);
+    // Sorting the frame copy must not reorder the library itself.
+    try std.testing.expectEqual(70, categories[0].id);
+    try model.dispatch(.{ .list_page = -1 });
+    try h.frame();
+    try h.expectText("Category 57");
+    try h.expectText("Category 63");
+}

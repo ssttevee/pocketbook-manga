@@ -706,10 +706,9 @@ fn categoriesView(ui: *app.Ui, model: *const lib.Model) !void {
     try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(10), .child_gap = 6 } });
     defer ui.close();
     try app.widgets.searchField(ui, "new-category", .{ .text = "", .placeholder = "Add a category", .on_change = on.handler(.new_category) });
-    var sorted: [64]tachi.library.Category = undefined;
-    const count = @min(model.library.categories.len, sorted.len);
-    @memcpy(sorted[0..count], model.library.categories[0..count]);
-    std.mem.sort(tachi.library.Category, sorted[0..count], {}, struct {
+    const sorted = try ui.arena().dupe(tachi.library.Category, model.library.categories);
+    const count = sorted.len;
+    std.mem.sort(tachi.library.Category, sorted, {}, struct {
         fn less(_: void, x: tachi.library.Category, y: tachi.library.Category) bool {
             return x.order < y.order;
         }
