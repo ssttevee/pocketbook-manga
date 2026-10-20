@@ -160,6 +160,7 @@ test {
     _ = @import("smoke.zig");
     _ = @import("online_test.zig");
     _ = @import("power.zig");
+    _ = @import("device_io.zig");
 }
 
 fn rememberWithAllocationFailures(a: std.mem.Allocator) !void {

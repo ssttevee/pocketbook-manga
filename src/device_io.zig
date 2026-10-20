@@ -106,10 +106,12 @@ fn convert(st: Stat) Io.File.Stat {
 fn fileStat(_: ?*anyopaque, file: Io.File) Io.File.StatError!Io.File.Stat {
     var st: Stat = undefined;
     const result = pm_stat(file.handle, null, 0, &st);
-    if (result == 0) return convert(st);
-    if (result == @backingInt(std.c.E.NOMEM)) return error.SystemResources;
-    if (result == @backingInt(std.c.E.ACCES)) return error.AccessDenied;
-    return error.Unexpected;
+    return switch (result) {
+        0 => convert(st),
+        @backingInt(std.c.E.NOMEM) => error.SystemResources,
+        @backingInt(std.c.E.ACCES) => error.AccessDenied,
+        else => error.Unexpected,
+    };
 }
 fn dirStat(userdata: ?*anyopaque, dir: Dir) Dir.StatError!Dir.Stat {
     if (dir.handle == std.posix.AT.FDCWD) return dirStatFile(userdata, dir, ".", .{}) catch return error.Unexpected;
@@ -122,7 +124,7 @@ fn dirStatFile(_: ?*anyopaque, dir: Dir, path: []const u8, options: Dir.StatFile
     @memcpy(buffer[0..path.len], path);
     buffer[path.len] = 0;
     var st: Stat = undefined;
-    const result = pm_stat(dir.handle, @ptrCast(&buffer), @intFromBool(!options.follow_symlinks), &st);
+    const result = pm_stat(dir.handle, buffer[0..path.len :0].ptr, @intFromBool(!options.follow_symlinks), &st);
     if (result == 0) return convert(st);
     const errno: std.c.E = @fromBackingInt(@as(u16, @intCast(result)));
     return switch (errno) {
@@ -143,4 +145,16 @@ fn random(userdata: ?*anyopaque, buffer: []u8) void {
     // TLS uses Io.random (a void API). Never seed it with the generic
     // backend's weak fallback if the device entropy source fails.
     randomSecure(userdata, buffer) catch @panic("Device entropy unavailable: /dev/urandom");
+}
+
+test "C stat paths validate length and embedded nulls before sentinel conversion" {
+    const cwd = Dir.cwd();
+    try std.testing.expectError(error.BadPathName, dirStatFile(null, cwd, ".\x00ignored", .{}));
+    var too_long: [std.posix.PATH_MAX]u8 = undefined;
+    @memset(&too_long, 'x');
+    try std.testing.expectError(error.NameTooLong, dirStatFile(null, cwd, &too_long, .{}));
+    const boundary = too_long[0 .. too_long.len - 1];
+    // The longest accepted buffer still leaves room for the terminating null.
+    try std.testing.expectError(error.NameTooLong, dirStatFile(null, cwd, boundary, .{}));
+    try std.testing.expectEqual(Io.File.Kind.directory, (try dirStatFile(null, cwd, ".", .{})).kind);
 }
