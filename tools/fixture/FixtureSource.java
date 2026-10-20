@@ -44,7 +44,7 @@ public final class FixtureSource extends HttpSource {
   public Object getPopularManga(int page, Continuation<? super MangasPage> c) { checkZstd("browse"); return new MangasPage(List.of(manga()), false); }
   public Object getLatestUpdates(int page, Continuation<? super MangasPage> c) { return getPopularManga(page,c); }
   public Object getSearchManga(int page, String query, FilterList f, Continuation<? super MangasPage> c) { return getPopularManga(page,c); }
-  public Object getMangaUpdate(SManga m, List<? extends SChapter> chapters, boolean details, boolean fetchChapters, Continuation<? super SMangaUpdate> c) { checkZstd(fetchChapters ? "chapters" : "details"); return new SMangaUpdate(manga(),List.of(chapter())); }
+  public Object getMangaUpdate(SManga m, List<? extends SChapter> chapters, boolean details, boolean fetchChapters, Continuation<? super SMangaUpdate> c) { if(details) checkZstd("details"); if(fetchChapters) checkZstd("chapters"); return new SMangaUpdate(manga(),List.of(chapter())); }
   protected Request imageRequest(Page page) { return new Request.Builder().url(page.getImageUrl()).headers(getHeaders()).header("Referer", getBaseUrl()+"/chapter/1").build(); }
   private String pageUrl(int index) {
     String route=System.getenv().containsKey("POCKETMANGA_FIXTURE_REDIRECT") ? "/redirect" : "/page.png";

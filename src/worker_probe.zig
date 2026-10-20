@@ -8,7 +8,31 @@ pub fn main(init: std.process.Init) !void {
     const cmd = it.next() orelse "sources";
     var device_io = @import("device_io.zig").DeviceIo.init(init.io);
     if (std.mem.eql(u8, cmd, "plan")) return plan(init.gpa, device_io.io(), init.minimal.environ, root, &it);
+    if (std.mem.eql(u8, cmd, "add")) return add(init.gpa, device_io.io(), init.minimal.environ, root, &it);
     try run(init.gpa, device_io.io(), init.minimal.environ, root, cmd, it.next());
+}
+
+/// `add <extension.jar|-> <source id> <manga url>`: times adding a title, as Browse does.
+fn add(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ, root: []const u8, it: *std.process.Args.Iterator) !void {
+    const jar = it.next() orelse return error.MissingPackage;
+    const source = try std.fmt.parseInt(i64, it.next() orelse return error.MissingSource, 10);
+    const url = it.next() orelse return error.MissingManga;
+    var engine: online.Engine = .{ .gpa = gpa, .io = io, .root = root, .environ = environ };
+    const ready = try runJob(&engine, .sources);
+    ready.deinit();
+    defer engine.runtime.?.deinit();
+    if (!std.mem.eql(u8, jar, "-")) gpa.free(try engine.runtime.?.installExtension(jar));
+    const before = @import("worker_wire.zig").pm_now_ms();
+    const job = try runJob(&engine, .{ .add = .{ .source = source, .manga = .{ .url = url, .title = "probe" } } });
+    defer job.deinit();
+    if (job.failure) |failure| {
+        std.debug.print("add failed: {s}\n", .{failure});
+        return error.AddFailed;
+    }
+    const library = try @import("library.zig").readJson(@import("library.zig").Library, gpa, io, try std.fs.path.join(gpa, &.{ root, "library.json" }));
+    defer library.deinit();
+    for (library.value.manga) |m| if (std.mem.eql(u8, m.id, job.result.open_id.?))
+        std.log.info("add probe chapters={d} title={s} ms={d} rss_kib={d}", .{ m.chapters.len, m.title, @import("worker_wire.zig").pm_now_ms() - before, @import("worker_wire.zig").pm_rss_kib() });
 }
 
 /// `plan <extension.jar> <source id> <chapter url>`: times a live image plan twice.

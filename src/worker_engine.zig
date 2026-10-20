@@ -273,14 +273,15 @@ pub const Engine = struct {
         const a = job.arena.allocator();
         // Updating the whole library reaches extensions one at a time.
         if (job.request == .update_all) try self.loadSource(job, id);
-        const args = try std.json.Stringify.valueAlloc(a, .{ .manga = manga }, .{});
-        const detail_json = try self.runtime.?.call(id, "details", args);
-        defer self.gpa.free(detail_json);
-        const details = try parse(models.Manga, a, detail_json);
-        const chapter_args = try std.json.Stringify.valueAlloc(a, .{ .manga = details }, .{});
-        const chapter_json = try self.runtime.?.call(id, "chapters", chapter_args);
-        defer self.gpa.free(chapter_json);
-        const chapters = try parse([]const models.Chapter, a, chapter_json);
+        const started = wire.pm_now_ms();
+        // One call lets a source serve details and chapters from a single page.
+        const args = try std.json.Stringify.valueAlloc(a, .{ .manga = manga, .chapters = &[_]models.Chapter{}, .fetchDetails = true, .fetchChapters = true }, .{});
+        const update_json = try self.runtime.?.call(id, "update", args);
+        defer self.gpa.free(update_json);
+        const fetched = wire.pm_now_ms();
+        const update = try parse(struct { manga: models.Manga, chapters: []const models.Chapter }, a, update_json);
+        const details = update.manga;
+        const chapters = update.chapters;
         const list = try a.alloc(lib.Chapter, chapters.len);
         for (chapters, list) |ch, *dst| dst.* = .{ .id = try std.fmt.allocPrint(a, "{d}:{s}", .{ id, ch.url }), .title = ch.name, .remote = ch };
         const book: lib.Manga = .{
@@ -293,7 +294,9 @@ pub const Engine = struct {
             .remote = details,
         };
         try job.checkCancelled();
+        const parsed = wire.pm_now_ms();
         try self.saveLibrary(a, try catalog.refresh(a, try self.readLibrary(a), book));
+        std.log.info("refresh chapters={d} source_ms={d} parse_ms={d} save_ms={d}", .{ list.len, fetched - started, parsed - fetched, wire.pm_now_ms() - parsed });
         return book;
     }
     fn planDownload(self: *Engine, job: *Job, book: lib.Manga, chapter: lib.Chapter) !void {
