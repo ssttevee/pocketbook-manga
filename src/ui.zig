@@ -6,7 +6,7 @@ const Session = @import("session.zig").Session;
 const Root = @This();
 const tachi = @import("tachi");
 const models = tachi.models;
-pub const OnlineCommand = union(enum) { toggle_pin, toggle_hidden, show_hidden, extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear, pick_global: usize };
+pub const OnlineCommand = union(enum) { toggle_pin, toggle_hidden, show_hidden, languages, toggle_language: usize, extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear, pick_global: usize };
 pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const State = struct { focused: bool = false, tapping: bool = false, reader_updates: u8 = 0 };
 pub const Props = struct {};
@@ -261,6 +261,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             .backup => "Backup",
             .categories => "Categories",
             .global_search => if (session.browser.migrate_from != null) "Migrate to" else "Search all",
+            .languages => "Languages",
         }, 19, 0);
         ui.spacer();
         if (model.screen == .library and session.browser.busy == null) try button(ui, "browse", "Browse", .help);
@@ -325,7 +326,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             ui.spacer();
             try app.widgets.button(ui, "quit", .{ .label = "Close PocketManga", .on_click = on.bind(.quit) });
         },
-        .sources, .extensions, .catalog, .source_settings, .global_search => try browserView(ui, session),
+        .sources, .extensions, .catalog, .source_settings, .global_search, .languages => try browserView(ui, session),
         .updates, .history, .queue => try feedView(ui, session),
         .chapter_menu, .title_menu => try menuView(ui, model),
         .engine_settings => try settingsView(ui, session),
@@ -748,6 +749,14 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
             }
             try b.refreshSourceRows(a);
         },
+        .languages => {
+            model.screen = .languages;
+            b.offset = 0;
+        },
+        .toggle_language => |i| if (b.engine) |engine| if (i < b.languages.len) {
+            try engine.setLanguage(b.languages[i].code, !b.languages[i].enabled);
+            try b.refreshSourceRows(a);
+        },
         .show_hidden => {
             b.show_hidden = !b.show_hidden;
             b.offset = 0;
@@ -784,9 +793,11 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
                 try ui.open(null, .{ .layout = .{ .child_gap = 6 } });
                 try onlineButton(ui, "reload-sources", "Reload sources", .reload_sources);
                 try onlineButton(ui, "show-hidden", if (b.show_hidden) "Enabled sources" else "All sources", .show_hidden);
+                try onlineButton(ui, "languages", "Languages", .languages);
                 ui.close();
             },
             .global_search => try text(ui, if (b.migrate_from != null) "Tap the title to move to; its read chapters, categories and notes come along." else "Tap a title to add it and view chapters.", 12, 40),
+            .languages => try text(ui, "Sources in checked languages are listed and searched.", 12, 40),
             .extensions => {
                 try app.widgets.searchField(ui, "extension-query", .{ .text = b.query, .placeholder = "Filter extensions or language", .on_change = ui.messages(Root).handler(.online_query) });
                 try text(ui, "Tap an extension to install or update it.", 12, 40);
@@ -829,6 +840,7 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
                 .catalog => b.titles.?.result.page.?.mangas[i].title,
                 .source_settings => b.preferences.?.result.preferences[i].title orelse "Source preference",
                 .global_search => b.globalHit(i).?.manga.title,
+                .languages => try ui.fmt("{s} {s}", .{ if (b.languages[i].enabled) "[x]" else "[ ]", b.languages[i].code }),
                 else => unreachable,
             };
             const command: OnlineCommand = switch (screen) {
@@ -837,6 +849,7 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
                 .catalog => .{ .pick_title = i },
                 .source_settings => .{ .preference = i },
                 .global_search => .{ .pick_global = i },
+                .languages => .{ .toggle_language = i },
                 else => unreachable,
             };
             const key = .{ .online_row = i };

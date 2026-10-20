@@ -1,6 +1,7 @@
 const std = @import("std");
 const tachi = @import("tachi");
 const lib = @import("library.zig");
+pub const Language = struct { code: []const u8, enabled: bool };
 pub const Browser = struct {
     engine: ?*tachi.Engine = null,
     busy: ?*tachi.Job = null,
@@ -20,6 +21,8 @@ pub const Browser = struct {
     /// The open source's place in libtachi's settings.
     source_pinned: bool = false,
     source_hidden: bool = false,
+    /// Languages of the installed sources, and whether each is enabled.
+    languages: []const Language = &.{},
     offset: usize = 0,
     source_id: i64 = 0,
     source_name: []const u8 = "",
@@ -98,6 +101,24 @@ pub const Browser = struct {
         var shown: std.ArrayList(tachi.models.SourceInfo) = .empty;
         for (rows.items) |source| if (!std.mem.eql(u8, source.id, "0")) try shown.append(a, source);
         self.source_rows = shown.items;
+        const browse = (try engine.loadSettings(a)).browse;
+        var languages: std.ArrayList(Language) = .empty;
+        for (job.result.sources) |source| {
+            const known = for (languages.items) |l| {
+                if (std.mem.eql(u8, l.code, source.lang)) break true;
+            } else false;
+            if (known) continue;
+            const enabled = for (browse.languages) |l| {
+                if (std.mem.eql(u8, l, source.lang)) break true;
+            } else false;
+            try languages.append(a, .{ .code = source.lang, .enabled = enabled });
+        }
+        std.mem.sort(Language, languages.items, {}, struct {
+            fn less(_: void, x: Language, y: Language) bool {
+                return std.mem.lessThan(u8, x.code, y.code);
+            }
+        }.less);
+        self.languages = languages.items;
         if (self.source_rows_arena) |*old| old.deinit();
         self.source_rows_arena = arena;
     }
@@ -113,6 +134,7 @@ pub const Browser = struct {
             .sources => self.source_rows.len,
             .catalog => if (self.titles) |j| if (j.result.page) |page| page.mangas.len else 0 else 0,
             .source_settings => if (self.preferences) |j| j.result.preferences.len else 0,
+            .languages => self.languages.len,
             .global_search => blk: {
                 const job = self.global orelse break :blk 0;
                 var hits: usize = 0;

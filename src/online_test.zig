@@ -116,6 +116,14 @@ test "device UI installs a source, searches, adds and downloads a chapter, reads
     try std.testing.expectEqualSlices(i64, &.{42}, (try engine.loadSettings(a)).browse.pinned_sources);
     try smoke.tapText("Hide");
     try std.testing.expectEqual(0, session.browser.source_rows.len);
+    try smoke.tapText("Show");
+    // Last used, and again among the pinned, as Mihon lists it.
+    try std.testing.expectEqual(2, session.browser.source_rows.len);
+    try smoke.tapText("Back");
+    try smoke.tapText("Languages");
+    try smoke.tapText("[x] en");
+    try std.testing.expectEqual(0, session.browser.source_rows.len);
+    try std.testing.expect(!session.browser.languages[0].enabled);
     try std.testing.expectEqual(42, (try engine.loadSettings(a)).browse.last_source);
 }
 test "background failures are reported and leave library and progress intact" {
