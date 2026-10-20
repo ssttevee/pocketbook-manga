@@ -245,6 +245,16 @@ pub const Session = struct {
                 }
                 if (model.screen == .updates) if (self.browser.engine) |engine| engine.markUpdatesSeen() catch {};
             },
+            .upcoming => {
+                const library = if (self.browser.engine) |engine| try engine.loadLibrary(a) else model.library;
+                const now = std.Io.Clock.real.now(self.io).toMilliseconds();
+                for (try tachi.views.upcoming(a, library, settings.updates.upcoming_categories, settings.updates.upcoming_exclude_categories, @intCast(now), 0)) |m| {
+                    const first = if (m.chapters.len > 0) m.chapters[0].id else continue;
+                    const pick = picks.get(first) orelse continue;
+                    const days = @divFloor(m.next_update - @as(i64, @intCast(now)), std.time.ms_per_day);
+                    try rows.append(a, .{ .pick = .{ .manga = pick.manga, .chapter = 0 }, .title = m.title, .detail = if (days <= 0) "Expected today" else try std.fmt.allocPrint(a, "Expected in {d} days", .{days}) });
+                }
+            },
             .queue => if (self.browser.engine) |engine| {
                 for (try engine.queue.snapshot(engine, a)) |entry| {
                     const pick = picks.get(entry.chapter_id) orelse continue;
@@ -266,7 +276,21 @@ pub const Session = struct {
         self.feed_arena = arena;
     }
 
-    pub const Edit = union(enum) { mark_read, mark_unread, mark_previous, bookmark, unbookmark, download, delete_download, title_read, title_unread, remove_title, toggle_category: u32, migrate, read_online };
+    pub const Edit = union(enum) { mark_read, mark_unread, mark_previous, bookmark, unbookmark, download, delete_download, title_read, title_unread, remove_title, toggle_category: u32, migrate, read_online, options, chapter_sort, chapter_direction, filter_unread, filter_downloaded, filter_bookmarked, toggle_scanlator: u32, interval };
+
+    /// A title's scanlation groups, for the title options screen.
+    pub fn scanlators(self: *const Session, a: std.mem.Allocator) ![]const []const u8 {
+        const model = self.model;
+        if (model.manga >= model.library.manga.len) return &.{};
+        var groups: std.ArrayList([]const u8) = .empty;
+        for (model.library.manga[model.manga].chapters) |ch| if (ch.scanlator) |group| {
+            const seen = for (groups.items) |g| {
+                if (std.mem.eql(u8, g, group)) break true;
+            } else false;
+            if (!seen) try groups.append(a, group);
+        };
+        return groups.items;
+    }
 
     /// Searches every enabled source, or only pinned ones if the settings
     /// say so and some are pinned.
@@ -307,6 +331,64 @@ pub const Session = struct {
             .remove_title => {
                 try engine.setFavorite(manga.id, false);
                 back = .library;
+            },
+            .options => {
+                model.screen = .title_options;
+                return;
+            },
+            .chapter_sort, .chapter_direction, .filter_unread, .filter_downloaded, .filter_bookmarked => {
+                var flags: tachi.views.ChapterFlags = .decode(manga.chapter_flags);
+                const next = struct {
+                    fn tri(state: tachi.views.TriState) tachi.views.TriState {
+                        return switch (state) {
+                            .disabled => .include,
+                            .include => .exclude,
+                            .exclude => .disabled,
+                        };
+                    }
+                };
+                switch (choice) {
+                    .chapter_sort => {
+                        const sorts = std.enums.values(tachi.views.ChapterSort);
+                        const at = std.mem.indexOfScalar(tachi.views.ChapterSort, sorts, flags.sort) orelse 0;
+                        flags.sort = sorts[(at + 1) % sorts.len];
+                    },
+                    .chapter_direction => flags.ascending = !flags.ascending,
+                    .filter_unread => flags.unread = next.tri(flags.unread),
+                    .filter_downloaded => flags.downloaded = next.tri(flags.downloaded),
+                    else => flags.bookmarked = next.tri(flags.bookmarked),
+                }
+                try engine.setChapterFlags(manga.id, flags.encode(manga.chapter_flags));
+                back = .title_options;
+            },
+            .toggle_scanlator => |index| {
+                var arena: std.heap.ArenaAllocator = .init(model.gpa);
+                defer arena.deinit();
+                const a = arena.allocator();
+                const groups = try self.scanlators(a);
+                if (index >= groups.len) return;
+                var excluded: std.ArrayList([]const u8) = .empty;
+                var was = false;
+                for (manga.excluded_scanlators) |g| {
+                    if (std.mem.eql(u8, g, groups[index])) was = true else try excluded.append(a, g);
+                }
+                if (!was) try excluded.append(a, groups[index]);
+                try engine.setExcludedScanlators(manga.id, excluded.items);
+                back = .title_options;
+            },
+            .interval => {
+                const days: u31 = switch (@abs(manga.fetch_interval)) {
+                    0 => 1,
+                    1 => 2,
+                    2 => 3,
+                    3 => 7,
+                    7 => 14,
+                    14 => 28,
+                    else => 0,
+                };
+                // Positive intervals are libtachi's estimates; only custom ones cycle on.
+                try engine.setFetchInterval(manga.id, if (manga.fetch_interval > 0) 1 else days);
+                back = .title_options;
             },
             .read_online => {
                 // libtachi loads it into its chapter cache; poll opens it.
@@ -564,7 +646,7 @@ pub const Session = struct {
         try self.model.dispatch(action);
         const lists = self.model.screen == .library or self.model.screen == .chapters;
         if (lists and (action == .search or action == .category or old_screen != self.model.screen or old_manga != self.model.manga or self.model.title_rows == null)) try self.refreshRows();
-        const feed = self.model.screen == .updates or self.model.screen == .history or self.model.screen == .queue;
+        const feed = self.model.screen == .updates or self.model.screen == .history or self.model.screen == .queue or self.model.screen == .upcoming;
         if (feed and old_screen != self.model.screen) try self.refreshFeed();
         if (self.model.screen == .engine_settings and old_screen != .engine_settings) try self.loadSettings();
         if (self.model.screen == .backup and old_screen != .backup) try self.refreshBackups();

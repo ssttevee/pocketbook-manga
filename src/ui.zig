@@ -265,6 +265,8 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             .languages => "Languages",
             .stats => "Statistics",
             .duplicate => "Already in library?",
+            .title_options => "Chapter options",
+            .upcoming => "Upcoming",
         }, 19, 0);
         ui.spacer();
         if (model.screen == .library and session.browser.busy == null) try button(ui, "browse", "Browse", .help);
@@ -332,8 +334,9 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             try app.widgets.button(ui, "quit", .{ .label = "Close PocketManga", .on_click = on.bind(.quit) });
         },
         .sources, .extensions, .catalog, .source_settings, .global_search, .languages => try browserView(ui, session),
-        .updates, .history, .queue => try feedView(ui, session),
+        .updates, .history, .queue, .upcoming => try feedView(ui, session),
         .chapter_menu, .title_menu => try menuView(ui, model),
+        .title_options => try titleOptionsView(ui, session),
         .engine_settings => try settingsView(ui, session),
         .stats => try statsView(ui, session),
         .duplicate => try duplicateView(ui, session),
@@ -354,7 +357,12 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
             if (model.library.manga.len > 0) try onlineButton(ui, "update-library", "Update", .update_all);
             try button(ui, "updates", "Updates", .{ .feed = .updates });
             try button(ui, "history", "History", .{ .feed = .history });
+        }
+        if (is_library) {
+            try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 6, .child_alignment = .center_left } });
+            defer ui.close();
             try button(ui, "queue", "Downloads", .{ .feed = .queue });
+            try button(ui, "upcoming", "Upcoming", .{ .feed = .upcoming });
         }
         if (is_library) try app.widgets.searchField(ui, "query", .{ .text = model.query_text, .placeholder = "Search title or author", .on_change = ui.messages(Root).handler(.query) });
         if (is_library and model.categories.len > 1) {
@@ -473,6 +481,49 @@ fn settingsView(ui: *app.Ui, session: *const Session) !void {
     }
 }
 
+/// How a title's chapters are listed and updated.
+fn titleOptionsView(ui: *app.Ui, session: *const Session) !void {
+    const model = session.model;
+    const manga = model.library.manga[model.manga];
+    const flags: tachi.views.ChapterFlags = .decode(manga.chapter_flags);
+    const on = ui.messages(Root);
+    try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 8 } });
+    defer ui.close();
+    try text(ui, manga.title, 16, 0);
+    const tri = struct {
+        fn name(state: tachi.views.TriState, yes: []const u8, no: []const u8) []const u8 {
+            return switch (state) {
+                .disabled => "all",
+                .include => yes,
+                .exclude => no,
+            };
+        }
+    }.name;
+    const sort = switch (flags.sort) {
+        .source => "source order",
+        .number => "chapter number",
+        .upload => "upload date",
+        .alphabetical => "name",
+    };
+    const Choice = struct { label: []const u8, edit: Session.Edit };
+    for ([_]Choice{
+        .{ .label = try ui.fmt("Sort by {s}", .{sort}), .edit = .chapter_sort },
+        .{ .label = if (flags.ascending) "Oldest first" else "Newest first", .edit = .chapter_direction },
+        .{ .label = try ui.fmt("Show {s}", .{tri(flags.unread, "unread only", "read only")}), .edit = .filter_unread },
+        .{ .label = try ui.fmt("Show {s}", .{tri(flags.downloaded, "downloaded only", "not downloaded only")}), .edit = .filter_downloaded },
+        .{ .label = try ui.fmt("Show {s}", .{tri(flags.bookmarked, "bookmarked only", "not bookmarked only")}), .edit = .filter_bookmarked },
+        .{ .label = if (manga.fetch_interval < 0) try ui.fmt("Update every {d} days", .{-manga.fetch_interval}) else if (manga.fetch_interval > 0) try ui.fmt("Update every {d} days (estimated)", .{manga.fetch_interval}) else "Update interval: estimated", .edit = .interval },
+    }, 0..) |choice, n| try app.widgets.button(ui, .{ .option = n }, .{ .label = choice.label, .on_click = on.bind(.{ .edit = choice.edit }) });
+    var arena: std.heap.ArenaAllocator = .init(model.gpa);
+    defer arena.deinit();
+    const groups = try session.scanlators(arena.allocator());
+    if (groups.len > 0) try text(ui, "Scanlation groups", 14, 0);
+    for (groups, 0..) |group, i| {
+        const excluded = manga.excludes(group);
+        try app.widgets.button(ui, .{ .group = i }, .{ .label = try ui.fmt("{s} {s}", .{ if (excluded) "[ ]" else "[x]", group }), .on_click = on.bind(.{ .edit = @as(Session.Edit, .{ .toggle_scanlator = @intCast(i) }) }) });
+    }
+}
+
 /// libtachi's library statistics.
 fn statsView(ui: *app.Ui, session: *const Session) !void {
     const s = session.stats;
@@ -573,6 +624,7 @@ fn menuView(ui: *app.Ui, model: *const lib.Model) !void {
         .{ .label = "Mark all unread", .edit = .title_unread },
         .{ .label = "Remove from library", .edit = .remove_title },
         .{ .label = "Migrate to another source", .edit = .migrate },
+        .{ .label = "Chapter options", .edit = .options },
     }, 0..) |choice, n| try app.widgets.button(ui, .{ .choice = n }, .{ .label = choice.label, .on_click = on.bind(.{ .edit = choice.edit }) });
     if (model.library.categories.len > 0) try text(ui, "Categories", 14, 0);
     for (model.library.categories) |category| {
@@ -599,6 +651,7 @@ fn feedView(ui: *app.Ui, session: *const Session) !void {
         if (count == 0) try text(ui, switch (model.screen) {
             .updates => "No new chapters",
             .history => "Nothing read yet",
+            .upcoming => "Nothing expected",
             else => "No downloads queued",
         }, 16, 0);
         for (@min(model.offset, count)..@min(model.offset + lib.Model.rows, count)) |row| {
