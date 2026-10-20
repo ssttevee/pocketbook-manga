@@ -27,6 +27,12 @@ pub const Session = struct {
     rows_arena: ?std.heap.ArenaAllocator = null,
     /// Owns the model's online chapter and pages.
     online_arena: ?std.heap.ArenaAllocator = null,
+    /// libtachi's trackers: who is logged in, and score formats.
+    trackers: tachi.tracking.State = .{},
+    trackers_arena: ?std.heap.ArenaAllocator = null,
+    /// The tracker being logged in to or searched.
+    tracker_id: i32 = 0,
+    login_username: []const u8 = "",
     /// libtachi's extension stores, when shown.
     stores: []const tachi.stores.Store = &.{},
     stores_arena: ?std.heap.ArenaAllocator = null,
@@ -100,6 +106,10 @@ pub const Session = struct {
         errdefer job.deinit();
         if (job.result.library_changed) try self.reloadLibrary();
         if (job.request == .add_store or job.request == .refresh_stores) try self.loadStores();
+        if (job.request == .tracker and job.failure == null and job.request.tracker.operation == .login) {
+            try self.loadTrackers();
+            self.model.screen = .trackers;
+        }
         if (self.model.screen == .backup) try self.refreshBackups();
         self.download_error = job.failure != null and job.request == .download;
         self.download_canceled = self.download_error and std.mem.eql(u8, job.failure.?, "Canceled");
@@ -145,6 +155,7 @@ pub const Session = struct {
             .browse => &self.browser.titles,
             .preferences, .set_preference => &self.browser.preferences,
             .global_search => &self.browser.global,
+            .tracker => &self.browser.tracking,
             else => null,
         };
         if (slot) |target| {
@@ -162,6 +173,81 @@ pub const Session = struct {
         if (self.library_arena) |*old| old.deinit();
         self.library_arena = arena;
         try self.refreshRows();
+    }
+
+    pub fn loadTrackers(self: *Session) !void {
+        const engine = self.browser.engine orelse return;
+        var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+        errdefer arena.deinit();
+        self.trackers = (try engine.loadTrackers(arena.allocator())).*;
+        if (self.trackers_arena) |*old| old.deinit();
+        self.trackers_arena = arena;
+    }
+
+    pub const TrackEdit = union(enum) { status: i32, score: i32, refresh: i32, unbind: i32, search: i32, bind: usize, logout: i32, login: i32 };
+
+    /// A tracking choice: through libtachi's tracking jobs, or its logout.
+    pub fn track(self: *Session, choice: TrackEdit) !void {
+        const engine = self.browser.engine orelse return;
+        const model = self.model;
+        const manga = if (model.manga < model.library.manga.len) model.library.manga[model.manga] else null;
+        switch (choice) {
+            .logout => |id| {
+                try engine.trackerLogout(id);
+                try self.loadTrackers();
+            },
+            .login => |id| {
+                self.tracker_id = id;
+                const t = tachi.tracking.get(id) orelse return;
+                // Komga, Kavita and Suwayomi use the extension's server: no account.
+                if (t.enhanced) {
+                    self.start(.{ .tracker = .{ .id = id, .operation = .{ .login = .{ .username = "user", .password = "pass" } } } });
+                } else model.screen = .tracker_login;
+            },
+            .search => |id| {
+                self.tracker_id = id;
+                model.screen = .track_search;
+                self.start(.{ .tracker = .{ .id = id, .operation = .{ .search = (manga orelse return).title } } });
+            },
+            .bind => |row| {
+                const job = self.browser.tracking orelse return;
+                const matches = job.result.tracking_reply.matches;
+                if (row >= matches.len) return;
+                model.screen = .tracking;
+                self.start(.{ .track_bind = .{ .manga_id = (manga orelse return).id, .track = matches[row].track } });
+            },
+            .refresh => self.start(.{ .track_refresh = .{ .manga_id = (manga orelse return).id } }),
+            .unbind => |id| self.start(.{ .track_unbind = .{ .manga_id = (manga orelse return).id, .tracker_id = id } }),
+            .status, .score => |id| {
+                const m = manga orelse return;
+                const t = tachi.tracking.get(id) orelse return;
+                const bound = for (m.tracks) |tr| {
+                    if (tr.tracker_id == id) break tr;
+                } else return;
+                const value: tachi.tracking.Setter = if (choice == .status) blk: {
+                    var at: usize = 0;
+                    for (t.statuses, 0..) |st, i| if (st.value == bound.status) {
+                        at = i;
+                    };
+                    break :blk .{ .status = t.statuses[(at + 1) % t.statuses.len].value };
+                } else blk: {
+                    const count = t.scoreCount(self.trackers.formats);
+                    if (count == 0) return;
+                    var at: usize = 0;
+                    for (0..count) |i| if ((t.indexToScore(self.trackers.formats, i) catch 0) <= bound.score) {
+                        at = i;
+                    };
+                    break :blk .{ .score_index = (at + 1) % count };
+                };
+                self.start(.{ .track_set = .{ .manga_id = m.id, .tracker_id = id, .value = value } });
+            },
+        }
+    }
+
+    pub fn setLoginUsername(self: *Session, name: []const u8) !void {
+        const copy = try self.model.gpa.dupe(u8, name);
+        if (self.login_username.len > 0) self.model.gpa.free(self.login_username);
+        self.login_username = copy;
     }
 
     pub fn loadStores(self: *Session) !void {
@@ -600,6 +686,8 @@ pub const Session = struct {
         if (self.online_arena) |*arena| arena.deinit();
         if (self.pending_arena) |*arena| arena.deinit();
         if (self.stores_arena) |*arena| arena.deinit();
+        if (self.trackers_arena) |*arena| arena.deinit();
+        if (self.login_username.len > 0) self.model.gpa.free(self.login_username);
         if (self.feed_arena) |*arena| arena.deinit();
         if (self.settings_arena) |*arena| arena.deinit();
     }
@@ -675,6 +763,7 @@ pub const Session = struct {
         const feed = self.model.screen == .updates or self.model.screen == .history or self.model.screen == .queue or self.model.screen == .upcoming;
         if (feed and old_screen != self.model.screen) try self.refreshFeed();
         if (self.model.screen == .engine_settings and old_screen != .engine_settings) try self.loadSettings();
+        if ((self.model.screen == .trackers or self.model.screen == .tracking) and old_screen != self.model.screen) try self.loadTrackers();
         if (self.model.screen == .backup and old_screen != .backup) try self.refreshBackups();
         if (self.model.screen == .stats and old_screen != .stats) if (self.browser.engine) |engine| {
             var arena: std.heap.ArenaAllocator = .init(self.model.gpa);

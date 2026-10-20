@@ -35,6 +35,26 @@ pub fn fixtureExecutor(engine: *tachi.Engine, job: *tachi.Job) !void {
         },
         .update_library, .refresh => job.result.library_changed = true,
         .read => job.result.pages = &.{ "cache/chapters/pages/1.png", "cache/chapters/pages/2.png" },
+        .tracker => |c| switch (c.operation) {
+            .login => |l| {
+                var state = (try engine.loadTrackers(a)).*;
+                try state.putCredential(a, .{ .tracker_id = c.id, .username = "42", .password = l.password, .display_name = l.username });
+                try state.save(a, engine.io, engine.options.dir);
+            },
+            .search => job.result.tracking_reply = .{ .matches = &.{.{ .track = .{ .tracker_id = c.id, .remote_id = 9, .title = "Fixture Story", .total_chapters = 12 }, .publishing_type = "Manga" }} },
+            else => return error.FixtureFailure,
+        },
+        .track_bind => |c| {
+            const library = try engine.store.load(a);
+            const titles = try a.dupe(lib.Manga, library.manga);
+            for (titles) |*m| if (std.mem.eql(u8, m.id, c.manga_id)) {
+                m.tracks = try a.dupe(tachi.library.Track, &.{c.track});
+            };
+            var next = library;
+            next.manga = titles;
+            try engine.store.save(a, next);
+            job.result.library_changed = true;
+        },
         .add_store => |url| {
             const file = try tachi.stores.File.load(a, engine.io, engine.options.dir);
             try (try file.upsert(a, .{ .index_url = url, .name = "Fixture Store" })).save(a, engine.io, engine.options.dir);
@@ -414,4 +434,47 @@ test "device UI adds and removes an extension store" {
     try std.testing.expectEqualStrings("Fixture Store", session.stores[0].name);
     try smoke.tapText("Remove");
     try std.testing.expectEqual(0, session.stores.len);
+}
+
+test "device UI logs in to a tracker and tracks a title" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = root });
+    engine.execute_fn = fixtureExecutor;
+    try engine.store.save(a, .{ .manga = &.{.{ .id = "42:/manga", .title = "Fixture Story", .source_id = 42 }} });
+    var model: lib.Model = .{ .gpa = a };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = root };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    try session.reloadLibrary();
+    try smoke.start(std.testing.allocator, std.testing.io, &session);
+    defer smoke.stop();
+    try smoke.tapText("Aa");
+    try smoke.tapText("Trackers");
+    try smoke.tapText("Log in");
+    try std.testing.expectEqual(lib.Screen.tracker_login, model.screen);
+    try smoke.tapText("Username");
+    smoke.fake.keyboardResult("reader");
+    smoke.fake.advance(1);
+    try smoke.tapText("Password (logs in)");
+    smoke.fake.keyboardResult("secret");
+    smoke.fake.advance(1);
+    try finish(&session);
+    try std.testing.expectEqual(lib.Screen.trackers, model.screen);
+    try std.testing.expect(session.trackers.loggedIn(1));
+    try smoke.tapText("Back");
+    try smoke.tapText("Back");
+    try smoke.tapText("...");
+    try smoke.tapText("Tracking");
+    try smoke.tapText("Find");
+    try finish(&session);
+    try std.testing.expectEqual(lib.Screen.track_search, model.screen);
+    try smoke.tapText("Fixture Story");
+    try finish(&session);
+    try std.testing.expectEqual(lib.Screen.tracking, model.screen);
+    try std.testing.expectEqual(9, model.library.manga[0].tracks[0].remote_id);
 }

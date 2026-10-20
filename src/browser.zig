@@ -13,6 +13,8 @@ pub const Browser = struct {
     /// target for, if any.
     global: ?*tachi.Job = null,
     migrate_from: ?[]const u8 = null,
+    /// The last tracker login or search.
+    tracking: ?*tachi.Job = null,
     /// The sources screen's rows in libtachi's order (last used, pinned,
     /// then by language), or every source with `show_hidden`.
     source_rows: []const tachi.models.SourceInfo = &.{},
@@ -192,7 +194,7 @@ pub const Browser = struct {
         if (self.extension_pkg.len > 0) gpa.free(self.extension_pkg);
         if (self.pending_chapter) |id| gpa.free(id);
         if (self.migrate_from) |id| gpa.free(id);
-        for ([_]?*tachi.Job{ self.sources, self.extensions, self.titles, self.preferences, self.global }) |snapshot| if (snapshot) |job| job.deinit();
+        for ([_]?*tachi.Job{ self.sources, self.extensions, self.titles, self.preferences, self.global, self.tracking }) |snapshot| if (snapshot) |job| job.deinit();
         if (self.source_rows_arena) |*arena| arena.deinit();
     }
 };

@@ -10,7 +10,7 @@ pub const OnlineCommand = union(enum) { stores, refresh_stores, remove_store: us
 pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const State = struct { focused: bool = false, tapping: bool = false, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { act: lib.Action, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
@@ -21,6 +21,15 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
         },
         .online => |command| try onlineUpdate(session, command, ctx),
         .confirm_add => |add| if (session.browser.busy == null) session.confirmAdd(add),
+        .track => |edit| if (session.browser.busy == null) {
+            session.track(edit) catch |err| {
+                session.status = try std.fmt.allocPrint(session.model.gpa, "Tracking: {s}", .{@errorName(err)});
+            };
+        },
+        .login_user => |name| try session.setLoginUsername(name),
+        .login_password => |password| if (session.browser.busy == null and password.len > 0) {
+            session.start(.{ .tracker = .{ .id = session.tracker_id, .operation = .{ .login = .{ .username = session.login_username, .password = password } } } });
+        },
         .add_store => |url| if (session.browser.busy == null and std.mem.trim(u8, url, " ").len > 0) {
             session.start(.{ .add_store = std.mem.trim(u8, url, " ") });
         },
@@ -267,6 +276,10 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             .global_search => if (session.browser.migrate_from != null) "Migrate to" else "Search all",
             .languages => "Languages",
             .stores => "Extension stores",
+            .trackers => "Trackers",
+            .tracker_login => "Log in",
+            .tracking => "Tracking",
+            .track_search => "Find on tracker",
             .stats => "Statistics",
             .duplicate => "Already in library?",
             .title_options => "Chapter options",
@@ -341,7 +354,12 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
                 try button(ui, "engine-settings", "Library settings", .{ .feed = .engine_settings });
                 try button(ui, "categories", "Categories", .{ .feed = .categories });
             }
-            try button(ui, "backup", "Backup and restore", .{ .feed = .backup });
+            {
+                try ui.open(null, .{ .layout = .{ .child_gap = 8 } });
+                defer ui.close();
+                try button(ui, "backup", "Backup and restore", .{ .feed = .backup });
+                try button(ui, "trackers", "Trackers", .{ .feed = .trackers });
+            }
             ui.spacer();
             try app.widgets.button(ui, "quit", .{ .label = "Close PocketManga", .on_click = on.bind(.quit) });
         },
@@ -352,6 +370,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         .engine_settings => try settingsView(ui, session),
         .stats => try statsView(ui, session),
         .stores => try storesView(ui, session),
+        .trackers, .tracker_login, .tracking, .track_search => try trackingView(ui, session),
         .duplicate => try duplicateView(ui, session),
         .backup => try backupView(ui, session),
         .categories => try categoriesView(ui, model),
@@ -559,6 +578,87 @@ fn storesView(ui: *app.Ui, session: *const Session) !void {
     }
 }
 
+/// Trackers to log in to, a title's tracks, and search results to bind.
+fn trackingView(ui: *app.Ui, session: *const Session) !void {
+    const model = session.model;
+    const on = ui.messages(Root);
+    const state = session.trackers;
+    try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(10), .child_gap = 8 } });
+    defer ui.close();
+    switch (model.screen) {
+        .trackers => for (tachi.tracking.trackers) |t| {
+            try ui.open(.{ .tracker = t.id }, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 6, .child_alignment = .center_left } });
+            defer ui.close();
+            const c = state.credential(t.id);
+            try text(ui, if (state.loggedIn(t.id)) try ui.fmt("{s}: {s}", .{ t.name, if (c.display_name.len > 0) c.display_name else "logged in" }) else t.name, 14, 0);
+            ui.spacer();
+            if (state.loggedIn(t.id)) {
+                try app.widgets.button(ui, .{ .logout = t.id }, .{ .label = "Log out", .on_click = on.bind(.{ .track = @as(Session.TrackEdit, .{ .logout = t.id }) }) });
+            } else {
+                try app.widgets.button(ui, .{ .login = t.id }, .{ .label = if (t.enhanced) "Enable" else "Log in", .on_click = on.bind(.{ .track = @as(Session.TrackEdit, .{ .login = t.id }) }) });
+            }
+        },
+        .tracker_login => {
+            const t = tachi.tracking.get(session.tracker_id) orelse return;
+            try text(ui, t.name, 16, 0);
+            try app.widgets.searchField(ui, "login-user", .{ .text = session.login_username, .placeholder = "Username", .on_change = on.handler(.login_user) });
+            try app.widgets.searchField(ui, "login-password", .{ .text = "", .placeholder = "Password (logs in)", .on_change = on.handler(.login_password) });
+            try text(ui, "Services that log in through a browser need their code or token as the password.", 12, 40);
+        },
+        .tracking => {
+            const manga = model.library.manga[model.manga];
+            try text(ui, manga.title, 16, 0);
+            var any = false;
+            for (tachi.tracking.trackers) |t| {
+                if (!state.loggedIn(t.id)) continue;
+                any = true;
+                const bound = for (manga.tracks) |tr| {
+                    if (tr.tracker_id == t.id) break tr;
+                } else null;
+                try ui.open(.{ .tracked = t.id }, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .child_gap = 4 } });
+                defer ui.close();
+                if (bound) |tr| {
+                    const status = for (t.statuses) |st| {
+                        if (st.value == tr.status) break st.name;
+                    } else "?";
+                    try text(ui, try ui.fmt("{s}: {s}", .{ t.name, tr.title }), 14, 0);
+                    try ui.print(.{ .font_size = 11, .color = .gray(60) }, "{s}, chapter {d}{s}{s}", .{ status, tr.last_chapter_read, if (tr.total_chapters > 0) try ui.fmt(" of {d}", .{tr.total_chapters}) else "", if (t.scoreCount(state.formats) > 0) try ui.fmt(", score {s}", .{try t.displayScore(ui.arena(), state.formats, tr.score)}) else "" });
+                    try ui.open(null, .{ .layout = .{ .child_gap = 6 } });
+                    defer ui.close();
+                    try app.widgets.button(ui, .{ .status = t.id }, .{ .label = "Status", .on_click = on.bind(.{ .track = @as(Session.TrackEdit, .{ .status = t.id }) }) });
+                    if (t.scoreCount(state.formats) > 0) try app.widgets.button(ui, .{ .score = t.id }, .{ .label = "Score", .on_click = on.bind(.{ .track = @as(Session.TrackEdit, .{ .score = t.id }) }) });
+                    try app.widgets.button(ui, .{ .refresh = t.id }, .{ .label = "Refresh", .on_click = on.bind(.{ .track = @as(Session.TrackEdit, .{ .refresh = t.id }) }) });
+                    try app.widgets.button(ui, .{ .unbind = t.id }, .{ .label = "Remove", .on_click = on.bind(.{ .track = @as(Session.TrackEdit, .{ .unbind = t.id }) }) });
+                } else {
+                    try ui.open(null, .{ .layout = .{ .child_gap = 6, .child_alignment = .center_left } });
+                    defer ui.close();
+                    try text(ui, t.name, 14, 0);
+                    try app.widgets.button(ui, .{ .search = t.id }, .{ .label = "Find", .on_click = on.bind(.{ .track = @as(Session.TrackEdit, .{ .search = t.id }) }) });
+                }
+            }
+            if (!any) try text(ui, "Log in to a tracker in Settings first.", 13, 40);
+        },
+        .track_search => {
+            const job = session.browser.tracking orelse return;
+            const matches = job.result.tracking_reply.matches;
+            if (matches.len == 0) try text(ui, "Nothing found", 14, 60);
+            for (matches[0..@min(matches.len, lib.Model.rows)], 0..) |m, i| {
+                const key = .{ .match = i };
+                try ui.open(key, .{
+                    .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(37) }, .axis = .y, .padding = .init(8, 8, 3, 3) },
+                    .background_color = rowFill(ui, key),
+                    .border = .{ .color = .gray(130), .widths = .{ .bottom = 1 } },
+                    .on_click = on.bind(.{ .track = @as(Session.TrackEdit, .{ .bind = i }) }),
+                });
+                defer ui.close();
+                try text(ui, m.track.title, 14, 0);
+                try text(ui, if (m.publishing_type.len > 0) m.publishing_type else m.start_date, 10, 60);
+            }
+        },
+        else => {},
+    }
+}
+
 /// libtachi's library statistics.
 fn statsView(ui: *app.Ui, session: *const Session) !void {
     const s = session.stats;
@@ -661,6 +761,7 @@ fn menuView(ui: *app.Ui, model: *const lib.Model) !void {
         .{ .label = "Migrate to another source", .edit = .migrate },
         .{ .label = "Chapter options", .edit = .options },
     }, 0..) |choice, n| try app.widgets.button(ui, .{ .choice = n }, .{ .label = choice.label, .on_click = on.bind(.{ .edit = choice.edit }) });
+    try app.widgets.button(ui, "tracking", .{ .label = "Tracking", .on_click = on.bind(.{ .act = @as(lib.Action, .{ .feed = .tracking }) }) });
     if (model.library.categories.len > 0) try text(ui, "Categories", 14, 0);
     for (model.library.categories) |category| {
         const member = std.mem.indexOfScalar(u32, manga.categories, category.id) != null;
