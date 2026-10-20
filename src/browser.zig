@@ -16,6 +16,8 @@ pub const Browser = struct {
     /// The sources screen's rows in libtachi's order (last used, pinned,
     /// then by language), or every source with `show_hidden`.
     source_rows: []const tachi.models.SourceInfo = &.{},
+    /// "Last used", "Pinned" or "" for each row.
+    source_notes: []const []const u8 = &.{},
     source_rows_arena: ?std.heap.ArenaAllocator = null,
     show_hidden: bool = false,
     /// The open source's place in libtachi's settings.
@@ -84,6 +86,7 @@ pub const Browser = struct {
         errdefer arena.deinit();
         const a = arena.allocator();
         var rows: std.ArrayList(tachi.models.SourceInfo) = .empty;
+        var notes: std.ArrayList([]const u8) = .empty;
         if (self.show_hidden) {
             try rows.appendSlice(a, job.result.sources);
             std.mem.sort(tachi.models.SourceInfo, rows.items, {}, struct {
@@ -91,16 +94,31 @@ pub const Browser = struct {
                     return std.ascii.lessThanIgnoreCase(x.name, y.name);
                 }
             }.less);
+            for (rows.items) |_| try notes.append(a, "");
         } else {
+            // The last used source also stays in its group, as in Mihon.
             const list = try engine.sourceList(a, job.result.sources);
-            if (list.last_used) |source| try rows.append(a, source);
-            try rows.appendSlice(a, list.pinned);
-            for (list.languages) |group| try rows.appendSlice(a, group.sources);
+            if (list.last_used) |source| {
+                try rows.append(a, source);
+                try notes.append(a, "Last used");
+            }
+            for (list.pinned) |source| {
+                try rows.append(a, source);
+                try notes.append(a, "Pinned");
+            }
+            for (list.languages) |group| for (group.sources) |source| {
+                try rows.append(a, source);
+                try notes.append(a, "");
+            };
         }
-        // The last used source also stays in its group, as in Mihon.
         var shown: std.ArrayList(tachi.models.SourceInfo) = .empty;
-        for (rows.items) |source| if (!std.mem.eql(u8, source.id, "0")) try shown.append(a, source);
+        var shown_notes: std.ArrayList([]const u8) = .empty;
+        for (rows.items, notes.items) |source, note| if (!std.mem.eql(u8, source.id, "0")) {
+            try shown.append(a, source);
+            try shown_notes.append(a, note);
+        };
         self.source_rows = shown.items;
+        self.source_notes = shown_notes.items;
         const browse = (try engine.loadSettings(a)).browse;
         var languages: std.ArrayList(Language) = .empty;
         for (job.result.sources) |source| {

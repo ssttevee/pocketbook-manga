@@ -325,11 +325,19 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             try button(ui, "refresh", if (model.prefs.full_refresh) "Full refresh on each page" else "Partial (periodic cleaning)", .refresh);
             try text(ui, "Physical Next always advances a page.", 12, 60);
             try text(ui, "Direction changes the left / right tap zones.", 12, 60);
-            try onlineButton(ui, "scan-local", "Scan local manga", .scan);
-            try button(ui, "engine-settings", "Library settings", .{ .feed = .engine_settings });
-            try button(ui, "categories", "Categories", .{ .feed = .categories });
+            {
+                try ui.open(null, .{ .layout = .{ .child_gap = 8 } });
+                defer ui.close();
+                try onlineButton(ui, "scan-local", "Scan local manga", .scan);
+                try button(ui, "stats", "Statistics", .{ .feed = .stats });
+            }
+            {
+                try ui.open(null, .{ .layout = .{ .child_gap = 8 } });
+                defer ui.close();
+                try button(ui, "engine-settings", "Library settings", .{ .feed = .engine_settings });
+                try button(ui, "categories", "Categories", .{ .feed = .categories });
+            }
             try button(ui, "backup", "Backup and restore", .{ .feed = .backup });
-            try button(ui, "stats", "Statistics", .{ .feed = .stats });
             ui.spacer();
             try app.widgets.button(ui, "quit", .{ .label = "Close PocketManga", .on_click = on.bind(.quit) });
         },
@@ -946,7 +954,7 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
             });
             try text(ui, label, 14, 0);
             switch (screen) {
-                .sources => try text(ui, b.source_rows[i].lang, 10, 60),
+                .sources => try ui.print(.{ .font_size = 10, .color = .gray(60) }, "{s}  {s}", .{ b.source_rows[i].lang, b.source_notes[i] }),
                 .global_search => try text(ui, b.globalHit(i).?.source_name, 10, 60),
                 .extensions => {
                     const e = b.extensions.?.result.extensions[i];
