@@ -94,6 +94,7 @@ pub const Engine = struct {
             .java_home = self.java_home orelse home,
             .ca_file = if (self.java_home != null) null else ca,
             .class_data_sharing = false,
+            .native_transport = true,
             .environ = self.environ,
             .jvm_options = &.{ "-Xms16m", "-Xmx128m", "-Xss512k", "-XX:MaxMetaspaceSize=96m", "-XX:+UseSerialGC", "-XX:ActiveProcessorCount=2", trust },
         });

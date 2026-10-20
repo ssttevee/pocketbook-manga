@@ -7,7 +7,32 @@ pub fn main(init: std.process.Init) !void {
     const root = it.next() orelse return error.MissingBundleRoot;
     const cmd = it.next() orelse "sources";
     var device_io = @import("device_io.zig").DeviceIo.init(init.io);
+    if (std.mem.eql(u8, cmd, "plan")) return plan(init.gpa, device_io.io(), init.minimal.environ, root, &it);
     try run(init.gpa, device_io.io(), init.minimal.environ, root, cmd, it.next());
+}
+
+/// `plan <extension.jar> <source id> <chapter url>`: times a live image plan twice.
+fn plan(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ, root: []const u8, it: *std.process.Args.Iterator) !void {
+    const jar = it.next() orelse return error.MissingPackage;
+    const source = try std.fmt.parseInt(i64, it.next() orelse return error.MissingSource, 10);
+    const chapter = it.next() orelse return error.MissingChapter;
+    var engine: online.Engine = .{ .gpa = gpa, .io = io, .root = root, .environ = environ };
+    const started = @import("worker_wire.zig").pm_now_ms();
+    const job = try runJob(&engine, .sources);
+    job.deinit();
+    const rt = engine.runtime.?;
+    defer rt.deinit();
+    // "-" reuses what an earlier run installed, so the restore path is timed.
+    if (!std.mem.eql(u8, jar, "-")) gpa.free(try rt.installExtension(jar));
+    std.log.info("plan probe ready_ms={d}", .{@import("worker_wire.zig").pm_now_ms() - started});
+    const args = try std.json.Stringify.valueAlloc(gpa, .{ .chapter = .{ .url = chapter, .name = "probe" } }, .{});
+    defer gpa.free(args);
+    for (0..2) |_| {
+        const before = @import("worker_wire.zig").pm_now_ms();
+        const json = try rt.call(source, "imageRequests", args);
+        defer gpa.free(json);
+        std.log.info("plan probe imageRequests_ms={d} bytes={d}", .{ @import("worker_wire.zig").pm_now_ms() - before, json.len });
+    }
 }
 
 pub fn run(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ, root: []const u8, cmd: []const u8, package: ?[]const u8) !void {
