@@ -722,9 +722,10 @@ pub const Session = struct {
         try self.loadSettings();
         var s = self.settings;
         switch (which) {
-            .skip_completed => s.update.skip_completed = !s.update.skip_completed,
-            .skip_unread => s.update.skip_unread = !s.update.skip_unread,
-            .skip_not_started => s.update.skip_not_started = !s.update.skip_not_started,
+            inline .skip_completed, .skip_unread, .skip_not_started => |tag| {
+                const field = &@field(s.update, @tagName(tag));
+                field.* = !field.*;
+            },
             .skip_not_due => s.update.skip_outside_release_period = !s.update.skip_outside_release_period,
             .update_details => s.update.metadata = !s.update.metadata,
             .download_new => s.downloads.new_chapters = !s.downloads.new_chapters,
@@ -738,10 +739,10 @@ pub const Session = struct {
                 5 => 10,
                 else => 0,
             },
-            .skip_read => s.reader.skip_read = !s.reader.skip_read,
-            .skip_filtered => s.reader.skip_filtered = !s.reader.skip_filtered,
-            .skip_duplicates => s.reader.skip_duplicates = !s.reader.skip_duplicates,
-            .incognito => s.reader.incognito = !s.reader.incognito,
+            inline .skip_read, .skip_filtered, .skip_duplicates, .incognito => |tag| {
+                const field = &@field(s.reader, @tagName(tag));
+                field.* = !field.*;
+            },
             .downloaded_only => s.library.downloaded_only = !s.library.downloaded_only,
             .sort_mode, .sort_ascending => {
                 // Sorting goes through libtachi's rules for categories.
