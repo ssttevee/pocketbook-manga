@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build-time bundler. The delivered application needs no computer or service."""
-import argparse, hashlib, json, os, pathlib, shutil, subprocess, tarfile, tempfile, urllib.request
+import argparse, hashlib, json, pathlib, shutil, subprocess, tarfile, tempfile, urllib.request
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LOCK = json.loads((ROOT / 'tools/runtime-packages.json').read_text())
 
@@ -27,38 +27,19 @@ def extract(deb, directory):
             # Packages are hash-pinned upstream archives, not user-supplied files.
             tar.extractall(directory, filter='tar')
 
-def materialize(source, target, extracted, seen=0):
-    if seen > 16: raise RuntimeError(f'Symlink loop: {source}')
-    if source.is_symlink():
-        link = pathlib.Path(os.readlink(source))
-        resolved = extracted / str(link).lstrip('/') if link.is_absolute() else source.parent / link
-        materialize(resolved, target, extracted, seen + 1)
-    elif source.is_dir():
-        target.mkdir(parents=True, exist_ok=True)
-        for child in source.iterdir():
-            if child.name in ('docs', 'man', 'cacerts'): continue
-            materialize(child, target / child.name, extracted)
-    elif source.is_file():
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-    else:
-        raise RuntimeError(f'Unresolved runtime path: {source}')
-
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--cache', type=pathlib.Path, default=ROOT / '.runtime-cache')
     parser.add_argument('--output', type=pathlib.Path, default=ROOT / 'dist')
     parser.add_argument('--host-jar', type=pathlib.Path, default=ROOT.parent / 'zig-tachi/zig-out/lib/tachi-host.jar')
     parser.add_argument('--zstd-library', type=pathlib.Path, help='Source-built JNI decoder (default: zig-out/lib from zig build device)')
-    parser.add_argument('--firmware-root', type=pathlib.Path, required=True, help='Extracted official Verse 6.10.1461 root, including ebrmain/cramfs/lib (outside this repo)')
-    parser.add_argument('--test-sysroot', action='store_true', help='Also unpack ARM libc for emulation; never shipped to the reader')
+    parser.add_argument('--jre', type=pathlib.Path, default=ROOT / '.runtime-cache/jre/pocketmanga-jre.tar', help='Java runtime from tools/build_jre.py')
     args=parser.parse_args()
     args.cache.mkdir(parents=True, exist_ok=True)
     if not args.host_jar.is_file(): raise SystemExit('Build the host jar first: zig build host in ../zig-tachi')
-    for entry in LOCK['firmware']['libraries'].values():
-        source = args.firmware_root / entry['path'].lstrip('/')
-        if hashlib.sha256(source.read_bytes()).hexdigest() != entry['SHA256']:
-            raise RuntimeError(f'Firmware runtime SHA256 mismatch: {source}')
+    if not args.jre.is_file(): raise SystemExit('Build the Java runtime first: tools/build_jre.py')
+    if hashlib.sha256(args.jre.read_bytes()).hexdigest() != LOCK['jre']['SHA256']:
+        raise SystemExit(f'{args.jre} is not the pinned runtime build; rerun tools/build_jre.py')
     zstd = args.zstd_library or ROOT / 'zig-out/lib/libpocketmanga-zstd.so'
     if not zstd.is_file(): raise SystemExit('Run zig build device first: '+str(zstd))
     app=args.output / 'applications' / 'pocketmanga'
@@ -68,30 +49,20 @@ def main():
     runtime.mkdir(parents=True)
     with tempfile.TemporaryDirectory(prefix='pocketmanga-runtime-') as tmp:
         extracted=pathlib.Path(tmp)
-        for name in ('openjdk-17-jre-headless','ca-certificates'):
-            extract(fetch(name,args.cache),extracted)
-        materialize(extracted / 'usr/lib/jvm/java-17-openjdk-armel', runtime / 'jre', extracted)
-        # Copy only this allowlist of glibc/GCC runtime files, never InkView
-        # or other proprietary firmware libraries. Pin each exact file as well
-        # as the source firmware archive; reject partial/mixed extractions.
+        extract(fetch('ca-certificates',args.cache),extracted)
+        with tarfile.open(args.jre) as tar:
+            # The runtime is a pinned build of ours, not a user-supplied file.
+            tar.extractall(runtime, filter='tar')
+        # The base CDS archive built with it; the VM rejects it if it does not match.
+        shutil.copy2(args.jre.parent / 'classes.jsa', runtime / 'jre/lib/client/classes.jsa')
         (runtime / 'lib').mkdir()
-        for name, entry in LOCK['firmware']['libraries'].items():
-            source = args.firmware_root / entry['path'].lstrip('/')
-            if hashlib.sha256(source.read_bytes()).hexdigest() != entry['SHA256']:
-                raise RuntimeError(f'Firmware runtime SHA256 mismatch: {source}')
-            shutil.copy2(source, runtime / 'lib' / name)
-            (runtime / 'lib' / name).chmod(0o755)
         certs=extracted / 'usr/share/ca-certificates'
         (runtime / 'ca.pem').write_bytes(b'\n'.join(p.read_bytes() for p in sorted(certs.rglob('*.crt'))))
         cacerts=runtime / 'jre/lib/security/cacerts'
         subprocess.run(['java', str(ROOT/'tools/BuildTrustStore.java'),str(certs),str(cacerts)],check=True)
         shutil.copytree(extracted / 'usr/share/doc', runtime / 'licenses', dirs_exist_ok=True, symlinks=True)
-        shutil.copy2(ROOT / 'tools/FIRMWARE-RUNTIME-NOTICE', runtime / 'licenses/FIRMWARE-RUNTIME-NOTICE')
-        shutil.copytree(ROOT / 'tools/runtime-licenses', runtime / 'licenses/firmware-runtime')
-        if args.test_sysroot:
-            sysroot=args.output / 'test-sysroot'
-            for name in ('libc6','libstdc++6','libgcc-s1','zlib1g'):
-                extract(fetch(name,args.cache),sysroot)
+        shutil.copy2(ROOT / 'tools/RUNTIME-NOTICE', runtime / 'licenses/RUNTIME-NOTICE')
+        shutil.copytree(ROOT / 'tools/runtime-licenses', runtime / 'licenses/gcc-runtime')
     shutil.copy2(args.host_jar,runtime/'tachi-host.jar')
     shutil.copy2(zstd, runtime/'lib/libpocketmanga-zstd.so')
     shutil.copy2(zstd.parent.parent/'share/licenses/zstd-LICENSE.txt', runtime/'licenses/zstd-LICENSE.txt')

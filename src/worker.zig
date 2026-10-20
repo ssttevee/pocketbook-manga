@@ -14,6 +14,9 @@ pub fn main(init: std.process.Init) !void {
     var engine: online.Engine = .{ .gpa = init.gpa, .io = device_io.io(), .root = root, .environ = init.minimal.environ };
     const fd: c_int = 3;
     const idle_ms = if (init.minimal.environ.getPosix("POCKETMANGA_WORKER_IDLE_MS")) |text| try std.fmt.parseInt(u64, text, 10) else 60_000;
+    // The first idle pause after a job saves libtachi's startup cache for the
+    // next start; a request arriving meanwhile waits for it once.
+    const cache_idle_ms = @min(1500, idle_ms / 2);
     var active: ?*online.Job = null;
     var id: u64 = 0;
     var last_activity = wire.pm_now_ms();
@@ -48,7 +51,15 @@ pub fn main(init: std.process.Init) !void {
                 active = null;
                 last_activity = wire.pm_now_ms();
             }
-        } else if (wire.pm_now_ms() - last_activity >= idle_ms) std.c._exit(0);
+        } else if (wire.pm_now_ms() - last_activity >= idle_ms) {
+            std.c._exit(0);
+        } else if (engine.runtime) |rt| if (rt.startupCachePending() and wire.pm_now_ms() - last_activity >= cache_idle_ms) {
+            const started = wire.pm_now_ms();
+            if (rt.saveStartupCache()) {
+                std.log.info("startup cache saved ms={d}", .{wire.pm_now_ms() - started});
+            } else |err| std.log.warn("startup cache not saved: {s}", .{@errorName(err)});
+            rt.detachThread();
+        };
         if (!try wire.ready(fd, 100)) continue;
         var arena: std.heap.ArenaAllocator = .init(init.gpa);
         defer arena.deinit();

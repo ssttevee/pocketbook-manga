@@ -142,38 +142,50 @@ fn checkIo(gpa: std.mem.Allocator, io: std.Io, root: []const u8) !void {
     std.debug.print("Linux file metadata, repeated mkdir and entropy passed.\n", .{});
 }
 
+/// The worker runs on the reader's own C library: no GNU runtime library is
+/// mapped from the app, and the JVM is the bundled one.
 pub fn checkMappings(gpa: std.mem.Allocator, io: std.Io, root: []const u8) !void {
     const maps = try std.Io.Dir.cwd().readFileAlloc(io, "/proc/self/maps", gpa, .limited(8 << 20));
     defer gpa.free(maps);
-    const library_path = try std.fmt.allocPrint(gpa, "{s}/runtime/lib", .{root});
-    defer gpa.free(library_path);
-    const resolved = try std.Io.Dir.cwd().realPathFileAlloc(io, library_path, gpa);
+    const resolved = try std.Io.Dir.cwd().realPathFileAlloc(io, root, gpa);
     defer gpa.free(resolved);
-    const bundled = try std.fmt.allocPrint(gpa, "{s}/", .{resolved});
-    defer gpa.free(bundled);
+    const app = try std.fmt.allocPrint(gpa, "{s}/", .{resolved});
+    defer gpa.free(app);
+    const jre = try std.fmt.allocPrint(gpa, "{s}runtime/jre/", .{app});
+    defer gpa.free(jre);
     var found_libc = false;
+    var found_jvm = false;
     var lines = std.mem.splitScalar(u8, maps, '\n');
     while (lines.next()) |line| {
         const slash = std.mem.indexOfScalar(u8, line, '/') orelse continue;
         const path = line[slash..];
         const name = std.fs.path.basename(path);
+        if (std.mem.eql(u8, name, "libjvm.so")) {
+            if (!std.mem.startsWith(u8, path, jre)) {
+                std.debug.print("Unexpected JVM mapping: {s}\n", .{path});
+                return error.ForeignJvm;
+            }
+            found_jvm = true;
+        }
         const gnu = std.mem.startsWith(u8, name, "libc.so") or
             std.mem.startsWith(u8, name, "libc-2.") or
             std.mem.startsWith(u8, name, "ld-linux") or std.mem.startsWith(u8, name, "ld-2.") or
             std.mem.startsWith(u8, name, "libpthread") or std.mem.startsWith(u8, name, "libdl.") or
-            std.mem.startsWith(u8, name, "libm.") or std.mem.startsWith(u8, name, "librt.") or
-            std.mem.startsWith(u8, name, "libresolv") or std.mem.startsWith(u8, name, "libnss_dns") or
-            std.mem.startsWith(u8, name, "libnss_files") or std.mem.startsWith(u8, name, "libstdc++") or
+            std.mem.startsWith(u8, name, "libdl-") or std.mem.startsWith(u8, name, "libm.") or
+            std.mem.startsWith(u8, name, "libm-") or std.mem.startsWith(u8, name, "librt.") or
+            std.mem.startsWith(u8, name, "librt-") or std.mem.startsWith(u8, name, "libresolv") or
+            std.mem.startsWith(u8, name, "libnss_") or std.mem.startsWith(u8, name, "libstdc++") or
             std.mem.startsWith(u8, name, "libgcc_s") or std.mem.startsWith(u8, name, "libatomic");
         if (!gnu) continue;
-        if (!std.mem.startsWith(u8, path, bundled)) {
-            std.debug.print("Unexpected GNU runtime mapping: {s}\n", .{path});
-            return error.MixedRuntime;
+        if (std.mem.startsWith(u8, path, app)) {
+            std.debug.print("Unexpected bundled GNU runtime mapping: {s}\n", .{path});
+            return error.BundledRuntime;
         }
-        if (std.mem.eql(u8, name, "libc.so.6")) found_libc = true;
+        if (std.mem.startsWith(u8, name, "libc.so") or std.mem.startsWith(u8, name, "libc-2.")) found_libc = true;
     }
-    if (!found_libc) return error.BundledLibcNotMapped;
-    std.debug.print("Bundled glibc mappings verified (no firmware glibc/toolchain in process).\n", .{});
+    if (!found_libc) return error.SystemLibcNotMapped;
+    if (!found_jvm) return error.JvmNotMapped;
+    std.debug.print("Worker mappings verified (reader's glibc, bundled JVM).\n", .{});
 }
 
 pub fn checkKernel(environ: std.process.Environ) !void {

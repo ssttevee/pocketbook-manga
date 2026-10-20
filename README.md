@@ -2,20 +2,20 @@
 
 A standalone manga app for the **PocketBook Verse PB629**, inspired by Mihon / Tachiyomi. Source extensions, browsing, search, chapter updates, image downloads and reading all run **on the reader**. No desktop companion or server is used.
 
-The app uses fabrum, fabrum-platform-inkview, libinkview and libtachi. Its install bundle includes an **ARM soft-float OpenJDK 17 Zero runtime**, the libtachi host, and public certificate stores. Java and extension work run in a separate, on-demand worker process. The UI never loads the JVM or libtachi. It downloads chapter images with Zig DNS, native TLS and `std.http.Client` over cancellable `std.Io` tasks. Reading downloaded chapters and scanning local manga need only the native InkView app. See [native download design and verification](docs/native-downloads.md).
+The app uses fabrum, fabrum-platform-inkview, libinkview and libtachi. Its install bundle includes an **OpenJDK 17 runtime built from source for the Verse** (HotSpot's ARM32 client VM with the C1 JIT and class-data sharing), the libtachi host, and public certificate stores. Java and extension work run in a separate, on-demand worker process. The UI never loads the JVM or libtachi. It downloads chapter images with Zig DNS, native TLS and `std.http.Client` over cancellable `std.Io` tasks. Reading downloaded chapters and scanning local manga need only the native InkView app. See [native download design and verification](docs/native-downloads.md).
 
 ## Install
 
 Use `dist/pocketmanga-verse.tar.gz`, or copy the contents of `dist/applications/` to the reader's `applications/` folder by USB. Copy the entire bundle, including `applications/pocketmanga/runtime/`; the `.app` launcher alone is insufficient.
 
-**Verse firmware 6.8 or later is supported.** Both executables target Cortex-A7 and ARM EABI soft-float. The UI targets glibc 2.23 and uses the reader's loader, InkView and C++ libraries. Only the tachi worker uses the bundled PocketBook 6.10 glibc 2.39 and GCC runtime libraries. Do not replace the reader's system libraries.
+**Verse firmware 6.8 or later is supported.** Both executables target Cortex-A7 and ARM EABI soft-float. Both target glibc 2.23 and run on the reader's own loader and C library; the bundle contains no C library. Do not replace the reader's system libraries.
 
 1. Connect the Verse by USB and select **PC link**.
 2. Extract the archive onto the reader's storage, merging its `applications/` folder. Preserve any existing `pocketmanga/library.json`, `progress.json`, `extensions/` and `downloads/` when upgrading.
 3. On macOS, run `dot_clean /Volumes/READER/applications` to remove `._` files, then eject.
 4. Start **pocketmanga** from Applications. Use **pocketmanga-log** if you need diagnostics in `applications/pocketmanga.log`.
 
-After installation, normal use needs only the reader and Wi-Fi. The UI starts the worker through its private loader when online work is requested. For a native chapter, the worker exits as soon as it has resolved the page requests. It otherwise exits after 60 seconds idle; opening a downloaded chapter shuts down an idle worker immediately. Backgrounding or closing the app stops and reaps it. A crashed worker reports an error; the next request can start a fresh one. The launcher retains the executable-stack loader setting needed by some firmware 6.11 releases. A full runtime is included rather than downloaded at first launch.
+After installation, normal use needs only the reader and Wi-Fi. The UI starts the worker when online work is requested. For a native chapter, the worker exits as soon as it has resolved the page requests. It otherwise exits after 60 seconds idle; opening a downloaded chapter shuts down an idle worker immediately. Backgrounding or closing the app stops and reaps it. A crashed worker reports an error; the next request can start a fresh one. The launcher retains the executable-stack loader setting needed by some firmware 6.11 releases. A full runtime is included rather than downloaded at first launch.
 
 ## Use
 
@@ -49,13 +49,13 @@ libtachi's bundled-CA option (`ca_file`, recorded in `patches/libtachi-ca-file.p
 
 `build.zig.zon` points at `../zig-tachi`. Build its `tachi-host.jar` first with `zig build host` in that repository; the tools read it from `../zig-tachi/zig-out/lib`. On this workspace, use `/Users/steve/Programs/Zig/v0.17.0/zig`; the `zig` on PATH is 0.16.
 
-Extract the checksum-pinned official Verse 6.10.1461 firmware **outside the repo**. Reuse an existing complete extraction if available. `prepare_firmware.py` requires `debugfs` (e2fsprogs) and `unsquashfs`, and reads images without mounting them or using root:
+The worker's Java runtime is built from source in Docker; see [the Java runtime](docs/java-runtime.md). The first build compiles a GCC cross toolchain and OpenJDK, which takes about an hour; later builds reuse Docker's cache:
 
 ```
-python3 tools/prepare_firmware.py 6.10 /tmp/inkview-firmware-6.8-device/verse-6.10.1461.zip --output /tmp/pocketmanga-prepared610
+python3 tools/build_jre.py                  # .runtime-cache/jre/, checked against the pinned digest
 ```
 
-The archive URL and SHA256 are in `tools/runtime-packages.json`. Then:
+Then:
 
 ```
 ZIG=/Users/steve/Programs/Zig/v0.17.0/zig
@@ -63,30 +63,27 @@ ZIG=/Users/steve/Programs/Zig/v0.17.0/zig
 "$ZIG" build test                           # model, persistence, UI and background flows
 "$ZIG" build preview -Doptimize=small        # fake-InkView screenshots in preview/*.pgm
 python3 tools/preview_png.py                # lossless preview/*.png for review
-python3 tools/package_device.py --firmware-root /tmp/pocketmanga-prepared610
+python3 tools/package_device.py
 ```
 
-The packaging script downloads checksum-pinned Debian ARM Java and certificate packages listed in `tools/runtime-packages.json`, dereferences configuration symlinks into a relocatable JRE, and creates Java and PEM stores from public CA certificates. It copies only the allowlisted glibc/GCC runtime files from the firmware extraction and verifies each file's SHA256. InkView and other proprietary firmware libraries are never shipped. Packages are cached in `.runtime-cache/`. It does not install Java on the development computer or change the reader's system libraries. The host jar can be overridden with `--host-jar FILE`. `zig build` compiles the worker's zstd decoder from the libzstd source pinned in zig-tachi's `build.zig.zon`, which needs a JDK's `jni.h` through `JAVA_HOME` or `-Djdk=PATH`; packaging copies it from `zig-out/lib`. Runtime packages retain their upstream licenses under `runtime/licenses/` and `runtime/jre/legal/`.
+The packaging script installs the Java runtime after checking it against the digest pinned in `tools/runtime-packages.json`, downloads the checksum-pinned Debian certificate package listed there, and creates Java and PEM stores from its public CA certificates. No firmware file is shipped. Packages are cached in `.runtime-cache/`. It does not install Java on the development computer or change the reader's system libraries. The host jar can be overridden with `--host-jar FILE`. `zig build` compiles the worker's zstd decoder from the libzstd source pinned in zig-tachi's `build.zig.zon`, which needs a JDK's `jni.h` through `JAVA_HOME` or `-Djdk=PATH`; packaging copies it from `zig-out/lib`. OpenJDK's licenses are in `runtime/jre/legal/`; the certificate package's and the statically linked GCC runtime's are under `runtime/licenses/`.
 
 The former desktop companion has been removed from the source and build. All shipping binaries are ARM device components; the diagnostic and preview targets below are developer tests.
 
 ## Verification
 
+The firmware checks run the packaged app on official firmware root filesystems. Extract the checksum-pinned 6.10.1461 and 6.9.862 archives (6.9 is the closest available glibc 2.23 stand-in for 6.8) **outside the repo**. `prepare_firmware.py` requires `debugfs` (e2fsprogs) and `unsquashfs`, and reads images without mounting them or using root:
+
 ```
 "$ZIG" build runtime-probe -Doptimize=small
-python3 tools/package_device.py --firmware-root /tmp/pocketmanga-prepared610 --test-sysroot
 docker build -f tools/Dockerfile.arm-test -t pocketmanga-arm-test:local .
-python3 tools/test_arm_runtime.py sources
-python3 tools/test_arm_runtime.py repo
-python3 tools/test_arm_runtime.py fixture
-```
-
-The existing ARM checks invoke the headless worker with the private loader. The optional Debian test sysroot and Docker image emulate the ARM soft-float environment. They are not shipped to the reader. The ARM fixture checks request planning, both rate-limit layouts, null image URL resolution and JVM fallback. The firmware fixture downloads three ~1 MiB PNGs through native TLS and Zig DNS, requiring the extension's header, Referer, cookie-jar cookie and request-interceptor cookie. Its test CA is generated and installed only into temporary container copies, never into dist/. The repository test exercises live HTTPS using the bundle's CA roots.
-
-For the firmware-container checks, also extract the official 6.9.862 archive (the closest available glibc 2.23 stand-in for 6.8), then:
-
-```
+python3 tools/prepare_firmware.py 6.10 /tmp/inkview-firmware-6.8-device/verse-6.10.1461.zip --output /tmp/pocketmanga-prepared610
 python3 tools/prepare_firmware.py 6.9 /tmp/inkview-firmware-6.8-device/verse-6.9.862.zip --output /tmp/pocketmanga-prepared69
+```
+
+The fixture checks request planning, both rate-limit layouts, null image URL resolution and JVM fallback. It downloads three ~1 MiB PNGs through native TLS and Zig DNS, requiring the extension's header, Referer, cookie-jar cookie and request-interceptor cookie. Its test CA is generated and installed only into temporary container copies, never into dist/. The repository test exercises live HTTPS using the bundle's CA roots.
+
+```
 python3 tools/test_firmware_runtime.py --rootfs /tmp/pocketmanga-prepared69 --version 6.9 --log-launcher
 python3 tools/test_firmware_runtime.py --rootfs /tmp/pocketmanga-prepared610 --version 6.10
 
@@ -106,7 +103,7 @@ python3 tools/test_firmware_runtime.py --rootfs /tmp/pocketmanga-prepared69 --ve
 python3 tools/test_firmware_runtime.py --rootfs /tmp/pocketmanga-prepared610 --version 6.10 --deny-new-syscalls --redirect
 ```
 
-Repeat the ELF audits for the 6.10 root. The containers use the packaged UI, native firmware loader and real InkView library up to symbol resolution, stopping before `InkViewMain`. They exercise the worker's full fixture through the private loader and the actual UI/worker protocol, including progress, crash/retry, version rejection, EOF and idle shutdown. `--parent-exit` deliberately bypasses UI cleanup and checks that its worker exits too. RSS samples include emulator overhead and stop before the hardware event loop.
+Repeat the ELF audits for the 6.10 root. The containers use the packaged UI, native firmware loader and real InkView library up to symbol resolution, stopping before `InkViewMain`. They exercise the worker's full fixture on the firmware's own glibc and the actual UI/worker protocol, including progress, crash/retry, version rejection, EOF and idle shutdown. `--parent-exit` deliberately bypasses UI cleanup and checks that its worker exits too. RSS samples include emulator overhead and stop before the hardware event loop.
 
 The extra QEMU build makes post-3.10 **guest** ARM syscalls return `ENOSYS` (including time64 calls), rather than relying on the host's newer kernel. It is a test artifact only. Local firmware Docker images contain proprietary libraries; keep them local. Logs are in `dist/firmware-tests/`. See [the firmware implementation report](docs/firmware-6.8.md) for the syscall audit, process/library ownership and measured results.
 

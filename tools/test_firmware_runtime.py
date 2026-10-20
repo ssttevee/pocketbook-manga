@@ -116,7 +116,7 @@ def main():
                 if 'Worker exited after abrupt UI exit' not in result.stdout: raise RuntimeError('Orphan worker')
                 print('PASS: parent exit', args.version, suffix)
                 return
-            for expected in ['InkView loaded with RTLD_NOW', 'ARM JNI host:', 'Native UI mappings verified', 'Bundled glibc mappings verified', 'Worker crash reported; retry restarted', 'Worker rejects unsupported protocol', 'Worker exits on pipe EOF', 'Idle worker exits and is reaped', 'Linux file metadata, repeated mkdir and entropy passed']:
+            for expected in ['InkView loaded with RTLD_NOW', 'ARM JNI host:', 'Native UI mappings verified', 'Worker mappings verified', 'Worker crash reported; retry restarted', 'Worker rejects unsupported protocol', 'Worker exits on pipe EOF', 'Idle worker exits and is reaped', 'Linux file metadata, repeated mkdir and entropy passed']:
                 if expected not in result.stdout: raise RuntimeError('Missing check: '+expected)
             if args.deny_new_syscalls and 'Raw ARM statx and getrandom return ENOSYS' not in result.stdout: raise RuntimeError('Syscall denial did not reach the ARM guest')
             if args.mode == 'fixture':

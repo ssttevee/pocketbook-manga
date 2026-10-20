@@ -18,7 +18,7 @@ def main():
     runtime = app/'runtime'
     firmware = args.rootfs.resolve()
     search = [firmware/'lib', firmware/'ebrmain/lib', firmware/'usr/lib', firmware/'ebrmain/cramfs/lib']
-    if args.process == 'worker': search = [runtime/'lib', runtime/'jre/lib', runtime/'jre/lib/server'] + search
+    if args.process == 'worker': search = [runtime/'lib', runtime/'jre/lib', runtime/'jre/lib/client'] + search
     def resolve(path):
         # Absolute symlinks in a rootfs must resolve inside that rootfs.
         for _ in range(32):
@@ -36,8 +36,7 @@ def main():
     if args.process == 'ui':
         queue = [app/'bin/pocketmanga', locate('libinkview.so')]
     else:
-        queue = [app/'bin/pocketmanga-worker'] + [runtime/'jre/lib'/name for name in ['server/libjvm.so','libjava.so','libjimage.so','libnet.so','libnio.so','libzip.so','libverify.so','libmanagement.so','libmanagement_ext.so','libextnet.so']]
-        queue += list((runtime/'lib').iterdir())
+        queue = [app/'bin/pocketmanga-worker'] + sorted((runtime/'jre/lib').rglob('*.so')) + sorted((runtime/'lib').iterdir())
     entries = {}
     exports = set()
     imports = {}
@@ -66,10 +65,10 @@ def main():
     for path, required in imports.items():
         missing = required-exports
         if missing: raise RuntimeError(f'{path}: missing versioned symbols: {sorted(missing)}')
-    # No second glibc/GCC runtime may enter the closure from the firmware.
-    gnu = json.loads((ROOT/'tools/runtime-packages.json').read_text())['firmware']['libraries']
+    # The worker runs on the firmware's own glibc and GCC runtime; none is bundled.
+    gnu = re.compile(r'^(ld-linux|ld-2\.|libc[.-]|libm[.-]|libpthread|libdl[.-]|librt[.-]|libresolv|libnss_|libstdc\+\+|libgcc_s|libatomic)')
     for path, entry in entries.items():
-        if args.process == 'worker' and pathlib.Path(path).name in gnu and entry['origin'] != 'bundle': raise RuntimeError('Mixed runtime: '+path)
+        if entry['origin'] == 'bundle' and gnu.match(pathlib.Path(path).name): raise RuntimeError('Bundled GNU runtime: '+path)
     if args.process == 'ui' and any(entry['origin'] == 'bundle' and '/runtime/' in path for path, entry in entries.items()): raise RuntimeError('Private runtime in UI')
     if args.process == 'worker' and any('libinkview' in path for path in entries): raise RuntimeError('InkView in worker')
     report = {'process':args.process,'rootfs':str(firmware),'versioned_imports':sum(map(len,imports.values())),'libraries':entries}

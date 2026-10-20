@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Extract official Verse images for packaging/tests, without mounting anything.
+"""Extract official Verse images for the firmware tests, without mounting anything.
 
 Keep --output outside the repository: the test roots contain proprietary files.
 Requires debugfs (e2fsprogs) and unsquashfs. Downloads are explicit, never automatic.
 """
-import argparse, gzip, hashlib, json, pathlib, shutil, struct, subprocess, tempfile, zipfile
+import argparse, gzip, hashlib, pathlib, shutil, struct, subprocess, tempfile, zipfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FIRMWARE = {
     '6.9': ('45d889ab952e0d66775ed0c07931061bb12f6a38949a354b302808a16eb8a042', 'U629.6.9.862'),
-    '6.10': (json.loads((ROOT/'tools/runtime-packages.json').read_text())['firmware']['SHA256'], 'U629.6.10.1461'),
+    '6.10': ('b4f21e38bc9213dd3588e77258e26f72dc644fa565c98260f7334fd62eaabe8a', 'U629.6.10.1461'),
 }
 
 def main():

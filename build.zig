@@ -52,7 +52,8 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     }) });
     device.root_module.addCSourceFile(.{ .file = b.path("src/posix_compat.c"), .flags = &.{} });
-    const worker_target = b.resolveTargetQuery(.{ .cpu_arch = .arm, .os_tag = .linux, .abi = .gnueabi, .cpu_model = .{ .explicit = &std.Target.arm.cpu.cortex_a7 }, .glibc_version = .{ .major = 2, .minor = 39, .patch = 0 } });
+    // The worker's JVM is built for the same glibc, so it runs on the reader's own.
+    const worker_target = device_target;
     const worker = b.addExecutable(.{ .name = "pocketmanga-worker", .root_module = b.createModule(.{
         .root_source_file = b.path("src/worker.zig"),
         .target = worker_target,

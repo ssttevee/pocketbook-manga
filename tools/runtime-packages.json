@@ -1,130 +1,17 @@
 {
-  "base_url": "https://deb.debian.org/debian/",
-  "packages": {
-    "ca-certificates": {
-      "Version": "20230311+deb12u1",
-      "Filename": "pool/main/c/ca-certificates/ca-certificates_20230311+deb12u1_all.deb",
-      "SHA256": "0d5f444f594e48c1e16a41d8fc628a09b24c658916a1274025c2330f2a802bed",
-      "Size": "155260"
-    },
-    "libatomic1": {
-      "Version": "12.2.0-14+deb12u1",
-      "Filename": "pool/main/g/gcc-12/libatomic1_12.2.0-14+deb12u1_armel.deb",
-      "SHA256": "cf05c67ba9e699105aff6717e02b5139cf77c1391d8a717e563de088839711ef",
-      "Size": "9056"
-    },
-    "libgcc-s1": {
-      "Version": "12.2.0-14+deb12u1",
-      "Filename": "pool/main/g/gcc-12/libgcc-s1_12.2.0-14+deb12u1_armel.deb",
-      "SHA256": "4d9bf44b70e4437e652160ec8c042ed7a186662281f4d58a728f4a87225f1527",
-      "Size": "38300"
-    },
-    "libstdc++6": {
-      "Version": "12.2.0-14+deb12u1",
-      "Filename": "pool/main/g/gcc-12/libstdc++6_12.2.0-14+deb12u1_armel.deb",
-      "SHA256": "0ddc1914184e5beb5db4c7d7c6c2ce7de14094ac8cdf1d5b9ed6e2097ff8b6b1",
-      "Size": "506204"
-    },
-    "libc6": {
-      "Version": "2.36-9+deb12u14",
-      "Filename": "pool/main/g/glibc/libc6_2.36-9+deb12u14_armel.deb",
-      "SHA256": "5eb674d8a73cccad372a7d35878209fc403266da1c23eb5974cdadb69de4091e",
-      "Size": "2141784"
-    },
-    "openjdk-17-jre-headless": {
-      "Version": "17.0.19+10-1~deb12u2",
-      "Filename": "pool/main/o/openjdk-17/openjdk-17-jre-headless_17.0.19+10-1~deb12u2_armel.deb",
-      "SHA256": "e184a19100a14ed54a97b795223a2c9e76c2281e29abec288a5bd7255366c65f",
-      "Size": "33050372"
-    },
-    "zlib1g": {
-      "Version": "1:1.2.13.dfsg-1",
-      "Filename": "pool/main/z/zlib/zlib1g_1.2.13.dfsg-1_armel.deb",
-      "SHA256": "e048eb368e45058d2a62449e8a967a4cb336c7af05c9075a9bbd1107c38f627a",
-      "Size": "73580"
-    },
-    "gcc-12-base": {
-      "Version": "12.2.0-14+deb12u1",
-      "Filename": "pool/main/g/gcc-12/gcc-12-base_12.2.0-14+deb12u1_armel.deb",
-      "SHA256": "5561d1a181ee3a2b70b7d1e903f247372eb7acf8eefdec6b706c8051f7922b20",
-      "Size": "37628"
-    }
-  },
-  "firmware": {
-    "version": "U629.6.10.1461",
-    "glibc": "2.39",
-    "toolchain": "GCC 13.3.0",
-    "url": "https://download.pocketbook-int.com/fw/Liangyan/629/user/20250826/sw_20250826_U629_6.10.1461_accessibility_eink_user.zip",
-    "SHA256": "b4f21e38bc9213dd3588e77258e26f72dc644fa565c98260f7334fd62eaabe8a",
-    "libraries": {
-      "ld-linux.so.3": {
-        "path": "/lib/ld-linux.so.3",
-        "SHA256": "b45933fed0f9e76200896cf95f76912b9098acbd721bb690c9c384de48a09229"
-      },
-      "libc.so.6": {
-        "path": "/lib/libc.so.6",
-        "SHA256": "db8bbf8037820d6091a0192d6bc47163e1633bbc6aaab79c37e76d60837cc03d"
-      },
-      "libm.so.6": {
-        "path": "/lib/libm.so.6",
-        "SHA256": "b72653cc3b7eb3fb4340e02ab906e1092b6ff04d4109a8bc7653228c1be5afb9"
-      },
-      "libpthread.so.0": {
-        "path": "/lib/libpthread.so.0",
-        "SHA256": "be64b3d718ead342674ecd0b50f3ca90baa179aff5b5d4d46cd44534c71a1d50"
-      },
-      "libdl.so.2": {
-        "path": "/lib/libdl.so.2",
-        "SHA256": "f4d2424b05bd7a00f03d888d8105a61ac5eeff16a1128533da4e12f7b395d829"
-      },
-      "librt.so.1": {
-        "path": "/lib/librt.so.1",
-        "SHA256": "1f9f682b097ac3e43cb6e5623bfe3b1b537e89b4ca5c4caa962db7c2055c46f2"
-      },
-      "libresolv.so.2": {
-        "path": "/lib/libresolv.so.2",
-        "SHA256": "2c71e9c9a7ad27819229b6b2784d900a5374f54aa8e627acace73567085072bf"
-      },
-      "libutil.so.1": {
-        "path": "/lib/libutil.so.1",
-        "SHA256": "5f03f0715746b10af2ca82585256631ff87dd87d212da43cf5fc7fd75880c278"
-      },
-      "libnsl.so.1": {
-        "path": "/lib/libnsl.so.1",
-        "SHA256": "78b1ccafdab8b63ab08e3f3eaa36f580b2389958614ea9bf947cfa015c2c84bf"
-      },
-      "libnss_dns.so.2": {
-        "path": "/lib/libnss_dns.so.2",
-        "SHA256": "e023637bd52d5a9431357ec582019851d6bf2a3cb51b629561ab063ba0bf1c22"
-      },
-      "libnss_files.so.2": {
-        "path": "/lib/libnss_files.so.2",
-        "SHA256": "7a60dd79aa011266ace49af6763aba7b57e17f94bbac21358f3f74fc982c0b08"
-      },
-      "libnss_compat.so.2": {
-        "path": "/lib/libnss_compat.so.2",
-        "SHA256": "87e56313655918ead471cf8396e8e6ed8fcf0b51d7fe1c08e4c73460ff7dfb4c"
-      },
-      "libnss_db.so.2": {
-        "path": "/lib/libnss_db.so.2",
-        "SHA256": "c18eb5487b07b0f8dc2135f523d7d0dba74baa0c19148661e74e76ce427fd8ad"
-      },
-      "libnss_hesiod.so.2": {
-        "path": "/lib/libnss_hesiod.so.2",
-        "SHA256": "8b5fdb1b2079593d7724358efde5d4972185a7335ef59d4e46f800993364d462"
-      },
-      "libgcc_s.so.1": {
-        "path": "/lib/libgcc_s.so.1",
-        "SHA256": "e57f0e7ec593d0ef699f04d7dc1b4b9fd8ad96b62044d8f732f2f2e5bff8f89a"
-      },
-      "libstdc++.so.6": {
-        "path": "/ebrmain/cramfs/lib/libstdc++.so.6.0.32",
-        "SHA256": "102872c88d755390852d952846e69597b53c2376528ed7b3b257312416bc30ff"
-      },
-      "libatomic.so.1": {
-        "path": "/ebrmain/cramfs/lib/libatomic.so.1.2.0",
-        "SHA256": "585cb628e8b1df0ab178f8157aa9ea287a90c183680ab10359ffb4cc0af28016"
-      }
-    }
+ "base_url": "https://deb.debian.org/debian/",
+ "packages": {
+  "ca-certificates": {
+   "Version": "20230311+deb12u1",
+   "Filename": "pool/main/c/ca-certificates/ca-certificates_20230311+deb12u1_all.deb",
+   "SHA256": "0d5f444f594e48c1e16a41d8fc628a09b24c658916a1274025c2330f2a802bed",
+   "Size": "155260"
   }
+ },
+ "jre": {
+  "Version": "17.0.20.1+1-pocketmanga",
+  "Source": "https://github.com/openjdk/jdk17u/commit/c35a8d5a87559ad2734f1023bb321176c13c7ba0 (jdk-17.0.20.1-ga)",
+  "Build": "tools/jre/Dockerfile via tools/build_jre.py",
+  "SHA256": "5e846fdaa79d725aeb42c81131c1c99a150618b52e19f8ae63f4402384987830"
+ }
 }

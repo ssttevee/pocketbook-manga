@@ -86,14 +86,12 @@ pub const Client = struct {
             self.pid = -1;
         }
         if (self.pid > 0) return;
-        const loader = try std.fmt.allocPrintSentinel(a, "{s}/runtime/lib/ld-linux.so.3", .{engine.root}, 0);
         const binary = try std.fmt.allocPrintSentinel(a, "{s}/bin/pocketmanga-worker", .{engine.root}, 0);
         const root = try a.dupeSentinel(u8, engine.root, 0);
-        const libraries = try std.fmt.allocPrintSentinel(a, "{s}/runtime/lib:{s}/runtime/jre/lib:{s}/runtime/jre/lib/server:/ebrmain/lib:/usr/lib:/ebrmain/cramfs/lib", .{ engine.root, engine.root, engine.root }, 0);
         const emulator = engine.environ.getPosix("POCKETMANGA_WORKER_EMULATOR");
         var argv: std.ArrayList(?[*:0]const u8) = .empty;
         if (emulator) |exe| try argv.append(a, (try a.dupeSentinel(u8, exe, 0)).ptr);
-        try argv.appendSlice(a, &.{ loader.ptr, "--inhibit-cache", "--library-path", libraries.ptr, "--argv0", binary.ptr, binary.ptr, "--serve", root.ptr });
+        try argv.appendSlice(a, &.{ binary.ptr, "--serve", root.ptr });
         try argv.append(a, null);
         self.ready.store(false, .release);
         self.spawned_ms = wire.pm_now_ms();
