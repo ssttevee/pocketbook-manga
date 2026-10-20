@@ -39,7 +39,7 @@ pub const Job = struct {
         defer if (self.engine.runtime) |rt| rt.detachThread();
         const execute = self.engine.execute_fn orelse Engine.execute;
         execute(self.engine, self) catch |err| {
-            self.failure = std.fmt.allocPrint(self.arena.allocator(), "{s}: {s}", .{ @errorName(err), tachi.lastError() }) catch "Operation failed (out of memory)";
+            if (self.failure == null) self.failure = std.fmt.allocPrint(self.arena.allocator(), "{s}: {s}", .{ @errorName(err), tachi.lastError() }) catch "Operation failed (out of memory)";
             if (!@import("builtin").is_test) std.log.warn("{s}", .{self.failure.?});
         };
     }
@@ -265,7 +265,7 @@ pub const Engine = struct {
             .remote = details,
         };
         try job.checkCancelled();
-        try self.saveLibrary(a, try catalog.merge(a, try self.readLibrary(a), book));
+        try self.saveLibrary(a, try catalog.refresh(a, try self.readLibrary(a), book));
         return book;
     }
     fn planDownload(self: *Engine, job: *Job, book: lib.Manga, chapter: lib.Chapter) !void {
@@ -273,7 +273,13 @@ pub const Engine = struct {
         const id = book.source_id orelse return error.LocalTitle;
         const remote = chapter.remote orelse return error.MissingChapterMetadata;
         const args = try std.json.Stringify.valueAlloc(a, .{ .chapter = remote }, .{});
-        const json = try self.runtime.?.call(id, "imageRequests", args);
+        const json = self.runtime.?.call(id, "imageRequests", args) catch |err| {
+            if (err == error.ExtensionError and std.mem.endsWith(u8, tachi.lastError(), "HTTP error 404")) {
+                job.failure = "This chapter is no longer on the source. Refresh chapters to update the list.";
+                return error.ChapterRemoved;
+            }
+            return err;
+        };
         defer self.gpa.free(json);
         job.result.image_requests = try parse([]const protocol.ImageRequest, a, json);
     }

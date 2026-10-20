@@ -103,6 +103,24 @@ test "download merge replaces a chapter without losing other titles or chapter o
     try std.testing.expectEqualStrings("new.png", merged.manga[0].chapters[2].pages[0]);
     try std.testing.expectEqualStrings("Title B", merged.manga[1].title);
 }
+test "refresh drops chapters the source removed unless they were downloaded" {
+    const catalog = @import("catalog.zig");
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const old: lib.Library = .{ .manga = &.{.{ .id = "a", .title = "Title A", .chapters = &.{
+        .{ .id = "c1", .title = "Chapter 1" },
+        .{ .id = "gone", .title = "Chapter 2 (removed)" },
+        .{ .id = "kept", .title = "Chapter 3 (removed, downloaded)", .pages = &.{"three.png"} },
+    } }} };
+    const refreshed = try catalog.refresh(arena.allocator(), old, .{ .id = "a", .title = "Title A", .chapters = &.{
+        .{ .id = "c1", .title = "Chapter 1" },
+        .{ .id = "c4", .title = "Chapter 4" },
+    } });
+    try lib.validate(refreshed);
+    const chapters = refreshed.manga[0].chapters;
+    try std.testing.expectEqual(3, chapters.len);
+    for (chapters) |ch| try std.testing.expect(!std.mem.eql(u8, ch.id, "gone"));
+}
 test {
     _ = @import("online_test.zig");
 }

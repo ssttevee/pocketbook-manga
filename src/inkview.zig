@@ -18,6 +18,19 @@ fn connectNetwork() !void {
 }
 var page_pixels: []u8 = &.{};
 
+/// Width and height from a PNG's IHDR chunk.
+fn pngSize(io: std.Io, path: []const u8) ![2]u32 {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    var header: [24]u8 = undefined;
+    if (try file.readPositionalAll(io, &header, 0) != header.len) return error.InvalidPng;
+    if (!std.mem.eql(u8, header[0..8], "\x89PNG\r\n\x1a\n") or !std.mem.eql(u8, header[12..16], "IHDR")) return error.InvalidPng;
+    const width = std.mem.readInt(u32, header[16..20], .big);
+    const height = std.mem.readInt(u32, header[20..24], .big);
+    if (width == 0 or height == 0) return error.InvalidPng;
+    return .{ width, height };
+}
+
 fn loadPage(session: *Session, relative: []const u8) !void {
     const gpa = session.model.gpa;
     if (!lib.safePath(relative)) return error.UnsafePagePath;
@@ -28,7 +41,14 @@ fn loadPage(session: *Session, relative: []const u8) !void {
     const w = host.api.ScreenWidth();
     const h = host.api.ScreenHeight();
     const ext = std.fs.path.extension(relative);
-    const bitmap = if (std.ascii.eqlIgnoreCase(ext, ".png")) png(path, w, h, 1, 1) else jpeg(path, w, h, 64, 128, 1);
+    const bitmap = if (std.ascii.eqlIgnoreCase(ext, ".png")) bitmap: {
+        // LoadPNGStretch crashes fitting landscape pages itself, so fit them here.
+        const size = try pngSize(session.io, path);
+        const fit = @min(@as(f32, @floatFromInt(w)) / @as(f32, @floatFromInt(size[0])), @as(f32, @floatFromInt(h)) / @as(f32, @floatFromInt(size[1])));
+        const fw: c_int = @max(1, @as(c_int, @intFromFloat(@round(@as(f32, @floatFromInt(size[0])) * fit))));
+        const fh: c_int = @max(1, @as(c_int, @intFromFloat(@round(@as(f32, @floatFromInt(size[1])) * fit))));
+        break :bitmap png(path, fw, fh, 0, 1);
+    } else jpeg(path, w, h, 64, 128, 1);
     const bm = bitmap orelse return error.ImageDecodeFailed;
     defer std.c.free(bm);
     const depth = bm.depth & 0xff;

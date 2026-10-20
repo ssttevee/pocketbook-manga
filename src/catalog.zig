@@ -36,3 +36,22 @@ pub fn merge(gpa: std.mem.Allocator, old: lib.Library, manga: lib.Manga) !lib.Li
     titles[old.manga.len] = manga;
     return .{ .manga = titles };
 }
+
+/// `merge` for a source's full chapter list: chapters it no longer lists are
+/// dropped, unless pages were downloaded for them.
+pub fn refresh(gpa: std.mem.Allocator, old: lib.Library, manga: lib.Manga) !lib.Library {
+    const merged = try merge(gpa, old, manga);
+    const index = for (merged.manga, 0..) |m, i| {
+        if (std.mem.eql(u8, m.id, manga.id)) break i;
+    } else return merged;
+    var kept: std.ArrayList(lib.Chapter) = .empty;
+    for (merged.manga[index].chapters) |ch| {
+        const listed = for (manga.chapters) |current| {
+            if (std.mem.eql(u8, current.id, ch.id)) break true;
+        } else false;
+        if (listed or ch.pages.len > 0) try kept.append(gpa, ch);
+    }
+    const titles = try gpa.dupe(lib.Manga, merged.manga);
+    titles[index].chapters = kept.items;
+    return .{ .manga = titles };
+}
