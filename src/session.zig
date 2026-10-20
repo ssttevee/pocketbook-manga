@@ -320,7 +320,10 @@ pub const Session = struct {
             .mark_previous => _ = try engine.markPreviousRead(chapter_id),
             .bookmark => _ = try engine.setBookmark(one, true),
             .unbookmark => _ = try engine.setBookmark(one, false),
-            .download => _ = try engine.queue.enqueue(engine, one, true),
+            .download => {
+                try self.connectForDownloads();
+                _ = try engine.queue.enqueue(engine, one, true);
+            },
             .delete_download => if (try engine.deleteDownloads(one) == 0) {
                 self.status = "Kept by the download deletion settings";
             },
@@ -505,6 +508,14 @@ pub const Session = struct {
         try self.reloadLibrary();
     }
 
+    /// Turns Wi-Fi on for the download queue and tells libtachi, which
+    /// keeps downloads to Wi-Fi.
+    pub fn connectForDownloads(self: *Session) !void {
+        const engine = self.browser.engine orelse return;
+        if (self.browser.ensure_network) |connect| try connect();
+        engine.setNetwork(.wifi);
+    }
+
     /// Queues the current title's unread chapters that aren't downloaded.
     pub fn queueUnread(self: *Session) !void {
         const engine = self.browser.engine orelse return;
@@ -513,6 +524,7 @@ pub const Session = struct {
         var ids: std.ArrayList([]const u8) = .empty;
         defer ids.deinit(model.gpa);
         for (model.library.manga[model.manga].chapters) |ch| if (!model.readState(ch).read and ch.pages.len == 0) try ids.append(model.gpa, ch.id);
+        try self.connectForDownloads();
         const added = try engine.queue.enqueue(engine, ids.items, true);
         self.status = try std.fmt.allocPrint(model.gpa, "{d} chapters queued", .{added});
     }

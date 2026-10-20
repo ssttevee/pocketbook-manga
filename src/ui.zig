@@ -652,6 +652,7 @@ fn feedView(ui: *app.Ui, session: *const Session) !void {
         try onlineButton(ui, "queue-start", "Start", .queue_start);
         try onlineButton(ui, "queue-pause", "Pause", .queue_pause);
         try onlineButton(ui, "queue-clear", "Clear", .queue_clear);
+        if (session.browser.engine) |engine| if (engine.queue.waitingForWifi()) try text(ui, "Waiting for Wi-Fi", 12, 40);
     }
     {
         try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .init(10, 10, 8, 0), .child_gap = 4 } });
@@ -864,7 +865,10 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
         },
         .queue_start, .queue_pause, .queue_clear => if (b.engine) |engine| {
             switch (command) {
-                .queue_start => try engine.queue.start(engine),
+                .queue_start => {
+                    try session.connectForDownloads();
+                    try engine.queue.start(engine);
+                },
                 .queue_pause => engine.queue.pause(engine),
                 else => try engine.queue.clear(engine),
             }
