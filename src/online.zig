@@ -17,6 +17,8 @@ pub const Job = struct {
     phase: std.atomic.Value(Phase) = .init(.operation),
     // Nested JVM image requests report startup on the owning download job.
     phase_target: ?*std.atomic.Value(Phase) = null,
+    // Spawn to ready, when this job had to start the worker.
+    worker_start_ms: u64 = 0,
     pages_done: std.atomic.Value(usize) = .init(0),
     pages_total: std.atomic.Value(usize) = .init(0),
     pub fn start(engine: *Engine, request: Request) !*Job {

@@ -13,6 +13,7 @@ pub const Client = struct {
     interrupted: std.atomic.Value(bool) = .init(false),
     ready: std.atomic.Value(bool) = .init(false),
     pid: c_int = -1,
+    spawned_ms: u64 = 0,
     fd: c_int = -1,
     next_id: u64 = 1,
     test_crash_next: bool = false,
@@ -95,6 +96,7 @@ pub const Client = struct {
         try argv.appendSlice(a, &.{ loader.ptr, "--inhibit-cache", "--library-path", libraries.ptr, "--argv0", binary.ptr, binary.ptr, "--serve", root.ptr });
         try argv.append(a, null);
         self.ready.store(false, .release);
+        self.spawned_ms = wire.pm_now_ms();
         self.pid = pm_spawn(argv.items[0].?, @ptrCast(argv.items.ptr), &self.fd);
         if (self.pid < 0) return error.WorkerStartFailed;
     }
@@ -129,7 +131,10 @@ pub const Client = struct {
             const response = try wire.receiveTimed(engine.io, self.fd, a);
             if (response.version != p.version or response.id != id) return error.WorkerProtocolMismatch;
             if (response.kind == .ready) {
-                self.ready.store(true, .release);
+                if (!self.ready.swap(true, .acq_rel)) {
+                    job.worker_start_ms = wire.pm_now_ms() - self.spawned_ms;
+                    std.log.info("worker ready startup_ms={d}", .{job.worker_start_ms});
+                }
                 job.setPhase(.operation);
                 continue;
             }

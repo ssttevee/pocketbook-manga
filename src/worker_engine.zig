@@ -7,6 +7,7 @@ const catalog = @import("catalog.zig");
 const local = @import("local.zig");
 const protocol = @import("protocol.zig");
 const models = @import("source_models.zig");
+const wire = @import("worker_wire.zig");
 pub const Request = protocol.Request;
 pub const Result = protocol.Result;
 pub const Job = struct {
@@ -86,6 +87,7 @@ pub const Engine = struct {
         defer a.free(ca);
         const trust = try std.fmt.allocPrint(a, "-Djavax.net.ssl.trustStore={s}/runtime/jre/lib/security/cacerts", .{self.root});
         defer a.free(trust);
+        const started = wire.pm_now_ms();
         const rt = try tachi.Runtime.init(a, self.io, .{
             .data_dir = data,
             .host_jar = self.host_jar orelse jar,
@@ -97,7 +99,9 @@ pub const Engine = struct {
         });
         // Never attempt to recreate HotSpot in this process, even if restore fails.
         self.runtime = rt;
+        const jvm_ready = wire.pm_now_ms();
         const restored = try rt.restore();
+        std.log.info("worker runtime jvm_ms={d} restore_ms={d}", .{ jvm_ready - started, wire.pm_now_ms() - jvm_ready });
         defer a.free(restored);
         const report = try std.json.parseFromSlice(tachi.manage.RestoreResult, a, restored, models.parse_options);
         defer report.deinit();
@@ -173,17 +177,17 @@ pub const Engine = struct {
                 const json = try rt.call(source, "pages", args);
                 defer self.gpa.free(json);
                 const pages = try parse([]const models.Page, a, json);
-                const started = @import("worker_wire.zig").pm_now_ms();
+                const started = wire.pm_now_ms();
                 var total: usize = 0;
                 for (pages, 0..) |page, i| {
-                    const before = @import("worker_wire.zig").pm_now_ms();
+                    const before = wire.pm_now_ms();
                     const page_json = try std.json.Stringify.valueAlloc(a, page, .{});
                     const image = try rt.fetchImage(source, page_json);
                     defer image.deinit(self.gpa);
                     total += image.bytes.len;
-                    std.log.info("JVM benchmark page {d}/{d} bytes={d} network_ms={d}", .{ i + 1, pages.len, image.bytes.len, @import("worker_wire.zig").pm_now_ms() - before });
+                    std.log.info("JVM benchmark page {d}/{d} bytes={d} network_ms={d}", .{ i + 1, pages.len, image.bytes.len, wire.pm_now_ms() - before });
                 }
-                std.log.info("JVM benchmark chapter pages={d} bytes={d} network_ms={d}", .{ pages.len, total, @import("worker_wire.zig").pm_now_ms() - started });
+                std.log.info("JVM benchmark chapter pages={d} bytes={d} network_ms={d}", .{ pages.len, total, wire.pm_now_ms() - started });
             },
             .image => |request| {
                 if (request.cookies.len > 0) {

@@ -246,7 +246,7 @@ pub fn download(engine: *online.Engine, job: *online.Job) !void {
     var disk_ms: i64 = 0;
     var skipped: usize = 0;
     var native_pages: usize = 0;
-    defer std.log.info("chapter pages={d}/{d} resumed={d} native={d} bytes={d} network_ms={d} disk_ms={d} elapsed_ms={d} planning_ms={d} total_elapsed_ms={d}", .{ job.pages_done.load(.acquire), requests.len, skipped, native_pages, total_bytes, network_ms, disk_ms, millis(io) - started, planning_ms, millis(io) - chapter_started });
+    defer std.log.info("chapter pages={d}/{d} resumed={d} native={d} bytes={d} network_ms={d} disk_ms={d} elapsed_ms={d} planning_ms={d} worker_start_ms={d} total_elapsed_ms={d}", .{ job.pages_done.load(.acquire), requests.len, skipped, native_pages, total_bytes, network_ms, disk_ms, millis(io) - started, planning_ms, job.worker_start_ms, millis(io) - chapter_started });
     for (requests, 0..) |image_request, i| {
         try io.checkCancel();
         if (try store.complete(i)) |path| {
