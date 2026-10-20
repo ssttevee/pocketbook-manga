@@ -88,6 +88,7 @@ pub const Session = struct {
         self.browser.busy = null;
         errdefer job.deinit();
         if (job.result.library_changed) try self.reloadLibrary();
+        if (self.model.screen == .backup) try self.refreshBackups();
         self.download_error = job.failure != null and job.request == .download;
         self.download_canceled = self.download_error and std.mem.eql(u8, job.failure.?, "Canceled");
         if (self.download_error) try self.rememberDownload(job.request.download);
@@ -247,6 +248,90 @@ pub const Session = struct {
         try self.refreshRows();
     }
 
+    /// Where backups are written and found, and where a Mihon downloads
+    /// folder is exchanged.
+    pub fn backupDir(self: *const Session, a: std.mem.Allocator) ![]const u8 {
+        return std.fs.path.join(a, &.{ self.root, "backups" });
+    }
+    pub fn mihonDownloadsDir(self: *const Session, a: std.mem.Allocator) ![]const u8 {
+        return std.fs.path.join(a, &.{ self.root, "mihon-downloads" });
+    }
+
+    /// Lists the backups in `backupDir`, newest name first, as feed rows.
+    pub fn refreshBackups(self: *Session) !void {
+        var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        var rows: std.ArrayList(FeedRow) = .empty;
+        if (std.Io.Dir.cwd().openDir(self.io, try self.backupDir(a), .{ .iterate = true })) |dir| {
+            var d = dir;
+            defer d.close(self.io);
+            var it = d.iterate();
+            while (try it.next(self.io)) |e| {
+                if (e.kind != .file or !std.mem.endsWith(u8, e.name, ".tachibk")) continue;
+                try rows.append(a, .{ .pick = .{ .manga = 0, .chapter = 0 }, .title = try a.dupe(u8, e.name), .detail = "Tap to restore" });
+            }
+        } else |_| {}
+        std.mem.sort(FeedRow, rows.items, {}, struct {
+            fn less(_: void, x: FeedRow, y: FeedRow) bool {
+                return std.mem.order(u8, x.title, y.title) == .gt;
+            }
+        }.less);
+        self.model.feed_count = rows.items.len;
+        self.feed = rows.items;
+        if (self.feed_arena) |*old| old.deinit();
+        self.feed_arena = arena;
+    }
+
+    /// A backup file name as Mihon makes them, from the time now (UTC).
+    pub fn backupName(self: *const Session, a: std.mem.Allocator) ![]const u8 {
+        const ms = std.Io.Clock.real.now(self.io).toMilliseconds();
+        const days = @divFloor(ms, std.time.ms_per_day);
+        const date = tachi.views.civilFromDays(@intCast(days));
+        const minutes = @divFloor(ms - days * std.time.ms_per_day, std.time.ms_per_min);
+        return std.fmt.allocPrint(a, "pocketmanga_{d}-{d:0>2}-{d:0>2}_{d:0>2}-{d:0>2}.tachibk", .{ date.year, date.month, date.day, @divFloor(minutes, 60), @mod(minutes, 60) });
+    }
+
+    pub const CategoryEdit = union(enum) { up: u32, down: u32, delete: u32 };
+
+    pub fn editCategory(self: *Session, change: CategoryEdit) !void {
+        const engine = self.browser.engine orelse return;
+        var position: usize = 0;
+        const id = switch (change) {
+            inline else => |v| v,
+        };
+        const sorted = try self.model.gpa.dupe(tachi.library.Category, self.model.library.categories);
+        defer self.model.gpa.free(sorted);
+        std.mem.sort(tachi.library.Category, sorted, {}, struct {
+            fn less(_: void, x: tachi.library.Category, y: tachi.library.Category) bool {
+                return x.order < y.order;
+            }
+        }.less);
+        for (sorted, 0..) |c, i| if (c.id == id) {
+            position = i;
+        };
+        switch (change) {
+            .up => if (position > 0) try engine.moveCategory(id, position - 1),
+            .down => try engine.moveCategory(id, position + 1),
+            .delete => try engine.deleteCategory(id),
+        }
+        try self.reloadLibrary();
+    }
+
+    pub fn addCategory(self: *Session, name: []const u8) !void {
+        const engine = self.browser.engine orelse return;
+        const trimmed = std.mem.trim(u8, name, " ");
+        if (trimmed.len == 0) return;
+        _ = engine.createCategory(trimmed) catch |err| switch (err) {
+            error.DuplicateCategory => {
+                self.status = "A category with that name exists";
+                return;
+            },
+            else => return err,
+        };
+        try self.reloadLibrary();
+    }
+
     /// Queues the current title's unread chapters that aren't downloaded.
     pub fn queueUnread(self: *Session) !void {
         const engine = self.browser.engine orelse return;
@@ -389,6 +474,7 @@ pub const Session = struct {
         const feed = self.model.screen == .updates or self.model.screen == .history or self.model.screen == .queue;
         if (feed and old_screen != self.model.screen) try self.refreshFeed();
         if (self.model.screen == .engine_settings and old_screen != .engine_settings) try self.loadSettings();
+        if (self.model.screen == .backup and old_screen != .backup) try self.refreshBackups();
         if (self.model.screen == .reader and (old_screen != .reader or old_page != self.model.page or before == null or !std.mem.eql(u8, before.?.id, self.model.current().?.id))) {
             self.status = "";
             self.download_error = false;

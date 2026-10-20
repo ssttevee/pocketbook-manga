@@ -101,6 +101,45 @@ test "chapter and title menus edit the library through libtachi" {
     try h.click("[ ] Reader: skip read chapters");
     try std.testing.expect((try engine.loadSettings(a)).reader.skip_read);
 }
+test "categories and backups are managed through libtachi" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(std.testing.allocator, std.testing.io, tachi.backend.none, .{ .dir = dir });
+    defer engine.queue.deinit(&engine);
+    try engine.store.save(a, fixture);
+    var model: lib.Model = .{ .gpa = a };
+    var session: Session = .{ .model = &model, .root = dir, .io = std.testing.io };
+    defer session.deinit();
+    session.browser.engine = &engine;
+    try session.reloadLibrary();
+    var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try session.addCategory("Later");
+    try session.addCategory("Now");
+    try h.click("Aa");
+    try h.click("Categories");
+    try h.frame();
+    try std.testing.expectEqual(2, model.library.categories.len);
+    try h.click("Delete");
+    try std.testing.expectEqual(1, model.library.categories.len);
+    try std.testing.expectEqualStrings("Now", model.library.categories[0].name);
+    try h.click("Back");
+    try h.click("Backup and restore");
+    try h.click("Create backup");
+    session.browser.busy.?.join();
+    try session.poll();
+    try std.testing.expectEqual(1, session.feed.len);
+    try h.frame();
+    try h.click(try std.fmt.allocPrint(a, "Restore {s}", .{session.feed[0].title}));
+    session.browser.busy.?.join();
+    try session.poll();
+    try std.testing.expect(std.mem.startsWith(u8, session.status, "Restored"));
+}
 test "page bounds and stale progress are clamped" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();

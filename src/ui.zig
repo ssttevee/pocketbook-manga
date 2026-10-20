@@ -7,9 +7,10 @@ const Root = @This();
 const tachi = @import("tachi");
 const models = tachi.models;
 pub const OnlineCommand = union(enum) { extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear };
+pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const State = struct { focused: bool = false, tapping: bool = false, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { act: lib.Action, edit: Session.Edit, setting: lib.Setting, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { act: lib.Action, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
@@ -19,6 +20,38 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
             if (session.browser.busy == null) ctx.focus("screen");
         },
         .online => |command| try onlineUpdate(session, command, ctx),
+        .category_edit => |change| if (session.browser.busy == null) {
+            session.editCategory(change) catch |err| {
+                session.status = try std.fmt.allocPrint(session.model.gpa, "Category not changed: {s}", .{@errorName(err)});
+            };
+        },
+        .new_category => |name| if (session.browser.busy == null) {
+            session.addCategory(name) catch |err| {
+                session.status = try std.fmt.allocPrint(session.model.gpa, "Category not added: {s}", .{@errorName(err)});
+            };
+            ctx.focus("screen");
+        },
+        .restore => |row| if (session.browser.busy == null and row < session.feed.len) {
+            // Jobs copy their request, so the path can go after starting.
+            var arena: std.heap.ArenaAllocator = .init(session.model.gpa);
+            defer arena.deinit();
+            const a = arena.allocator();
+            session.start(.{ .import_backup = try std.fs.path.join(a, &.{ try session.backupDir(a), session.feed[row].title }) });
+        },
+        .backup_command => |command| if (session.browser.busy == null) {
+            var arena: std.heap.ArenaAllocator = .init(session.model.gpa);
+            defer arena.deinit();
+            const a = arena.allocator();
+            switch (command) {
+                .create => {
+                    const dir = try session.backupDir(a);
+                    try std.Io.Dir.cwd().createDirPath(session.io, dir);
+                    session.start(.{ .export_backup = .{ .path = try std.fs.path.join(a, &.{ dir, try session.backupName(a) }) } });
+                },
+                .export_downloads => session.start(.{ .export_downloads = try session.mihonDownloadsDir(a) }),
+                .import_downloads => session.start(.{ .import_downloads = try session.mihonDownloadsDir(a) }),
+            }
+        },
         .setting => |which| if (session.browser.busy == null) {
             session.changeSetting(which) catch |err| {
                 session.status = try std.fmt.allocPrint(session.model.gpa, "Setting not saved: {s}", .{@errorName(err)});
@@ -220,6 +253,8 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             .chapter_menu => "Chapter",
             .title_menu => "Title",
             .engine_settings => "Library settings",
+            .backup => "Backup",
+            .categories => "Categories",
         }, 19, 0);
         ui.spacer();
         if (model.screen == .library and session.browser.busy == null) try button(ui, "browse", "Browse", .help);
@@ -272,6 +307,8 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             try text(ui, "Direction changes the left / right tap zones.", 12, 60);
             try onlineButton(ui, "scan-local", "Scan local manga", .scan);
             try button(ui, "engine-settings", "Library settings", .{ .feed = .engine_settings });
+            try button(ui, "categories", "Categories", .{ .feed = .categories });
+            try button(ui, "backup", "Backup and restore", .{ .feed = .backup });
             ui.spacer();
             try app.widgets.button(ui, "quit", .{ .label = "Close PocketManga", .on_click = on.bind(.quit) });
         },
@@ -279,6 +316,8 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         .updates, .history, .queue => try feedView(ui, session),
         .chapter_menu, .title_menu => try menuView(ui, model),
         .engine_settings => try settingsView(ui, session),
+        .backup => try backupView(ui, session),
+        .categories => try categoriesView(ui, model),
     }
     if (session.status.len > 0 and !session.download_error and session.browser.busy == null) try text(ui, session.status, 11, 0);
 }
@@ -410,6 +449,49 @@ fn settingsView(ui: *app.Ui, session: *const Session) !void {
         try app.widgets.button(ui, "previous-settings", .{ .label = "Previous", .enabled = model.offset > 0, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = -1 }) }) });
         ui.spacer();
         try app.widgets.button(ui, "next-settings", .{ .label = "Next", .enabled = model.offset + lib.Model.rows < settings.len, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = 1 }) }) });
+    }
+}
+
+/// Backups to create and restore, and a Mihon downloads folder to swap.
+fn backupView(ui: *app.Ui, session: *const Session) !void {
+    const model = session.model;
+    const on = ui.messages(Root);
+    try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(10), .child_gap = 8 } });
+    defer ui.close();
+    try app.widgets.button(ui, "create-backup", .{ .label = "Create backup", .on_click = on.bind(.{ .backup_command = .create }) });
+    try text(ui, "Backups (Mihon .tachibk) in the backups folder:", 12, 40);
+    if (session.feed.len == 0) try text(ui, "None yet", 14, 60);
+    for (session.feed[@min(model.offset, session.feed.len)..@min(model.offset + 4, session.feed.len)], model.offset..) |row, i| {
+        try app.widgets.button(ui, .{ .backup = i }, .{ .label = try ui.fmt("Restore {s}", .{row.title}), .on_click = on.bind(.{ .restore = i }) });
+    }
+    try text(ui, "Mihon downloads folder (mihon-downloads):", 12, 40);
+    try app.widgets.button(ui, "export-downloads", .{ .label = "Export downloads", .on_click = on.bind(.{ .backup_command = .export_downloads }) });
+    try app.widgets.button(ui, "import-downloads", .{ .label = "Import downloads", .on_click = on.bind(.{ .backup_command = .import_downloads }) });
+}
+
+/// Categories in order, to move or delete, and a field to add one.
+fn categoriesView(ui: *app.Ui, model: *const lib.Model) !void {
+    const on = ui.messages(Root);
+    try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(10), .child_gap = 6 } });
+    defer ui.close();
+    try app.widgets.searchField(ui, "new-category", .{ .text = "", .placeholder = "Add a category", .on_change = on.handler(.new_category) });
+    var sorted: [64]tachi.library.Category = undefined;
+    const count = @min(model.library.categories.len, sorted.len);
+    @memcpy(sorted[0..count], model.library.categories[0..count]);
+    std.mem.sort(tachi.library.Category, sorted[0..count], {}, struct {
+        fn less(_: void, x: tachi.library.Category, y: tachi.library.Category) bool {
+            return x.order < y.order;
+        }
+    }.less);
+    if (count == 0) try text(ui, "No categories", 14, 60);
+    for (sorted[@min(model.offset, count)..@min(model.offset + lib.Model.rows, count)]) |category| {
+        try ui.open(.{ .category_row = category.id }, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 6, .child_alignment = .center_left } });
+        defer ui.close();
+        try text(ui, category.name, 14, 0);
+        ui.spacer();
+        try app.widgets.button(ui, .{ .up = category.id }, .{ .label = "Up", .on_click = on.bind(.{ .category_edit = @as(Session.CategoryEdit, .{ .up = category.id }) }) });
+        try app.widgets.button(ui, .{ .down = category.id }, .{ .label = "Down", .on_click = on.bind(.{ .category_edit = @as(Session.CategoryEdit, .{ .down = category.id }) }) });
+        try app.widgets.button(ui, .{ .delete = category.id }, .{ .label = "Delete", .on_click = on.bind(.{ .category_edit = @as(Session.CategoryEdit, .{ .delete = category.id }) }) });
     }
 }
 

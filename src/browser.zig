@@ -24,7 +24,7 @@ pub const Browser = struct {
         if (self.busy != null) return error.Busy;
         const engine = self.engine orelse return error.RuntimeNotConfigured;
         switch (request) {
-            .sources, .install_file, .scan_local, .preferences, .set_preference, .uninstall, .delete_download, .remove => {},
+            .sources, .install_file, .scan_local, .preferences, .set_preference, .uninstall, .delete_download, .remove, .import_backup, .export_backup, .import_downloads, .export_downloads => {},
             else => if (self.ensure_network) |connect| try connect(),
         }
         self.busy = try tachi.Job.start(engine, request);
