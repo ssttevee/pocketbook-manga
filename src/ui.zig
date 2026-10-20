@@ -217,7 +217,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         }
         const starting = job.phase.load(.acquire) == .worker_starting;
         const total = job.pages_total.load(.acquire);
-        try text(ui, if (starting) "Loading libtachi worker" else switch (job.request) {
+        try text(ui, if (starting) "Loading libtachi worker... (this may take a minute)" else switch (job.request) {
             .sources => "Loading extensions...",
             .extensions => "Loading extension repository...",
             .install => "Downloading and installing extension...",
@@ -230,7 +230,6 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         }, 13, 40);
         if (total > 0) try ui.print(.{ .font_size = 14 }, "{d} / {d} pages", .{ job.pages_done.load(.acquire), total });
         try onlineButton(ui, "cancel-job", "Cancel", .cancel);
-        if (starting) try text(ui, "Java startup can take a while on the Verse.", 12, 40);
     } else switch (model.screen) {
         .library, .chapters => try list(ui, model),
         .reader => try reader(ui, session),

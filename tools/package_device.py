@@ -49,7 +49,7 @@ def main():
     parser.add_argument('--cache', type=pathlib.Path, default=ROOT / '.runtime-cache')
     parser.add_argument('--output', type=pathlib.Path, default=ROOT / 'dist')
     parser.add_argument('--host-jar', type=pathlib.Path, default=ROOT.parent / 'zig-tachi-native-downloads/host/build/libs/tachi-host.jar')
-    parser.add_argument('--zstd-library', type=pathlib.Path, help='Source-built JNI decoder (default: next to host build under native/arm-linux-gnueabi)')
+    parser.add_argument('--zstd-library', type=pathlib.Path, help='Source-built JNI decoder (default: zig-out/lib from zig build device)')
     parser.add_argument('--firmware-root', type=pathlib.Path, required=True, help='Extracted official Verse 6.10.1461 root, including ebrmain/cramfs/lib (outside this repo)')
     parser.add_argument('--test-sysroot', action='store_true', help='Also unpack ARM libc for emulation; never shipped to the reader')
     args=parser.parse_args()
@@ -59,8 +59,8 @@ def main():
         source = args.firmware_root / entry['path'].lstrip('/')
         if hashlib.sha256(source.read_bytes()).hexdigest() != entry['SHA256']:
             raise RuntimeError(f'Firmware runtime SHA256 mismatch: {source}')
-    zstd = args.zstd_library or args.host_jar.parent.parent / 'native/arm-linux-gnueabi/libpocketmanga-zstd.so'
-    if not zstd.is_file(): raise SystemExit('Build the host buildNativeZstd task first: '+str(zstd))
+    zstd = args.zstd_library or ROOT / 'zig-out/lib/libpocketmanga-zstd.so'
+    if not zstd.is_file(): raise SystemExit('Run zig build device first: '+str(zstd))
     app=args.output / 'applications' / 'pocketmanga'
     runtime=app / 'runtime'
     # Preserve any existing user library when rebuilding a staging directory.
@@ -94,7 +94,7 @@ def main():
                 extract(fetch(name,args.cache),sysroot)
     shutil.copy2(args.host_jar,runtime/'tachi-host.jar')
     shutil.copy2(zstd, runtime/'lib/libpocketmanga-zstd.so')
-    shutil.copy2(zstd.parent/'zstd-LICENSE.txt', runtime/'licenses/zstd-LICENSE.txt')
+    shutil.copy2(zstd.parent.parent/'share/licenses/zstd-LICENSE.txt', runtime/'licenses/zstd-LICENSE.txt')
     binary=ROOT/'zig-out/bin/pocketmanga.app'
     if not binary.is_file(): raise SystemExit('Run zig build device -Doptimize=ReleaseSmall first')
     (app/'bin').mkdir(exist_ok=True)

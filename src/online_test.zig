@@ -245,12 +245,12 @@ test "worker startup is shown for downloads and browse and remains immediately c
         const job = session.browser.busy.?;
         while (job.phase.load(.acquire) != .worker_starting) try std.testing.io.sleep(.fromMilliseconds(1), .awake);
         try harness.frame();
-        try harness.expectText("Loading libtachi worker");
+        try harness.expectText("Loading libtachi worker... (this may take a minute)");
         try harness.expectText("Cancel");
         if (request == .download) {
             job.setPhase(.operation);
             try harness.frame();
-            try harness.expectNoText("Loading libtachi worker");
+            try harness.expectNoText("Loading libtachi worker... (this may take a minute)");
             try harness.expectText("Fetching page list");
         }
         const started = @import("worker_wire.zig").pm_now_ms();

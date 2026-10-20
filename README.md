@@ -24,7 +24,7 @@ After installation, normal use needs only the reader and Wi-Fi. The UI starts th
 - Tap a **title** to add it to your library and fetch its chapters. Tap an undownloaded **chapter** to download it and begin reading. Zig downloads plain GET images using the source's resolved requests, headers, cookies and rate limits. Unsupported requests and unknown response-transforming interceptors use the extension's JVM client. Each completed page is saved atomically; retry keeps completed pages, including after cancellation. Failures remain visible with progress and resume instructions.
 - **Refresh chapters** updates a title; **Update library** refreshes online titles. Existing page downloads and reading progress survive metadata updates.
 - **Source settings** supports text, toggle, list and multi-select preferences, plus extension removal. MangaDex’s **Data saver** toggle selects smaller, more compressed pages. Removing an extension preserves downloaded chapters.
-- Cold online requests first show **Loading libtachi worker**, then their actual operation when the JVM and extensions are ready. Active jobs keep the reader awake and postpone timed power-off; finishing, failure or cancellation releases the guard.
+- Cold online requests first show **Loading libtachi worker... (this may take a minute)**, then their actual operation when the JVM and extensions are ready. Active jobs keep the reader awake and postpone timed power-off; finishing, failure or cancellation releases the guard.
 - During background work, **Cancel** interrupts the active `std.Io` operation immediately. An unresponsive JVM worker is terminated after a short cancellation grace period. Tap the chapter again to resume.
 - Hardware **Next / Prev** always move in reading order. In RTL mode, tap the page's left half to advance; in LTR mode, tap the right half. At the last page, **Chapter >** opens or downloads the next chapter.
 - **Back** returns to chapters, the library, then exits. **Aa** changes direction and full/partial refresh. Progress is saved on each page change.
@@ -59,14 +59,14 @@ The archive URL and SHA256 are in `tools/runtime-packages.json`. Then:
 
 ```
 ZIG=/Users/steve/Programs/Zig/v0.17.0/zig
-"$ZIG" build -Doptimize=small                # native UI and isolated ARM JVM worker
+"$ZIG" build -Doptimize=small                # native UI, isolated ARM JVM worker and its libzstd JNI decoder
 "$ZIG" build test                           # model, persistence, UI and background flows
 "$ZIG" build preview -Doptimize=small        # fake-InkView screenshots in preview/*.pgm
 python3 tools/preview_png.py                # lossless preview/*.png for review
 python3 tools/package_device.py --firmware-root /tmp/pocketmanga-prepared610
 ```
 
-The packaging script downloads checksum-pinned Debian ARM Java and certificate packages listed in `tools/runtime-packages.json`, dereferences configuration symlinks into a relocatable JRE, and creates Java and PEM stores from public CA certificates. It copies only the allowlisted glibc/GCC runtime files from the firmware extraction and verifies each file's SHA256. InkView and other proprietary firmware libraries are never shipped. Packages are cached in `.runtime-cache/`. It does not install Java on the development computer or change the reader's system libraries. The host jar can be overridden with `--host-jar FILE`. Runtime packages retain their upstream licenses under `runtime/licenses/` and `runtime/jre/legal/`.
+The packaging script downloads checksum-pinned Debian ARM Java and certificate packages listed in `tools/runtime-packages.json`, dereferences configuration symlinks into a relocatable JRE, and creates Java and PEM stores from public CA certificates. It copies only the allowlisted glibc/GCC runtime files from the firmware extraction and verifies each file's SHA256. InkView and other proprietary firmware libraries are never shipped. Packages are cached in `.runtime-cache/`. It does not install Java on the development computer or change the reader's system libraries. The host jar can be overridden with `--host-jar FILE`. `zig build` compiles the worker's zstd decoder from the libzstd source pinned in zig-tachi's `build.zig.zon`, which needs a JDK's `jni.h` through `JAVA_HOME` or `-Djdk=PATH`; packaging copies it from `zig-out/lib`. Runtime packages retain their upstream licenses under `runtime/licenses/` and `runtime/jre/legal/`.
 
 The former desktop companion has been removed from the source and build. All shipping binaries are ARM device components; the diagnostic and preview targets below are developer tests.
 
@@ -122,4 +122,4 @@ The ARM runtime, JNI bridge, repository connection and UI flows are tested in em
 
 The Go font and its license are in `src/fonts/`. See zig-tachi's NOTICE for the upstream Mihon and Android compatibility code.
 
-The [device feedback fixes](docs/device-feedback-fixes.md) document extension-compatible pure Java zstd decoding, download identification and partial-refresh row feedback.
+The [device feedback fixes](docs/device-feedback-fixes.md) document extension-compatible zstd decoding (since replaced by source-built libzstd over JNI), download identification and partial-refresh row feedback.

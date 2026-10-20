@@ -76,5 +76,11 @@ pub fn build(b: *std.Build) void {
     device_step.dependOn(&install.step);
     device_step.dependOn(&b.addInstallArtifact(worker, .{}).step);
     device_step.dependOn(&launcher.step);
+    // The worker JVM's okhttp3.zstd decoder, built from libtachi's pinned
+    // libzstd source for the Verse's ARMv7 with strict alignment.
+    const zstd_target = b.resolveTargetQuery(.{ .cpu_arch = .arm, .os_tag = .linux, .abi = .gnueabi, .cpu_model = .{ .explicit = &std.Target.arm.cpu.cortex_a7 }, .cpu_features_add = std.Target.arm.featureSet(&.{.strict_align}), .glibc_version = .{ .major = 2, .minor = 17, .patch = 0 } });
+    const zstd = b.dependency("tachi", .{ .target = zstd_target, .optimize = .ReleaseFast });
+    device_step.dependOn(&b.addInstallLibFile(zstd.namedLazyPath("pocketmanga-zstd"), "libpocketmanga-zstd.so").step);
+    device_step.dependOn(&b.addInstallFile(zstd.namedLazyPath("zstd-license"), "share/licenses/zstd-LICENSE.txt").step);
     b.getInstallStep().dependOn(device_step);
 }

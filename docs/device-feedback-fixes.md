@@ -6,6 +6,9 @@ zig-layout, zig-fabrum-platform-inkview and physical reader were not modified.
 
 ## Extension-compatible zstd
 
+Superseded: the Aircompressor decoder below was replaced by libzstd 1.5.7 over
+JNI, built from source by zig-tachi's `zig build`; see [native downloads](native-downloads.md).
+
 The host now supplies `okhttp3.zstd.Zstd` as a Kotlin object implementing
 OkHttp 5.5.0's `CompressionInterceptor.DecompressionAlgorithm`. Its encoding is
 `zstd`; `decompress(BufferedSource)` returns an Okio Source backed by
