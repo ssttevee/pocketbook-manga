@@ -89,7 +89,7 @@ test "chapter and title menus edit the library through libtachi" {
     try std.testing.expectEqual(lib.Screen.title_menu, model.screen);
     try h.click("[ ] Favorites");
     try std.testing.expectEqualSlices(u32, &.{1}, model.library.manga[0].categories);
-    try h.click("Remove from library");
+    try h.click("Remove");
     try std.testing.expectEqual(lib.Screen.library, model.screen);
     try std.testing.expectEqual(0, model.titleCount());
     // Library settings are libtachi's.

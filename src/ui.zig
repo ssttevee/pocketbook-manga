@@ -754,14 +754,22 @@ fn menuView(ui: *app.Ui, model: *const lib.Model) !void {
         }
         return;
     }
-    for ([_]Choice{
-        .{ .label = "Mark all read", .edit = .title_read },
-        .{ .label = "Mark all unread", .edit = .title_unread },
-        .{ .label = "Remove from library", .edit = .remove_title },
-        .{ .label = "Migrate to another source", .edit = .migrate },
-        .{ .label = "Chapter options", .edit = .options },
-    }, 0..) |choice, n| try app.widgets.button(ui, .{ .choice = n }, .{ .label = choice.label, .on_click = on.bind(.{ .edit = choice.edit }) });
-    try app.widgets.button(ui, "tracking", .{ .label = "Tracking", .on_click = on.bind(.{ .act = @as(lib.Action, .{ .feed = .tracking }) }) });
+    // Two to a row, so categories have room below.
+    const pairs = [_][2]Choice{
+        .{ .{ .label = "Mark all read", .edit = .title_read }, .{ .label = "Mark all unread", .edit = .title_unread } },
+        .{ .{ .label = "Chapter options", .edit = .options }, .{ .label = "Remove", .edit = .remove_title } },
+    };
+    for (pairs, 0..) |pair, n| {
+        try ui.open(.{ .pair = n }, .{ .layout = .{ .child_gap = 8 } });
+        defer ui.close();
+        for (pair, 0..) |choice, m| try app.widgets.button(ui, .{ .choice = n * 2 + m }, .{ .label = choice.label, .on_click = on.bind(.{ .edit = choice.edit }) });
+    }
+    {
+        try ui.open(null, .{ .layout = .{ .child_gap = 8 } });
+        defer ui.close();
+        try app.widgets.button(ui, "tracking", .{ .label = "Tracking", .on_click = on.bind(.{ .act = @as(lib.Action, .{ .feed = .tracking }) }) });
+        try app.widgets.button(ui, "migrate", .{ .label = "Migrate", .on_click = on.bind(.{ .edit = .migrate }) });
+    }
     if (model.library.categories.len > 0) try text(ui, "Categories", 14, 0);
     for (model.library.categories) |category| {
         const member = std.mem.indexOfScalar(u32, manga.categories, category.id) != null;

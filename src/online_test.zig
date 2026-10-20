@@ -338,7 +338,7 @@ test "device UI migrates a title to another source through a global search" {
     try smoke.start(std.testing.allocator, std.testing.io, &session);
     defer smoke.stop();
     try smoke.tapText("...");
-    try smoke.tapText("Migrate to another source");
+    try smoke.tapText("Migrate");
     try finish(&session);
     try std.testing.expectEqual(lib.Screen.global_search, model.screen);
     try smoke.tapText("Fixture Source");
