@@ -29,6 +29,24 @@ pub const Browser = struct {
         }
         self.busy = try online.Job.start(engine, request);
     }
+    pub fn setSource(self: *Browser, gpa: std.mem.Allocator, source: @import("source_models.zig").SourceInfo) !void {
+        const id = try source.idInt();
+        const name = try gpa.dupe(u8, source.name);
+        errdefer gpa.free(name);
+        const pkg = try gpa.dupe(u8, source.extensionPkg);
+        if (self.source_name.len > 0) gpa.free(self.source_name);
+        if (self.extension_pkg.len > 0) gpa.free(self.extension_pkg);
+        self.source_id = id;
+        self.source_name = name;
+        self.extension_pkg = pkg;
+        self.source_configurable = source.isConfigurable;
+        self.supports_latest = source.supportsLatest;
+    }
+    pub fn setPendingChapter(self: *Browser, gpa: std.mem.Allocator, id: []const u8) !void {
+        const copy = try gpa.dupe(u8, id);
+        if (self.pending_chapter) |old| gpa.free(old);
+        self.pending_chapter = copy;
+    }
     pub fn setQuery(self: *Browser, gpa: std.mem.Allocator, query: []const u8) !void {
         const copy = try gpa.dupe(u8, query);
         if (self.query.len > 0) gpa.free(self.query);

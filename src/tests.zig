@@ -240,3 +240,47 @@ test "full refresh handles empty lists and keeps numeric chapter ordering" {
     const added = try catalog.refresh(a, .{}, incoming);
     try std.testing.expectEqualStrings("Updated", added.manga[0].title);
 }
+
+fn replaceBrowserSelection(a: std.mem.Allocator) !void {
+    var browser: @import("browser.zig").Browser = .{};
+    defer browser.deinit(a);
+    const source: @import("source_models.zig").SourceInfo = .{
+        .id = "42",
+        .name = "Old source",
+        .lang = "en",
+        .supportsLatest = false,
+        .isConfigurable = false,
+        .className = "Old",
+        .extensionPkg = "old.pkg",
+    };
+    try browser.setSource(a, source);
+    var next = source;
+    next.id = "99";
+    next.name = "New source";
+    next.extensionPkg = "new.pkg";
+    next.supportsLatest = true;
+    browser.setSource(a, next) catch |err| {
+        try std.testing.expectEqual(42, browser.source_id);
+        try std.testing.expectEqualStrings("Old source", browser.source_name);
+        try std.testing.expectEqualStrings("old.pkg", browser.extension_pkg);
+        try std.testing.expect(!browser.supports_latest);
+        return err;
+    };
+    try std.testing.expectEqual(99, browser.source_id);
+    try std.testing.expectEqualStrings("New source", browser.source_name);
+    try std.testing.expectEqualStrings("new.pkg", browser.extension_pkg);
+    try std.testing.expect(browser.supports_latest);
+    try browser.setPendingChapter(a, "old chapter");
+    browser.setPendingChapter(a, "new chapter") catch |err| {
+        try std.testing.expectEqualStrings("old chapter", browser.pending_chapter.?);
+        return err;
+    };
+    try std.testing.expectEqualStrings("new chapter", browser.pending_chapter.?);
+    // Inputs may alias the owned state being replaced.
+    try browser.setPendingChapter(a, browser.pending_chapter.?);
+    try std.testing.expectEqualStrings("new chapter", browser.pending_chapter.?);
+}
+
+test "browser selections survive every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, replaceBrowserSelection, .{});
+}

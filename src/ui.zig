@@ -66,8 +66,7 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                 if (index < book.chapters.len) {
                     const chapter = book.chapters[index];
                     if (chapter.pages.len == 0 and chapter.remote != null) {
-                        if (session.browser.pending_chapter) |id| session.model.gpa.free(id);
-                        session.browser.pending_chapter = try session.model.gpa.dupe(u8, chapter.id);
+                        try session.browser.setPendingChapter(session.model.gpa, chapter.id);
                         session.start(.{ .download = .{ .book = book, .chapter = chapter } });
                         return;
                     }
@@ -368,13 +367,7 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
         .reload_sources => session.start(.sources),
         .pick_source => |i| {
             const source = b.sources.?.result.sources[i];
-            b.source_id = try source.idInt();
-            if (b.source_name.len > 0) a.free(b.source_name);
-            if (b.extension_pkg.len > 0) a.free(b.extension_pkg);
-            b.source_name = try a.dupe(u8, source.name);
-            b.extension_pkg = try a.dupe(u8, source.extensionPkg);
-            b.source_configurable = source.isConfigurable;
-            b.supports_latest = source.supportsLatest;
+            try b.setSource(a, source);
             b.latest = false;
             b.page = 1;
             b.offset = 0;
