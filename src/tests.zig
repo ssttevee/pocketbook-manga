@@ -289,7 +289,7 @@ fn pollSourcesWithAllocationFailures(a: std.mem.Allocator, root: []const u8) !vo
     session.browser.engine = &engine;
     defer session.deinit();
     const job = try engine.gpa.create(tachi.Job);
-    job.* = .{ .arena = .init(engine.gpa), .engine = &engine, .request = .sources, .result = .{ .message = "" } };
+    job.* = .{ .arena = .init(engine.gpa), .engine = &engine, .request = .sources };
     job.result.sources = try job.arena.allocator().dupe(tachi.models.SourceInfo, &.{.{
         .id = "42",
         .name = "Source",
@@ -317,7 +317,7 @@ fn pollOnlineWithAllocationFailures(a: std.mem.Allocator, root: []const u8) !voi
     var session: Session = .{ .model = &model, .root = root, .io = std.testing.io };
     defer session.deinit();
     const job = try engine.gpa.create(tachi.Job);
-    job.* = .{ .arena = .init(engine.gpa), .engine = &engine, .request = .{ .read = .{ .chapter = "c1", .page = 0 } }, .result = .{ .message = "", .pages = &.{"online/1.png"} } };
+    job.* = .{ .arena = .init(engine.gpa), .engine = &engine, .request = .{ .read = .{ .chapter = "c1", .page = 0 } }, .result = .{ .pages = &.{"online/1.png"} } };
     job.done.store(true, .release);
     session.browser.busy = job;
     session.poll() catch |err| {
@@ -391,4 +391,29 @@ test "category pagination sorts and displays entries beyond sixty four" {
     try h.frame();
     try h.expectText("Category 57");
     try h.expectText("Category 63");
+}
+
+fn statusWithAllocationFailures(a: std.mem.Allocator) !void {
+    var model: lib.Model = .{ .gpa = a };
+    var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io };
+    defer session.deinit();
+    session.setStatus("Ready");
+    session.formatStatus("Page {d}", .{1}) catch |err| {
+        try std.testing.expectEqualStrings("Ready", session.status);
+        return err;
+    };
+    // Formatting can borrow the owned string that it replaces.
+    session.formatStatus("{s} failed", .{session.status}) catch |err| {
+        try std.testing.expectEqualStrings("Page 1", session.status);
+        return err;
+    };
+    try std.testing.expectEqualStrings("Page 1 failed", session.status);
+    session.setStatus("Operation failed");
+    try std.testing.expect(session.owned_status == null);
+    try session.formatStatus("Retry {d}", .{2});
+    try std.testing.expectEqualStrings("Retry 2", session.status);
+}
+
+test "status replacement owns formatted messages and survives allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, statusWithAllocationFailures, .{});
 }

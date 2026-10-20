@@ -14,6 +14,7 @@ pub const Session = struct {
     image: ?Image = null,
     load_image: ?*const fn (*Session, []const u8) anyerror!void = null,
     status: []const u8 = "",
+    owned_status: ?[]const u8 = null,
     activity: ?*const fn (bool) void = null,
     download_error: bool = false,
     download_canceled: bool = false,
@@ -53,6 +54,24 @@ pub const Session = struct {
     /// The chapter after the one being read, as libtachi's reader list
     /// orders and skips them: an index into the title's chapters.
     next_chapter: ?usize = null,
+    /// Sets a static message, releasing any previously formatted status.
+    pub fn setStatus(self: *Session, comptime message: []const u8) void {
+        if (self.owned_status) |owned| self.model.gpa.free(owned);
+        self.owned_status = null;
+        self.status = message;
+    }
+
+    fn ownStatus(self: *Session, message: []const u8) void {
+        if (self.owned_status) |owned| self.model.gpa.free(owned);
+        self.owned_status = message;
+        self.status = message;
+    }
+
+    /// Allocate before replacing: formatting may borrow the current status.
+    pub fn formatStatus(self: *Session, comptime format: []const u8, args: anytype) !void {
+        self.ownStatus(try std.fmt.allocPrint(self.model.gpa, format, args));
+    }
+
     fn clearDownloadIdentity(self: *Session) void {
         if (self.download_identity) |identity| {
             self.model.gpa.free(identity.series);
@@ -85,7 +104,7 @@ pub const Session = struct {
     pub fn start(self: *Session, request: tachi.engine.Request) void {
         defer self.updateActivity();
         if (request == .download and self.browser.busy == null) self.rememberDownload(request.download) catch {
-            self.status = "Cannot start download: out of memory";
+            self.setStatus("Cannot start download: out of memory");
             self.download_error = true;
             self.download_canceled = false;
             return;
@@ -93,7 +112,7 @@ pub const Session = struct {
         self.browser.start(request) catch |err| {
             self.download_error = request == .download;
             self.download_canceled = false;
-            self.status = std.fmt.allocPrint(self.model.gpa, "{s}", .{@errorName(err)}) catch "Operation failed";
+            self.formatStatus("{s}", .{@errorName(err)}) catch self.setStatus("Operation failed");
         };
     }
     pub fn poll(self: *Session) !void {
@@ -115,10 +134,10 @@ pub const Session = struct {
         self.download_error = job.failure != null and job.request == .download;
         self.download_canceled = self.download_error and std.mem.eql(u8, job.failure.?, "Canceled");
         if (self.download_error) try self.rememberDownload(job.request.download);
-        self.status = if (job.failure) |failure|
+        self.ownStatus(if (job.failure) |failure|
             if (job.request == .download) try self.downloadDetail(job, failure) else try self.model.gpa.dupe(u8, failure)
         else
-            try self.model.gpa.dupe(u8, job.result.message);
+            try self.model.gpa.dupe(u8, job.result.message));
         if (job.failure != null) {
             if (self.browser.pending_chapter) |id| self.model.gpa.free(id);
             self.browser.pending_chapter = null;
@@ -439,7 +458,7 @@ pub const Session = struct {
                 _ = try engine.queue.enqueue(engine, one, true);
             },
             .delete_download => if (try engine.deleteDownloads(one) == 0) {
-                self.status = "Kept by the download deletion settings";
+                self.setStatus("Kept by the download deletion settings");
             },
             .title_read, .title_unread => {
                 _ = try engine.markTitleRead(manga.id, choice == .title_read);
@@ -614,7 +633,7 @@ pub const Session = struct {
         if (trimmed.len == 0) return;
         _ = engine.createCategory(trimmed) catch |err| switch (err) {
             error.DuplicateCategory => {
-                self.status = "A category with that name exists";
+                self.setStatus("A category with that name exists");
                 return;
             },
             else => return err,
@@ -640,7 +659,7 @@ pub const Session = struct {
         for (model.library.manga[model.manga].chapters) |ch| if (!model.readState(ch).read and ch.pages.len == 0) try ids.append(model.gpa, ch.id);
         try self.connectForDownloads();
         const added = try engine.queue.enqueue(engine, ids.items, true);
-        self.status = try std.fmt.allocPrint(model.gpa, "{d} chapters queued", .{added});
+        try self.formatStatus("{d} chapters queued", .{added});
     }
 
     /// Lays out the library and chapter lists as libtachi's views do: the
@@ -693,6 +712,7 @@ pub const Session = struct {
         try self.reloadLibrary();
     }
     pub fn deinit(self: *Session) void {
+        if (self.owned_status) |owned| self.model.gpa.free(owned);
         self.clearDownloadIdentity();
         self.browser.deinit(self.model.gpa);
         if (self.activity) |activity| activity(false);
@@ -787,7 +807,7 @@ pub const Session = struct {
             self.stats = try engine.stats(arena.allocator());
         };
         if (self.model.screen == .reader and (old_screen != .reader or old_page != self.model.page or before == null or !std.mem.eql(u8, before.?.id, self.model.current().?.id))) {
-            self.status = "";
+            self.setStatus("");
             self.download_error = false;
             self.clearDownloadIdentity();
             // Reading needs no extensions: let a worker give its memory back.
@@ -796,7 +816,7 @@ pub const Session = struct {
                 const path = self.model.current().?.pages[self.model.page];
                 load(self, path) catch |err| {
                     self.image = null;
-                    self.status = try std.fmt.allocPrint(self.model.gpa, "Cannot open page: {s}", .{@errorName(err)});
+                    try self.formatStatus("Cannot open page: {s}", .{@errorName(err)});
                 };
             }
         }
@@ -808,11 +828,11 @@ pub const Session = struct {
         if (self.model.progress_changed) self.recordProgress();
         // Leaving the reader deletes what finished chapters queued for deletion.
         if (old_screen == .reader and self.model.screen != .reader) if (self.browser.engine) |engine| engine.leaveReader() catch |err| {
-            self.status = try std.fmt.allocPrint(self.model.gpa, "Downloads not deleted: {s}", .{@errorName(err)});
+            try self.formatStatus("Downloads not deleted: {s}", .{@errorName(err)});
         };
         if (self.model.dirty) if (self.save_path) |path| {
             lib.writeJson(self.model.gpa, self.io, path, self.model.prefs) catch |err| {
-                self.status = try std.fmt.allocPrint(self.model.gpa, "Settings not saved: {s}", .{@errorName(err)});
+                try self.formatStatus("Settings not saved: {s}", .{@errorName(err)});
                 return;
             };
             self.model.dirty = false;
@@ -830,7 +850,7 @@ pub const Session = struct {
         const read_ms: i64 = if (self.last_progress_ms) |last| @intCast(@min(now - last, 5 * 60 * 1000)) else 0;
         self.last_progress_ms = now;
         engine.pageShown(.{ .chapter_id = ch.id, .page = state.page, .pages = @intCast(ch.pages.len), .read_ms = read_ms }) catch |err| {
-            self.status = std.fmt.allocPrint(self.model.gpa, "Progress not saved: {s}", .{@errorName(err)}) catch "Progress not saved";
+            self.formatStatus("Progress not saved: {s}", .{@errorName(err)}) catch self.setStatus("Progress not saved");
         };
     }
 

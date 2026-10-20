@@ -23,7 +23,7 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
         .confirm_add => |add| if (session.browser.busy == null) session.confirmAdd(add),
         .track => |edit| if (session.browser.busy == null) {
             session.track(edit) catch |err| {
-                session.status = try std.fmt.allocPrint(session.model.gpa, "Tracking: {s}", .{@errorName(err)});
+                try session.formatStatus("Tracking: {s}", .{@errorName(err)});
             };
         },
         .login_user => |name| try session.setLoginUsername(name),
@@ -40,12 +40,12 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
         },
         .category_edit => |change| if (session.browser.busy == null) {
             session.editCategory(change) catch |err| {
-                session.status = try std.fmt.allocPrint(session.model.gpa, "Category not changed: {s}", .{@errorName(err)});
+                try session.formatStatus("Category not changed: {s}", .{@errorName(err)});
             };
         },
         .new_category => |name| if (session.browser.busy == null) {
             session.addCategory(name) catch |err| {
-                session.status = try std.fmt.allocPrint(session.model.gpa, "Category not added: {s}", .{@errorName(err)});
+                try session.formatStatus("Category not added: {s}", .{@errorName(err)});
             };
             ctx.focus("screen");
         },
@@ -72,13 +72,13 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
         },
         .setting => |which| if (session.browser.busy == null) {
             session.changeSetting(which) catch |err| {
-                session.status = try std.fmt.allocPrint(session.model.gpa, "Setting not saved: {s}", .{@errorName(err)});
+                try session.formatStatus("Setting not saved: {s}", .{@errorName(err)});
             };
             ctx.focus("screen");
         },
         .edit => |choice| if (session.browser.busy == null) {
             session.edit(choice) catch |err| {
-                session.status = try std.fmt.allocPrint(session.model.gpa, "Not changed: {s}", .{@errorName(err)});
+                try session.formatStatus("Not changed: {s}", .{@errorName(err)});
             };
             ctx.focus("screen");
         },
@@ -906,7 +906,7 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
         .extension => |i| {
             const extension = b.extensions.?.result.extensions[i];
             if (!extension.supported) {
-                session.status = "This extension API version is not supported";
+                session.setStatus("This extension API version is not supported");
                 return;
             }
             // From the store that listed it, which checks who signed it.
@@ -960,7 +960,7 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
                 try ctx.menu(.{ .items = items, .at = .init(8, 40) }, ctx.handler(.pref_choice));
             } else if (std.mem.eql(u8, pref.type, "edittext")) {
                 try ctx.systemText(.{ .title = pref.title orelse "Source setting", .initial = if (current == .string) current.string else "" }, ctx.handler(.pref_text));
-            } else session.status = "This source setting has no editable control";
+            } else session.setStatus("This source setting has no editable control");
         },
         .refresh_book => session.start(.{ .refresh = model.library.manga[model.manga].id }),
         .update_all => session.start(.{ .update_library = .{} }),
