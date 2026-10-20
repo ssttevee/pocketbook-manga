@@ -42,12 +42,12 @@ pocketbook-manga-app/
 zig-layout/
 zig-fabrum-platform-inkview/
 libinkview/
-zig-tachi-native-downloads/
+zig-tachi/
 ```
 
-libtachi needs the small bundled-CA API addition recorded in `patches/libtachi-ca-file.patch`. It has already been applied to this workspace's `zig-tachi` checkout. For another checkout without it, apply it in zig-tachi with `git apply ../pocketbook-manga-app/patches/libtachi-ca-file.patch`. This keeps repository HTTPS verification independent of the device's system certificate paths.
+libtachi's bundled-CA option (`ca_file`, recorded in `patches/libtachi-ca-file.patch` and part of zig-tachi since `0406ed7`) keeps repository HTTPS verification independent of the device's system certificate paths.
 
-This branch points `build.zig.zon` at the isolated `../zig-tachi-native-downloads` worktree (branch `native-downloads`, based on `051f138`). Build its modified `tachi-host.jar` first: `cd ../zig-tachi-native-downloads/host && ./gradlew shadowJar`. The original zig-tachi checkout and its uncommitted build changes are preserved; none of those changes was needed or copied. On this workspace, use `/Users/steve/Programs/Zig/v0.17.0/zig`; the `zig` on PATH is 0.16.
+`build.zig.zon` points at `../zig-tachi`. Build its `tachi-host.jar` first with `zig build host` in that repository; the tools read it from `../zig-tachi/zig-out/lib`. On this workspace, use `/Users/steve/Programs/Zig/v0.17.0/zig`; the `zig` on PATH is 0.16.
 
 Extract the checksum-pinned official Verse 6.10.1461 firmware **outside the repo**. Reuse an existing complete extraction if available. `prepare_firmware.py` requires `debugfs` (e2fsprogs) and `unsquashfs`, and reads images without mounting them or using root:
 

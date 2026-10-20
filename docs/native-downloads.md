@@ -1,6 +1,6 @@
 # Native chapter downloads
 
-Implementation is on uncommitted branch `native-downloads`, based on app commit `c128c58`. The separate `../zig-tachi-native-downloads` worktree is also on `native-downloads`, based on `051f138`. Nothing was committed, pushed or stashed. The original zig-tachi checkout's README/build/Gradle/embed-tool changes were preserved; none were copied. No physical reader, zig-layout or zig-fabrum-platform-inkview was modified. Neither sibling UI repository needs changes.
+Developed on the `native-downloads` branches of this app (from `c128c58`) and zig-tachi (from `051f138`), both since merged into `main`. Neither zig-layout nor zig-fabrum-platform-inkview needed changes.
 
 ## Request planning and native transfer
 

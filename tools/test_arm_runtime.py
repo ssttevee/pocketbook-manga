@@ -5,7 +5,7 @@ ROOT=pathlib.Path(__file__).resolve().parent.parent
 parser=argparse.ArgumentParser()
 parser.add_argument('mode',choices=['sources','repo','fixture'],default='fixture',nargs='?')
 args=parser.parse_args()
-jar=ROOT.parent/'zig-tachi-native-downloads/host/build/libs/tachi-host.jar'
+jar=ROOT.parent/'zig-tachi/zig-out/lib/tachi-host.jar'
 classes=ROOT/'dist/fixture/classes'
 classes.mkdir(parents=True,exist_ok=True)
 if args.mode=='fixture':

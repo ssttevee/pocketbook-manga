@@ -1,8 +1,8 @@
 # Device feedback fixes
 
-Follow-up to app `1d42223` and isolated zig-tachi worktree `c0c6336`, both on
-`native-downloads`. Changes remain uncommitted. The original zig-tachi checkout,
-zig-layout, zig-fabrum-platform-inkview and physical reader were not modified.
+Follow-up to app `1d42223` and zig-tachi `c0c6336`, both developed on
+`native-downloads` and since merged into `main`. zig-layout and
+zig-fabrum-platform-inkview were not modified.
 
 ## Extension-compatible zstd
 

@@ -6,7 +6,7 @@
     .dependencies = .{
         .fabrum = .{ .path = "../zig-layout" },
         .inkview = .{ .path = "../zig-fabrum-platform-inkview" },
-        .tachi = .{ .path = "../zig-tachi-native-downloads" },
+        .tachi = .{ .path = "../zig-tachi" },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "tools", "patches", "README.md" },
 }
