@@ -99,7 +99,10 @@ pub fn main(init: std.process.Init) !void {
     defer worker.deinit();
     const ca_file = try std.fs.path.join(gpa, &.{ root, "runtime/ca.pem" });
     var engine: tachi.Engine = .init(gpa, io, worker.backend(), .{ .dir = root, .ca_file = ca_file });
+    // Stops the download queue before the worker goes.
+    defer engine.queue.deinit(&engine);
     session.browser.engine = &engine;
+    engine.launched() catch |err| std.log.warn("launch upkeep: {s}", .{@errorName(err)});
     try session.reloadLibrary();
     try session.migrateProgress();
     session.browser.ensure_network = connectNetwork;
