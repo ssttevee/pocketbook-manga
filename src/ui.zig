@@ -443,7 +443,7 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
             } else session.status = "This source setting has no editable control";
         },
         .refresh_book => session.start(.{ .refresh = model.library.manga[model.manga].id }),
-        .update_all => session.start(.update_library),
+        .update_all => session.start(.{ .update_library = .{} }),
         .scan => session.start(.scan_local),
         .cancel => {},
     }
