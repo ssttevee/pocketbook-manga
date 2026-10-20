@@ -264,3 +264,80 @@ fn replaceBrowserSelection(a: std.mem.Allocator) !void {
 test "browser selections survive every allocation failure" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, replaceBrowserSelection, .{});
 }
+
+fn reloadWithAllocationFailures(a: std.mem.Allocator, root: []const u8) !void {
+    var model: lib.Model = .{ .gpa = a };
+    defer model.deinit();
+    var engine: tachi.Engine = .init(std.testing.allocator, std.testing.io, tachi.backend.none, .{ .dir = root });
+    var session: Session = .{ .model = &model, .root = root, .io = std.testing.io };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    session.reloadLibrary() catch |err| {
+        // Loading may have committed before building the rows ran out of memory.
+        if (session.library_arena != null) try std.testing.expectEqualStrings("Test Story", model.library.manga[0].title);
+        return err;
+    };
+    try std.testing.expectEqualStrings("Test Story", model.library.manga[0].title);
+}
+
+fn pollSourcesWithAllocationFailures(a: std.mem.Allocator, root: []const u8) !void {
+    var model: lib.Model = .{ .gpa = a };
+    defer model.deinit();
+    var engine: tachi.Engine = .init(std.testing.allocator, std.testing.io, tachi.backend.none, .{ .dir = root });
+    var session: Session = .{ .model = &model, .root = root, .io = std.testing.io };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    const job = try engine.gpa.create(tachi.Job);
+    job.* = .{ .arena = .init(engine.gpa), .engine = &engine, .request = .sources, .result = .{ .message = "" } };
+    job.result.sources = try job.arena.allocator().dupe(tachi.models.SourceInfo, &.{.{
+        .id = "42",
+        .name = "Source",
+        .lang = "en",
+        .supportsLatest = false,
+        .isConfigurable = false,
+        .className = "Source",
+        .extensionPkg = "pkg",
+    }});
+    job.done.store(true, .release);
+    session.browser.busy = job;
+    session.poll() catch |err| {
+        if (session.browser.sources) |stored| try std.testing.expectEqualStrings("Source", stored.result.sources[0].name);
+        // A failed refresh must not publish slices from its discarded arena.
+        try std.testing.expectEqual(0, session.browser.source_rows.len);
+        return err;
+    };
+    try std.testing.expectEqual(1, session.browser.source_rows.len);
+}
+
+fn pollOnlineWithAllocationFailures(a: std.mem.Allocator, root: []const u8) !void {
+    var model: lib.Model = .{ .gpa = a, .library = .{ .manga = &.{.{ .id = "story", .title = "Story", .chapters = &.{.{ .id = "c1", .title = "Chapter" }} }} } };
+    defer model.deinit();
+    var engine: tachi.Engine = .init(std.testing.allocator, std.testing.io, tachi.backend.none, .{ .dir = root });
+    var session: Session = .{ .model = &model, .root = root, .io = std.testing.io };
+    defer session.deinit();
+    const job = try engine.gpa.create(tachi.Job);
+    job.* = .{ .arena = .init(engine.gpa), .engine = &engine, .request = .{ .read = .{ .chapter = "c1", .page = 0 } }, .result = .{ .message = "", .pages = &.{"online/1.png"} } };
+    job.done.store(true, .release);
+    session.browser.busy = job;
+    session.poll() catch |err| {
+        if (session.online_arena != null) {
+            try std.testing.expectEqualStrings("c1", model.online_chapter.?);
+            try std.testing.expectEqualStrings("online/1.png", model.online_pages[0]);
+        }
+        return err;
+    };
+    try std.testing.expectEqual(lib.Screen.reader, model.screen);
+}
+
+test "session snapshots retain ownership across every allocation failure" {
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    const a = std.testing.allocator;
+    const root = try temp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    defer a.free(root);
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = root });
+    try engine.store.save(a, fixture);
+    try std.testing.checkAllAllocationFailures(a, reloadWithAllocationFailures, .{root});
+    try std.testing.checkAllAllocationFailures(a, pollSourcesWithAllocationFailures, .{root});
+    try std.testing.checkAllAllocationFailures(a, pollOnlineWithAllocationFailures, .{root});
+}

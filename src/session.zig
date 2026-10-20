@@ -103,7 +103,8 @@ pub const Session = struct {
         if (!job.done.load(.acquire)) return;
         job.join();
         self.browser.busy = null;
-        errdefer job.deinit();
+        var owned_job: ?*tachi.Job = job;
+        defer if (owned_job) |owned| owned.deinit();
         if (job.result.library_changed) try self.reloadLibrary();
         if (job.request == .add_store or job.request == .refresh_stores) try self.loadStores();
         if (job.request == .tracker and job.failure == null and job.request.tracker.operation == .login) {
@@ -122,12 +123,10 @@ pub const Session = struct {
             if (self.browser.pending_chapter) |id| self.model.gpa.free(id);
             self.browser.pending_chapter = null;
             if (job.request == .browse and self.browser.titles != null) self.browser.page = self.browser.titles.?.request.browse.page;
-            job.deinit();
             return;
         }
         if (job.request == .read) {
             try self.openOnline(job.request.read.chapter, job.result.pages);
-            job.deinit();
             return;
         }
         if (job.request != .download) if (job.result.manga_id) |id| for (self.model.library.manga, 0..) |m, i| {
@@ -159,19 +158,25 @@ pub const Session = struct {
             else => null,
         };
         if (slot) |target| {
-            if (target.*) |old| old.deinit();
+            const old = target.*;
             target.* = job;
+            errdefer target.* = old;
             if (target == &self.browser.sources) try self.browser.refreshSourceRows(self.model.gpa);
-        } else job.deinit();
+            if (old) |previous| previous.deinit();
+            owned_job = null;
+        }
     }
     pub fn reloadLibrary(self: *Session) !void {
         const engine = self.browser.engine orelse return;
-        var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
-        errdefer arena.deinit();
-        self.model.library = try engine.loadLibrary(arena.allocator());
-        self.model.clearReading();
-        if (self.library_arena) |*old| old.deinit();
-        self.library_arena = arena;
+        {
+            var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+            errdefer arena.deinit();
+            const library = try engine.loadLibrary(arena.allocator());
+            self.model.clearReading();
+            if (self.library_arena) |*old| old.deinit();
+            self.model.library = library;
+            self.library_arena = arena;
+        }
         try self.refreshRows();
     }
 
@@ -299,15 +304,18 @@ pub const Session = struct {
     /// Opens a chapter read online with the pages libtachi loaded.
     fn openOnline(self: *Session, chapter_id: []const u8, pages: []const []const u8) !void {
         const model = self.model;
-        var arena: std.heap.ArenaAllocator = .init(model.gpa);
-        errdefer arena.deinit();
-        const a = arena.allocator();
-        const copies = try a.alloc([]const u8, pages.len);
-        for (pages, copies) |page, *copy| copy.* = try a.dupe(u8, page);
-        model.online_chapter = try a.dupe(u8, chapter_id);
-        model.online_pages = copies;
-        if (self.online_arena) |*old| old.deinit();
-        self.online_arena = arena;
+        {
+            var arena: std.heap.ArenaAllocator = .init(model.gpa);
+            errdefer arena.deinit();
+            const a = arena.allocator();
+            const copies = try a.alloc([]const u8, pages.len);
+            for (pages, copies) |page, *copy| copy.* = try a.dupe(u8, page);
+            const id = try a.dupe(u8, chapter_id);
+            if (self.online_arena) |*old| old.deinit();
+            model.online_chapter = id;
+            model.online_pages = copies;
+            self.online_arena = arena;
+        }
         for (model.library.manga[model.manga].chapters, 0..) |ch, i| if (std.mem.eql(u8, ch.id, chapter_id)) {
             try self.act(.{ .read = i });
             return;

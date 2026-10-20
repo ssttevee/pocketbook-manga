@@ -119,8 +119,6 @@ pub const Browser = struct {
             try shown.append(a, source);
             try shown_notes.append(a, note);
         };
-        self.source_rows = shown.items;
-        self.source_notes = shown_notes.items;
         const browse = (try engine.loadSettings(a)).browse;
         var languages: std.ArrayList(Language) = .empty;
         for (job.result.sources) |source| {
@@ -138,6 +136,8 @@ pub const Browser = struct {
                 return std.mem.lessThan(u8, x.code, y.code);
             }
         }.less);
+        self.source_rows = shown.items;
+        self.source_notes = shown_notes.items;
         self.languages = languages.items;
         if (self.source_rows_arena) |*old| old.deinit();
         self.source_rows_arena = arena;
