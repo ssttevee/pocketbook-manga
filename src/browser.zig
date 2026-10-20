@@ -12,6 +12,14 @@ pub const Browser = struct {
     /// target for, if any.
     global: ?*tachi.Job = null,
     migrate_from: ?[]const u8 = null,
+    /// The sources screen's rows in libtachi's order (last used, pinned,
+    /// then by language), or every source with `show_hidden`.
+    source_rows: []const tachi.models.SourceInfo = &.{},
+    source_rows_arena: ?std.heap.ArenaAllocator = null,
+    show_hidden: bool = false,
+    /// The open source's place in libtachi's settings.
+    source_pinned: bool = false,
+    source_hidden: bool = false,
     offset: usize = 0,
     source_id: i64 = 0,
     source_name: []const u8 = "",
@@ -64,6 +72,36 @@ pub const Browser = struct {
         return null;
     }
 
+    /// Lays out the installed sources as libtachi's source list does. The
+    /// local source isn't browsed here: local series come in by scanning.
+    pub fn refreshSourceRows(self: *Browser, gpa: std.mem.Allocator) !void {
+        const engine = self.engine orelse return;
+        const job = self.sources orelse return;
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        var rows: std.ArrayList(tachi.models.SourceInfo) = .empty;
+        if (self.show_hidden) {
+            try rows.appendSlice(a, job.result.sources);
+            std.mem.sort(tachi.models.SourceInfo, rows.items, {}, struct {
+                fn less(_: void, x: tachi.models.SourceInfo, y: tachi.models.SourceInfo) bool {
+                    return std.ascii.lessThanIgnoreCase(x.name, y.name);
+                }
+            }.less);
+        } else {
+            const list = try engine.sourceList(a, job.result.sources);
+            if (list.last_used) |source| try rows.append(a, source);
+            try rows.appendSlice(a, list.pinned);
+            for (list.languages) |group| try rows.appendSlice(a, group.sources);
+        }
+        // The last used source also stays in its group, as in Mihon.
+        var shown: std.ArrayList(tachi.models.SourceInfo) = .empty;
+        for (rows.items) |source| if (!std.mem.eql(u8, source.id, "0")) try shown.append(a, source);
+        self.source_rows = shown.items;
+        if (self.source_rows_arena) |*old| old.deinit();
+        self.source_rows_arena = arena;
+    }
+
     pub fn setQuery(self: *Browser, gpa: std.mem.Allocator, query: []const u8) !void {
         const copy = try gpa.dupe(u8, query);
         if (self.query.len > 0) gpa.free(self.query);
@@ -72,7 +110,7 @@ pub const Browser = struct {
     }
     pub fn count(self: *const Browser, screen: lib.Screen) usize {
         return switch (screen) {
-            .sources => if (self.sources) |j| j.result.sources.len else 0,
+            .sources => self.source_rows.len,
             .catalog => if (self.titles) |j| if (j.result.page) |page| page.mangas.len else 0 else 0,
             .source_settings => if (self.preferences) |j| j.result.preferences.len else 0,
             .global_search => blk: {
@@ -115,5 +153,6 @@ pub const Browser = struct {
         if (self.pending_chapter) |id| gpa.free(id);
         if (self.migrate_from) |id| gpa.free(id);
         for ([_]?*tachi.Job{ self.sources, self.extensions, self.titles, self.preferences, self.global }) |snapshot| if (snapshot) |job| job.deinit();
+        if (self.source_rows_arena) |*arena| arena.deinit();
     }
 };

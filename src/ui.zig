@@ -6,7 +6,7 @@ const Session = @import("session.zig").Session;
 const Root = @This();
 const tachi = @import("tachi");
 const models = tachi.models;
-pub const OnlineCommand = union(enum) { extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear, pick_global: usize };
+pub const OnlineCommand = union(enum) { toggle_pin, toggle_hidden, show_hidden, extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear, pick_global: usize };
 pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const State = struct { focused: bool = false, tapping: bool = false, reader_updates: u8 = 0 };
 pub const Props = struct {};
@@ -650,8 +650,16 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
         },
         .reload_sources => session.start(.sources),
         .pick_source => |i| {
-            const source = b.sources.?.result.sources[i];
+            const source = b.source_rows[i];
             try b.setSource(a, source);
+            if (b.engine) |engine| {
+                var arena: std.heap.ArenaAllocator = .init(a);
+                defer arena.deinit();
+                const browse = (try engine.loadSettings(arena.allocator())).browse;
+                b.source_pinned = tachi.views.sourcePinned(source, browse);
+                b.source_hidden = !tachi.views.sourceEnabled(source, browse);
+                try engine.setLastSource(b.source_id);
+            }
             b.latest = false;
             b.page = 1;
             b.offset = 0;
@@ -730,6 +738,21 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
         .scan => session.start(.scan_local),
         .cancel => {},
         .queue_unread => try session.queueUnread(),
+        .toggle_pin, .toggle_hidden => if (b.engine) |engine| {
+            if (command == .toggle_pin) {
+                b.source_pinned = !b.source_pinned;
+                try engine.setSourcePinned(b.source_id, b.source_pinned);
+            } else {
+                b.source_hidden = !b.source_hidden;
+                try engine.setSourceHidden(b.source_id, b.source_hidden);
+            }
+            try b.refreshSourceRows(a);
+        },
+        .show_hidden => {
+            b.show_hidden = !b.show_hidden;
+            b.offset = 0;
+            try b.refreshSourceRows(a);
+        },
         .pick_global => |row| if (b.globalHit(row)) |hit| {
             if (b.migrate_from) |from| {
                 session.start(.{ .migrate = .{ .from = from, .source = hit.source, .manga = hit.manga } });
@@ -758,7 +781,10 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
             .sources => {
                 try app.widgets.searchField(ui, "global-query", .{ .text = "", .placeholder = "Search all sources", .on_change = ui.messages(Root).handler(.global_query) });
                 try onlineButton(ui, "extensions", "Install / update extensions", .extensions);
-                try onlineButton(ui, "reload-sources", "Reload installed sources", .reload_sources);
+                try ui.open(null, .{ .layout = .{ .child_gap = 6 } });
+                try onlineButton(ui, "reload-sources", "Reload sources", .reload_sources);
+                try onlineButton(ui, "show-hidden", if (b.show_hidden) "Enabled sources" else "All sources", .show_hidden);
+                ui.close();
             },
             .global_search => try text(ui, if (b.migrate_from != null) "Tap the title to move to; its read chapters, categories and notes come along." else "Tap a title to add it and view chapters.", 12, 40),
             .extensions => {
@@ -777,7 +803,11 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
             },
             .source_settings => {
                 try text(ui, b.source_name, 16, 0);
+                try ui.open(null, .{ .layout = .{ .child_gap = 6 } });
+                try onlineButton(ui, "pin-source", if (b.source_pinned) "Unpin" else "Pin", .toggle_pin);
+                try onlineButton(ui, "hide-source", if (b.source_hidden) "Show" else "Hide", .toggle_hidden);
                 try onlineButton(ui, "remove-source", "Remove extension", .uninstall);
+                ui.close();
             },
             else => {},
         }
@@ -794,7 +824,7 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
         for (@min(b.offset, count)..@min(b.offset + lib.Model.rows, count)) |row| {
             const i = if (screen == .extensions) b.extensionIndex(row) else row;
             const label: []const u8 = switch (screen) {
-                .sources => b.sources.?.result.sources[i].name,
+                .sources => b.source_rows[i].name,
                 .extensions => b.extensions.?.result.extensions[i].name,
                 .catalog => b.titles.?.result.page.?.mangas[i].title,
                 .source_settings => b.preferences.?.result.preferences[i].title orelse "Source preference",
@@ -818,7 +848,7 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
             });
             try text(ui, label, 14, 0);
             switch (screen) {
-                .sources => try text(ui, b.sources.?.result.sources[i].lang, 10, 60),
+                .sources => try text(ui, b.source_rows[i].lang, 10, 60),
                 .global_search => try text(ui, b.globalHit(i).?.source_name, 10, 60),
                 .extensions => {
                     const e = b.extensions.?.result.extensions[i];

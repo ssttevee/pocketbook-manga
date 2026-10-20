@@ -111,6 +111,12 @@ test "device UI installs a source, searches, adds and downloads a chapter, reads
     try smoke.tapText("Use mirror");
     try finish(&session);
     try std.testing.expect(session.browser.preferences.?.result.preferences[0].value.?.bool);
+    // Pinning and hiding are libtachi's source settings.
+    try smoke.tapText("Pin");
+    try std.testing.expectEqualSlices(i64, &.{42}, (try engine.loadSettings(a)).browse.pinned_sources);
+    try smoke.tapText("Hide");
+    try std.testing.expectEqual(0, session.browser.source_rows.len);
+    try std.testing.expectEqual(42, (try engine.loadSettings(a)).browse.last_source);
 }
 test "background failures are reported and leave library and progress intact" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);

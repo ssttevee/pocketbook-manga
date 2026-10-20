@@ -133,6 +133,7 @@ pub const Session = struct {
         if (slot) |target| {
             if (target.*) |old| old.deinit();
             target.* = job;
+            if (target == &self.browser.sources) try self.browser.refreshSourceRows(self.model.gpa);
         } else job.deinit();
     }
     pub fn reloadLibrary(self: *Session) !void {
