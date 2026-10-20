@@ -6,11 +6,11 @@ const Session = @import("session.zig").Session;
 const Root = @This();
 const tachi = @import("tachi");
 const models = tachi.models;
-pub const OnlineCommand = union(enum) { toggle_pin, toggle_hidden, show_hidden, languages, toggle_language: usize, extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear, pick_global: usize };
+pub const OnlineCommand = union(enum) { stores, refresh_stores, remove_store: usize, toggle_pin, toggle_hidden, show_hidden, languages, toggle_language: usize, extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear, pick_global: usize };
 pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const State = struct { focused: bool = false, tapping: bool = false, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { act: lib.Action, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { act: lib.Action, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
@@ -21,6 +21,9 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
         },
         .online => |command| try onlineUpdate(session, command, ctx),
         .confirm_add => |add| if (session.browser.busy == null) session.confirmAdd(add),
+        .add_store => |url| if (session.browser.busy == null and std.mem.trim(u8, url, " ").len > 0) {
+            session.start(.{ .add_store = std.mem.trim(u8, url, " ") });
+        },
         .global_query => |query| if (session.browser.busy == null and std.mem.trim(u8, query, " ").len > 0) {
             if (session.browser.migrate_from) |id| session.model.gpa.free(id);
             session.browser.migrate_from = null;
@@ -263,6 +266,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             .categories => "Categories",
             .global_search => if (session.browser.migrate_from != null) "Migrate to" else "Search all",
             .languages => "Languages",
+            .stores => "Extension stores",
             .stats => "Statistics",
             .duplicate => "Already in library?",
             .title_options => "Chapter options",
@@ -347,6 +351,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         .title_options => try titleOptionsView(ui, session),
         .engine_settings => try settingsView(ui, session),
         .stats => try statsView(ui, session),
+        .stores => try storesView(ui, session),
         .duplicate => try duplicateView(ui, session),
         .backup => try backupView(ui, session),
         .categories => try categoriesView(ui, model),
@@ -530,6 +535,27 @@ fn titleOptionsView(ui: *app.Ui, session: *const Session) !void {
     for (groups, 0..) |group, i| {
         const excluded = manga.excludes(group);
         try app.widgets.button(ui, .{ .group = i }, .{ .label = try ui.fmt("{s} {s}", .{ if (excluded) "[ ]" else "[x]", group }), .on_click = on.bind(.{ .edit = @as(Session.Edit, .{ .toggle_scanlator = @intCast(i) }) }) });
+    }
+}
+
+/// libtachi's extension stores: add one by URL, remove, refresh.
+fn storesView(ui: *app.Ui, session: *const Session) !void {
+    const on = ui.messages(Root);
+    try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(10), .child_gap = 8 } });
+    defer ui.close();
+    try app.widgets.searchField(ui, "store-url", .{ .text = "", .placeholder = "Add a store by its index URL", .on_change = on.handler(.add_store) });
+    try onlineButton(ui, "refresh-stores", "Refresh stores", .refresh_stores);
+    if (session.stores.len == 0) try text(ui, "No stores: extensions come from the default repository.", 12, 40);
+    for (session.stores, 0..) |store, i| {
+        try ui.open(.{ .store = i }, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 6, .child_alignment = .center_left } });
+        defer ui.close();
+        {
+            try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y } });
+            defer ui.close();
+            try text(ui, if (store.name.len > 0) store.name else store.index_url, 14, 0);
+            try text(ui, store.index_url, 10, 60);
+        }
+        try onlineButton(ui, .{ .remove_store = i }, "Remove", .{ .remove_store = i });
     }
 }
 
@@ -777,7 +803,8 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
                 session.status = "This extension API version is not supported";
                 return;
             }
-            session.start(.{ .install = .{ .pkg = extension.pkg } });
+            // From the store that listed it, which checks who signed it.
+            session.start(.{ .install = .{ .pkg = extension.pkg, .repo = .{ .url = extension.store } } });
             model.screen = .sources;
             b.offset = 0;
         },
@@ -848,6 +875,16 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
             model.screen = .languages;
             b.offset = 0;
         },
+        .stores => {
+            model.screen = .stores;
+            b.offset = 0;
+            try session.loadStores();
+        },
+        .refresh_stores => session.start(.refresh_stores),
+        .remove_store => |i| if (b.engine) |engine| if (i < session.stores.len) {
+            try engine.removeStore(session.stores[i].index_url);
+            try session.loadStores();
+        },
         .toggle_language => |i| if (b.engine) |engine| if (i < b.languages.len) {
             try engine.setLanguage(b.languages[i].code, !b.languages[i].enabled);
             try b.refreshSourceRows(a);
@@ -898,6 +935,7 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
             .languages => try text(ui, "Sources in checked languages are listed and searched.", 12, 40),
             .extensions => {
                 try app.widgets.searchField(ui, "extension-query", .{ .text = b.query, .placeholder = "Filter extensions or language", .on_change = ui.messages(Root).handler(.online_query) });
+                try onlineButton(ui, "stores", "Extension stores", .stores);
                 try text(ui, "Tap an extension to install or update it.", 12, 40);
             },
             .catalog => {

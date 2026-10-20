@@ -35,6 +35,10 @@ pub fn fixtureExecutor(engine: *tachi.Engine, job: *tachi.Job) !void {
         },
         .update_library, .refresh => job.result.library_changed = true,
         .read => job.result.pages = &.{ "cache/chapters/pages/1.png", "cache/chapters/pages/2.png" },
+        .add_store => |url| {
+            const file = try tachi.stores.File.load(a, engine.io, engine.options.dir);
+            try (try file.upsert(a, .{ .index_url = url, .name = "Fixture Store" })).save(a, engine.io, engine.options.dir);
+        },
         .global_search => |request| {
             try std.testing.expectEqualStrings("Fixture Story", request.query);
             job.result.search = &.{.{ .source = fixture_source, .mangas = &.{.{ .url = "/elsewhere", .title = "Fixture Story" }} }};
@@ -379,4 +383,35 @@ test "device UI asks before adding a title the library may already have" {
     try smoke.tapText("Add anyway");
     try finish(&session);
     try std.testing.expectEqual(lib.Screen.chapters, model.screen);
+}
+
+test "device UI adds and removes an extension store" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = root });
+    engine.execute_fn = fixtureExecutor;
+    var model: lib.Model = .{ .gpa = a };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = root };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    try smoke.start(std.testing.allocator, std.testing.io, &session);
+    defer smoke.stop();
+    try smoke.tapText("Browse");
+    try finish(&session);
+    try smoke.tapText("Install / update extensions");
+    try finish(&session);
+    try smoke.tapText("Extension stores");
+    try std.testing.expectEqual(lib.Screen.stores, model.screen);
+    try smoke.tapText("Add a store by its index URL");
+    smoke.fake.keyboardResult("https://fixture/index.min.json");
+    smoke.fake.advance(1);
+    try finish(&session);
+    try std.testing.expectEqual(1, session.stores.len);
+    try std.testing.expectEqualStrings("Fixture Store", session.stores[0].name);
+    try smoke.tapText("Remove");
+    try std.testing.expectEqual(0, session.stores.len);
 }

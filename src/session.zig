@@ -27,6 +27,9 @@ pub const Session = struct {
     rows_arena: ?std.heap.ArenaAllocator = null,
     /// Owns the model's online chapter and pages.
     online_arena: ?std.heap.ArenaAllocator = null,
+    /// libtachi's extension stores, when shown.
+    stores: []const tachi.stores.Store = &.{},
+    stores_arena: ?std.heap.ArenaAllocator = null,
     /// libtachi's library statistics, when shown.
     stats: tachi.views.Stats = .{},
     /// A title about to be added that libtachi thinks the library already
@@ -96,6 +99,7 @@ pub const Session = struct {
         self.browser.busy = null;
         errdefer job.deinit();
         if (job.result.library_changed) try self.reloadLibrary();
+        if (job.request == .add_store or job.request == .refresh_stores) try self.loadStores();
         if (self.model.screen == .backup) try self.refreshBackups();
         self.download_error = job.failure != null and job.request == .download;
         self.download_canceled = self.download_error and std.mem.eql(u8, job.failure.?, "Canceled");
@@ -158,6 +162,15 @@ pub const Session = struct {
         if (self.library_arena) |*old| old.deinit();
         self.library_arena = arena;
         try self.refreshRows();
+    }
+
+    pub fn loadStores(self: *Session) !void {
+        const engine = self.browser.engine orelse return;
+        var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+        errdefer arena.deinit();
+        self.stores = try engine.extensionStores(arena.allocator());
+        if (self.stores_arena) |*old| old.deinit();
+        self.stores_arena = arena;
     }
 
     /// Adds a browsed title, unless libtachi finds it may already be in
@@ -586,6 +599,7 @@ pub const Session = struct {
         if (self.rows_arena) |*arena| arena.deinit();
         if (self.online_arena) |*arena| arena.deinit();
         if (self.pending_arena) |*arena| arena.deinit();
+        if (self.stores_arena) |*arena| arena.deinit();
         if (self.feed_arena) |*arena| arena.deinit();
         if (self.settings_arena) |*arena| arena.deinit();
     }
