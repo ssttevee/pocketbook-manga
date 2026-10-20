@@ -418,10 +418,11 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
             });
             try text(ui, title, 14, 0);
             if (is_library) {
-                try ui.print(.{ .font_size = 10, .color = .gray(60) }, "{d} chapters  {s}", .{ model.library.manga[i].chapters.len, model.library.manga[i].author });
+                const n = model.library.manga[i].chapters.len;
+                try ui.print(.{ .font_size = 10, .color = .gray(60) }, "{d} {s}  {s}", .{ n, if (n == 1) "chapter" else "chapters", model.library.manga[i].author });
             } else {
                 const ch = model.library.manga[model.manga].chapters[i];
-                if (ch.pages.len == 0) try text(ui, "Tap to download and read", 10, 60) else try ui.print(.{ .font_size = 10, .color = .gray(60) }, "{d} pages  /  {s}", .{ ch.pages.len, if (model.readState(ch).read) "Read" else if (model.readState(ch).started) "Reading" else "Unread" });
+                if (ch.pages.len == 0) try text(ui, "Tap to download and read", 10, 60) else try ui.print(.{ .font_size = 10, .color = .gray(60) }, "{d} {s}  /  {s}", .{ ch.pages.len, if (ch.pages.len == 1) "page" else "pages", if (model.readState(ch).read) "Read" else if (model.readState(ch).started) "Reading" else "Unread" });
             }
             ui.close();
         }
