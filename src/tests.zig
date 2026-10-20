@@ -172,3 +172,24 @@ test {
     _ = @import("downloads.zig");
     _ = @import("power.zig");
 }
+
+test "poll destroys a completed job when library reload fails" {
+    const online = @import("online.zig");
+    const a = std.testing.allocator;
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    defer a.free(root);
+    var model: lib.Model = .{ .gpa = a };
+    defer model.deinit();
+    var engine: online.Engine = .{ .gpa = a, .io = std.testing.io, .root = root };
+    var session: Session = .{ .model = &model, .root = root, .io = std.testing.io };
+    defer session.deinit();
+    const job = try a.create(online.Job);
+    job.* = .{ .arena = .init(a), .engine = &engine, .request = .scan, .result = .{ .library_changed = true } };
+    _ = try job.arena.allocator().dupe(u8, "owned job data");
+    job.done.store(true, .release);
+    session.browser.busy = job;
+    try std.testing.expectError(error.FileNotFound, session.poll());
+    try std.testing.expect(session.browser.busy == null);
+}

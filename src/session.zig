@@ -65,6 +65,7 @@ pub const Session = struct {
         if (!job.done.load(.acquire)) return;
         job.join();
         self.browser.busy = null;
+        errdefer job.deinit();
         if (job.result.library_changed) try self.reloadLibrary();
         self.download_error = job.failure != null and job.request == .download;
         self.download_canceled = self.download_error and std.mem.eql(u8, job.failure.?, "Canceled");
