@@ -8,6 +8,10 @@ pub const Browser = struct {
     extensions: ?*tachi.Job = null,
     titles: ?*tachi.Job = null,
     preferences: ?*tachi.Job = null,
+    /// The last global search, and the title it is finding a migration
+    /// target for, if any.
+    global: ?*tachi.Job = null,
+    migrate_from: ?[]const u8 = null,
     offset: usize = 0,
     source_id: i64 = 0,
     source_name: []const u8 = "",
@@ -47,6 +51,19 @@ pub const Browser = struct {
         if (self.pending_chapter) |old| gpa.free(old);
         self.pending_chapter = copy;
     }
+    /// A global search's results, one row per title: its source and title.
+    pub const Hit = struct { source: i64, source_name: []const u8, manga: tachi.models.Manga };
+
+    pub fn globalHit(self: *const Browser, row: usize) ?Hit {
+        const job = self.global orelse return null;
+        var at: usize = 0;
+        for (job.result.search) |result| for (result.mangas) |manga| {
+            if (at == row) return .{ .source = result.source.idInt() catch return null, .source_name = result.source.name, .manga = manga };
+            at += 1;
+        };
+        return null;
+    }
+
     pub fn setQuery(self: *Browser, gpa: std.mem.Allocator, query: []const u8) !void {
         const copy = try gpa.dupe(u8, query);
         if (self.query.len > 0) gpa.free(self.query);
@@ -58,6 +75,12 @@ pub const Browser = struct {
             .sources => if (self.sources) |j| j.result.sources.len else 0,
             .catalog => if (self.titles) |j| if (j.result.page) |page| page.mangas.len else 0 else 0,
             .source_settings => if (self.preferences) |j| j.result.preferences.len else 0,
+            .global_search => blk: {
+                const job = self.global orelse break :blk 0;
+                var hits: usize = 0;
+                for (job.result.search) |result| hits += result.mangas.len;
+                break :blk hits;
+            },
             .extensions => blk: {
                 const job = self.extensions orelse break :blk 0;
                 var count_: usize = 0;
@@ -90,6 +113,7 @@ pub const Browser = struct {
         if (self.source_name.len > 0) gpa.free(self.source_name);
         if (self.extension_pkg.len > 0) gpa.free(self.extension_pkg);
         if (self.pending_chapter) |id| gpa.free(id);
-        for ([_]?*tachi.Job{ self.sources, self.extensions, self.titles, self.preferences }) |snapshot| if (snapshot) |job| job.deinit();
+        if (self.migrate_from) |id| gpa.free(id);
+        for ([_]?*tachi.Job{ self.sources, self.extensions, self.titles, self.preferences, self.global }) |snapshot| if (snapshot) |job| job.deinit();
     }
 };

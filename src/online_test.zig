@@ -34,6 +34,20 @@ pub fn fixtureExecutor(engine: *tachi.Engine, job: *tachi.Job) !void {
             job.result.preferences = prefs;
         },
         .update_library, .refresh => job.result.library_changed = true,
+        .global_search => |request| {
+            try std.testing.expectEqualStrings("Fixture Story", request.query);
+            job.result.search = &.{.{ .source = fixture_source, .mangas = &.{.{ .url = "/elsewhere", .title = "Fixture Story" }} }};
+        },
+        .migrate => |request| {
+            const library = try engine.store.load(a);
+            const titles = try a.dupe(lib.Manga, library.manga);
+            for (titles) |*m| if (std.mem.eql(u8, m.id, request.from)) {
+                m.favorite = false;
+            };
+            const moved: lib.Manga = .{ .id = "42:/elsewhere", .title = "Fixture Story", .source_id = 42, .remote = request.manga };
+            try engine.store.save(a, .{ .manga = try std.mem.concat(a, lib.Manga, &.{ titles, &.{moved} }) });
+            job.result = .{ .library_changed = true, .manga_id = moved.id };
+        },
         else => return error.FixtureFailure,
     }
 }
@@ -265,4 +279,32 @@ test "worker startup is shown for downloads and browse and remains immediately c
         try std.testing.expect(tachi.worker.tachi_now_ms() - started < 500);
         try session.poll();
     }
+}
+
+test "device UI migrates a title to another source through a global search" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = root });
+    engine.execute_fn = fixtureExecutor;
+    try engine.store.save(a, .{ .manga = &.{.{ .id = "42:/manga", .title = "Fixture Story", .source_id = 42, .remote = .{ .url = "/manga", .title = "Fixture Story" } }} });
+    var model: lib.Model = .{ .gpa = a };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = root };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    try session.reloadLibrary();
+    try smoke.start(std.testing.allocator, std.testing.io, &session);
+    defer smoke.stop();
+    try smoke.tapText("...");
+    try smoke.tapText("Migrate to another source");
+    try finish(&session);
+    try std.testing.expectEqual(lib.Screen.global_search, model.screen);
+    try smoke.tapText("Fixture Source");
+    try finish(&session);
+    try std.testing.expectEqual(lib.Screen.chapters, model.screen);
+    try std.testing.expectEqualStrings("42:/elsewhere", model.library.manga[model.manga].id);
+    try std.testing.expect(session.browser.migrate_from == null);
 }

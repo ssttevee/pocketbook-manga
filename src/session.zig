@@ -127,6 +127,7 @@ pub const Session = struct {
             .extensions => &self.browser.extensions,
             .browse => &self.browser.titles,
             .preferences, .set_preference => &self.browser.preferences,
+            .global_search => &self.browser.global,
             else => null,
         };
         if (slot) |target| {
@@ -201,7 +202,19 @@ pub const Session = struct {
         self.feed_arena = arena;
     }
 
-    pub const Edit = union(enum) { mark_read, mark_unread, mark_previous, bookmark, unbookmark, download, delete_download, title_read, title_unread, remove_title, toggle_category: u32 };
+    pub const Edit = union(enum) { mark_read, mark_unread, mark_previous, bookmark, unbookmark, download, delete_download, title_read, title_unread, remove_title, toggle_category: u32, migrate };
+
+    /// Searches every enabled source, or only pinned ones if the settings
+    /// say so and some are pinned.
+    pub fn globalSearch(self: *Session, query: []const u8) !void {
+        const engine = self.browser.engine orelse return;
+        var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+        defer arena.deinit();
+        const s = try engine.loadSettings(arena.allocator());
+        self.model.screen = .global_search;
+        self.browser.offset = 0;
+        self.start(.{ .global_search = .{ .query = query, .pinned_only = s.browse.search_pinned_only and s.browse.pinned_sources.len > 0 } });
+    }
 
     /// Applies a chapter or title menu choice through libtachi, then shows
     /// the list again.
@@ -230,6 +243,14 @@ pub const Session = struct {
             .remove_title => {
                 try engine.setFavorite(manga.id, false);
                 back = .library;
+            },
+            .migrate => {
+                // Find the title elsewhere; picking a result migrates it.
+                const id = try model.gpa.dupe(u8, manga.id);
+                if (self.browser.migrate_from) |old| model.gpa.free(old);
+                self.browser.migrate_from = id;
+                try self.globalSearch(manga.title);
+                return;
             },
             .toggle_category => |id| {
                 var categories: std.ArrayList(u32) = .empty;
