@@ -25,6 +25,8 @@ pub const Session = struct {
     last_progress_ms: ?u64 = null,
     /// Owns the model's rows and category names.
     rows_arena: ?std.heap.ArenaAllocator = null,
+    /// Owns the model's online chapter and pages.
+    online_arena: ?std.heap.ArenaAllocator = null,
     /// libtachi's settings as the settings screen shows them.
     settings: tachi.settings.Settings = .{},
     settings_arena: ?std.heap.ArenaAllocator = null,
@@ -103,6 +105,11 @@ pub const Session = struct {
             job.deinit();
             return;
         }
+        if (job.request == .read) {
+            try self.openOnline(job.request.read.chapter, job.result.pages);
+            job.deinit();
+            return;
+        }
         if (job.request != .download) if (job.result.manga_id) |id| for (self.model.library.manga, 0..) |m, i| {
             if (std.mem.eql(u8, m.id, id)) {
                 try self.act(.{ .open = i });
@@ -145,6 +152,24 @@ pub const Session = struct {
         if (self.library_arena) |*old| old.deinit();
         self.library_arena = arena;
         try self.refreshRows();
+    }
+
+    /// Opens a chapter read online with the pages libtachi loaded.
+    fn openOnline(self: *Session, chapter_id: []const u8, pages: []const []const u8) !void {
+        const model = self.model;
+        var arena: std.heap.ArenaAllocator = .init(model.gpa);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        const copies = try a.alloc([]const u8, pages.len);
+        for (pages, copies) |page, *copy| copy.* = try a.dupe(u8, page);
+        model.online_chapter = try a.dupe(u8, chapter_id);
+        model.online_pages = copies;
+        if (self.online_arena) |*old| old.deinit();
+        self.online_arena = arena;
+        for (model.library.manga[model.manga].chapters, 0..) |ch, i| if (std.mem.eql(u8, ch.id, chapter_id)) {
+            try self.act(.{ .read = i });
+            return;
+        };
     }
 
     /// Fills the updates, history or download queue list from libtachi.
@@ -203,7 +228,7 @@ pub const Session = struct {
         self.feed_arena = arena;
     }
 
-    pub const Edit = union(enum) { mark_read, mark_unread, mark_previous, bookmark, unbookmark, download, delete_download, title_read, title_unread, remove_title, toggle_category: u32, migrate };
+    pub const Edit = union(enum) { mark_read, mark_unread, mark_previous, bookmark, unbookmark, download, delete_download, title_read, title_unread, remove_title, toggle_category: u32, migrate, read_online };
 
     /// Searches every enabled source, or only pinned ones if the settings
     /// say so and some are pinned.
@@ -244,6 +269,12 @@ pub const Session = struct {
             .remove_title => {
                 try engine.setFavorite(manga.id, false);
                 back = .library;
+            },
+            .read_online => {
+                // libtachi loads it into its chapter cache; poll opens it.
+                model.screen = .chapters;
+                self.start(.{ .read = .{ .chapter = chapter_id, .page = model.readState(manga.chapters[model.menu_chapter]).page } });
+                return;
             },
             .migrate => {
                 // Find the title elsewhere; picking a result migrates it.
@@ -421,6 +452,7 @@ pub const Session = struct {
         if (self.activity) |activity| activity(false);
         if (self.library_arena) |*arena| arena.deinit();
         if (self.rows_arena) |*arena| arena.deinit();
+        if (self.online_arena) |*arena| arena.deinit();
         if (self.feed_arena) |*arena| arena.deinit();
         if (self.settings_arena) |*arena| arena.deinit();
     }

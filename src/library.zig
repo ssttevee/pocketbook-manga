@@ -68,6 +68,10 @@ pub const Model = struct {
     feed_count: usize = 0,
     /// The chapter the chapter menu is for.
     menu_chapter: usize = 0,
+    /// A chapter being read online, and its pages in libtachi's chapter
+    /// cache (a failed page's path is empty).
+    online_chapter: ?[]const u8 = null,
+    online_pages: []const []const u8 = &.{},
     pub const rows = 7;
     pub const ReadState = struct { page: u32, read: bool, started: bool };
 
@@ -105,7 +109,15 @@ pub const Model = struct {
         if (self.manga >= self.library.manga.len) return null;
         const chapters = self.library.manga[self.manga].chapters;
         if (self.chapter >= chapters.len) return null;
-        return chapters[self.chapter];
+        return self.withPages(chapters[self.chapter]);
+    }
+    /// The chapter with its online pages if it is being read online.
+    fn withPages(self: *const Model, ch: Chapter) Chapter {
+        var copy = ch;
+        if (ch.pages.len == 0) if (self.online_chapter) |id| if (std.mem.eql(u8, id, ch.id)) {
+            copy.pages = self.online_pages;
+        };
+        return copy;
     }
     /// Marks the page now shown; the session records it with libtachi. A
     /// chapter becomes read on its last page.
@@ -138,9 +150,11 @@ pub const Model = struct {
             .read => |i| {
                 if (self.manga >= self.library.manga.len) return;
                 const chapters = self.library.manga[self.manga].chapters;
-                if (i >= chapters.len or chapters[i].pages.len == 0) return;
+                if (i >= chapters.len) return;
+                const ch = self.withPages(chapters[i]);
+                if (ch.pages.len == 0) return;
                 self.chapter = i;
-                self.page = @min(self.readState(chapters[i]).page, chapters[i].pages.len - 1);
+                self.page = @min(self.readState(ch).page, ch.pages.len - 1);
                 self.screen = .reader;
                 try self.remember();
             },

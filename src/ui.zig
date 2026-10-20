@@ -293,6 +293,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
                 .uninstall => "Removing extension...",
                 .browse => if (session.browser.source_name.len > 0) try ui.fmt("Loading {s}...", .{session.browser.source_name}) else "Loading titles...",
                 .download => if (total == 0) "Fetching page list" else "Downloading pages",
+                .read => if (total == 0) "Fetching page list" else "Loading pages",
                 .scan_local => "Scanning local manga...",
                 .global_search => "Searching sources...",
                 .migrate => "Migrating...",
@@ -526,9 +527,11 @@ fn menuView(ui: *app.Ui, model: *const lib.Model) !void {
             .{ .label = "Mark previous read", .edit = .mark_previous },
             if (ch.bookmark) .{ .label = "Remove bookmark", .edit = .unbookmark } else .{ .label = "Bookmark", .edit = .bookmark },
             if (ch.pages.len > 0) .{ .label = "Delete download", .edit = .delete_download } else .{ .label = "Download", .edit = .download },
+            .{ .label = "Read online", .edit = .read_online },
         };
         for (choices, 0..) |choice, n| {
-            if (manga.local() and (choice.edit == .download or choice.edit == .delete_download)) continue;
+            if (manga.local() and (choice.edit == .download or choice.edit == .delete_download or choice.edit == .read_online)) continue;
+            if (choice.edit == .read_online and ch.pages.len > 0) continue;
             try app.widgets.button(ui, .{ .choice = n }, .{ .label = choice.label, .on_click = on.bind(.{ .edit = choice.edit }) });
         }
         return;

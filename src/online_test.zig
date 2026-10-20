@@ -34,6 +34,7 @@ pub fn fixtureExecutor(engine: *tachi.Engine, job: *tachi.Job) !void {
             job.result.preferences = prefs;
         },
         .update_library, .refresh => job.result.library_changed = true,
+        .read => job.result.pages = &.{ "cache/chapters/pages/1.png", "cache/chapters/pages/2.png" },
         .global_search => |request| {
             try std.testing.expectEqualStrings("Fixture Story", request.query);
             job.result.search = &.{.{ .source = fixture_source, .mangas = &.{.{ .url = "/elsewhere", .title = "Fixture Story" }} }};
@@ -321,4 +322,33 @@ test "device UI migrates a title to another source through a global search" {
     try std.testing.expectEqual(lib.Screen.chapters, model.screen);
     try std.testing.expectEqualStrings("42:/elsewhere", model.library.manga[model.manga].id);
     try std.testing.expect(session.browser.migrate_from == null);
+}
+
+test "device UI reads a chapter online through libtachi's chapter cache" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = root });
+    engine.execute_fn = fixtureExecutor;
+    try engine.store.save(a, .{ .manga = &.{.{ .id = "42:/manga", .title = "Fixture Story", .source_id = 42, .remote = .{ .url = "/manga", .title = "Fixture Story" }, .chapters = &.{
+        .{ .id = "42:/chapter", .title = "Chapter 1", .remote = .{ .url = "/chapter", .name = "Chapter 1" } },
+    } }} });
+    var model: lib.Model = .{ .gpa = a };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = root };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    try session.reloadLibrary();
+    try smoke.start(std.testing.allocator, std.testing.io, &session);
+    defer smoke.stop();
+    try smoke.tapText("Fixture Story");
+    try smoke.tapText("...");
+    try smoke.tapText("Read online");
+    try finish(&session);
+    try std.testing.expectEqual(lib.Screen.reader, model.screen);
+    try std.testing.expectEqual(2, model.current().?.pages.len);
+    // Still not a download.
+    try std.testing.expectEqual(0, model.library.manga[0].chapters[0].pages.len);
 }
