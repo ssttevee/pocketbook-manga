@@ -20,6 +20,9 @@ pub const Session = struct {
     library_arena: ?std.heap.ArenaAllocator = null,
     /// When the reader last recorded progress, for reading time.
     last_progress_ms: ?u64 = null,
+    /// The chapter after the one being read, as libtachi's reader list
+    /// orders and skips them: an index into the title's chapters.
+    next_chapter: ?usize = null,
     fn clearDownloadIdentity(self: *Session) void {
         if (self.download_identity) |identity| {
             self.model.gpa.free(identity.series);
@@ -165,8 +168,16 @@ pub const Session = struct {
                 };
             }
         }
-        if (self.model.screen != .reader) self.last_progress_ms = null;
+        if (self.model.screen == .reader and (old_screen != .reader or before == null or !std.mem.eql(u8, before.?.id, self.model.current().?.id))) self.findNextChapter();
+        if (self.model.screen != .reader) {
+            self.last_progress_ms = null;
+            self.next_chapter = null;
+        }
         if (self.model.progress_changed) self.recordProgress();
+        // Leaving the reader deletes what finished chapters queued for deletion.
+        if (old_screen == .reader and self.model.screen != .reader) if (self.browser.engine) |engine| engine.leaveReader() catch |err| {
+            self.status = try std.fmt.allocPrint(self.model.gpa, "Downloads not deleted: {s}", .{@errorName(err)});
+        };
         if (self.model.dirty) if (self.save_path) |path| {
             lib.writeJson(self.model.gpa, self.io, path, self.model.prefs) catch |err| {
                 self.status = try std.fmt.allocPrint(self.model.gpa, "Settings not saved: {s}", .{@errorName(err)});
@@ -175,8 +186,9 @@ pub const Session = struct {
             self.model.dirty = false;
         };
     }
-    /// Records the page shown with libtachi, with the time spent since the
+    /// Tells libtachi which page is shown, with the time spent since the
     /// last page (at most five minutes, so an idle reader does not count).
+    /// libtachi marks the chapter read on its last page and does the rest.
     fn recordProgress(self: *Session) void {
         self.model.progress_changed = false;
         const engine = self.browser.engine orelse return;
@@ -185,8 +197,21 @@ pub const Session = struct {
         const now: u64 = @intCast(std.Io.Clock.awake.now(self.io).toMilliseconds());
         const read_ms: i64 = if (self.last_progress_ms) |last| @intCast(@min(now - last, 5 * 60 * 1000)) else 0;
         self.last_progress_ms = now;
-        engine.setProgress(ch.id, state.page, state.read, read_ms) catch |err| {
+        engine.pageShown(.{ .chapter_id = ch.id, .page = state.page, .pages = @intCast(ch.pages.len), .read_ms = read_ms }) catch |err| {
             self.status = std.fmt.allocPrint(self.model.gpa, "Progress not saved: {s}", .{@errorName(err)}) catch "Progress not saved";
         };
+    }
+
+    fn findNextChapter(self: *Session) void {
+        self.next_chapter = null;
+        const engine = self.browser.engine orelse return;
+        const ch = self.model.current() orelse return;
+        var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+        defer arena.deinit();
+        const list = engine.readerChapters(arena.allocator(), ch.id) catch return;
+        const next = list.next() orelse return;
+        for (self.model.library.manga[self.model.manga].chapters, 0..) |candidate, i| {
+            if (std.mem.eql(u8, candidate.id, next.id)) self.next_chapter = i;
+        }
     }
 };

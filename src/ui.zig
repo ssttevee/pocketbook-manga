@@ -60,11 +60,11 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                 session.start(.sources);
                 return;
             }
-            if (action == .read or action == .next_chapter) {
+            const effective: lib.Action = if (action == .next_chapter) .{ .read = session.next_chapter orelse return } else action;
+            if (effective == .read) {
                 const book = session.model.library.manga[session.model.manga];
-                const index = if (action == .read) action.read else session.model.chapter + 1;
-                if (index < book.chapters.len) {
-                    const chapter = book.chapters[index];
+                if (effective.read < book.chapters.len) {
+                    const chapter = book.chapters[effective.read];
                     if (chapter.pages.len == 0 and chapter.remote != null) {
                         try session.browser.setPendingChapter(session.model.gpa, chapter.id);
                         session.start(.{ .download = chapter.id });
@@ -72,8 +72,8 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                     }
                 }
             }
-            if (action == .back) session.browser.offset = 0;
-            try session.act(action);
+            if (effective == .back) session.browser.offset = 0;
+            try session.act(effective);
             if (session.model.screen == .reader) refreshReader(state, session, ctx);
             ctx.focus("screen");
         },
@@ -324,7 +324,7 @@ fn reader(ui: *app.Ui, session: *const Session) !void {
         try ui.print(.{ .font_size = 12 }, "{d} / {d}", .{ model.page + 1, ch.pages.len });
         ui.spacer();
         try button(ui, "right-page", if (model.prefs.rtl) "Prev" else "Next", .{ .turn = if (model.prefs.rtl) -1 else 1 });
-        if (model.page + 1 == ch.pages.len and model.chapter + 1 < model.library.manga[model.manga].chapters.len)
+        if (model.page + 1 == ch.pages.len and session.next_chapter != null)
             try app.widgets.button(ui, "next-chapter", .{ .label = "Chapter >", .on_click = on.bind(.{ .act = .next_chapter }) });
     }
 }

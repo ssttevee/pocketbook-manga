@@ -139,11 +139,8 @@ pub const Model = struct {
                 self.page = @intCast(std.math.clamp(p, 0, @as(i64, @intCast(ch.pages.len - 1))));
                 try self.remember();
             },
-            .next_chapter => {
-                if (self.screen != .reader) return;
-                const chapters = self.library.manga[self.manga].chapters;
-                if (self.chapter + 1 < chapters.len) try self.dispatch(.{ .read = self.chapter + 1 });
-            },
+            // libtachi picks the next chapter; the UI turns this into `read`.
+            .next_chapter => {},
             .back => switch (self.screen) {
                 .reader => {
                     self.screen = .chapters;

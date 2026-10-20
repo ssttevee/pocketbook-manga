@@ -14,8 +14,16 @@ test "page paths stay inside the library" {
 test "drawn UI opens chapters, turns pages, resumes and saves completion" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
+    // libtachi picks the next chapter and records progress.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", arena.allocator());
+    var engine: tachi.Engine = .init(std.testing.allocator, std.testing.io, tachi.backend.none, .{ .dir = dir });
+    defer engine.queue.deinit(&engine);
+    try engine.store.save(arena.allocator(), fixture);
     var model: lib.Model = .{ .gpa = arena.allocator(), .library = fixture };
     var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io };
+    session.browser.engine = &engine;
     var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
     defer h.deinit();
     try h.frame();
