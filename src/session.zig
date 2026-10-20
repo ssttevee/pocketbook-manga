@@ -1,6 +1,6 @@
 const std = @import("std");
+const tachi = @import("tachi");
 const lib = @import("library.zig");
-const online = @import("online.zig");
 const Browser = @import("browser.zig").Browser;
 const Image = @import("reader-image");
 pub const Session = struct {
@@ -16,7 +16,10 @@ pub const Session = struct {
     download_canceled: bool = false,
     download_identity: ?struct { series: []const u8, chapter: []const u8 } = null,
     browser: Browser = .{},
-    library_snapshot: ?std.json.Parsed(lib.Library) = null,
+    /// Owns `model.library` once loaded through the engine.
+    library_arena: ?std.heap.ArenaAllocator = null,
+    /// When the reader last recorded progress, for reading time.
+    last_progress_ms: ?u64 = null,
     fn clearDownloadIdentity(self: *Session) void {
         if (self.download_identity) |identity| {
             self.model.gpa.free(identity.series);
@@ -24,15 +27,20 @@ pub const Session = struct {
         }
         self.download_identity = null;
     }
-    fn rememberDownload(self: *Session, request: online.Request) !void {
-        const series = try self.model.gpa.dupe(u8, request.download.book.title);
-        errdefer self.model.gpa.free(series);
-        const chapter = try self.model.gpa.dupe(u8, request.download.chapter.title);
-        self.clearDownloadIdentity();
-        self.download_identity = .{ .series = series, .chapter = chapter };
+    /// Remembers the titles of the chapter a download request names.
+    fn rememberDownload(self: *Session, chapter_id: []const u8) !void {
+        for (self.model.library.manga) |m| for (m.chapters) |ch| {
+            if (!std.mem.eql(u8, ch.id, chapter_id)) continue;
+            const series = try self.model.gpa.dupe(u8, m.title);
+            errdefer self.model.gpa.free(series);
+            const chapter = try self.model.gpa.dupe(u8, ch.title);
+            self.clearDownloadIdentity();
+            self.download_identity = .{ .series = series, .chapter = chapter };
+            return;
+        };
     }
     /// The banner's headline already says failed or canceled; this is the detail.
-    fn downloadDetail(self: *Session, job: *online.Job, failure: []const u8) ![]u8 {
+    fn downloadDetail(self: *Session, job: *tachi.Job, failure: []const u8) ![]u8 {
         const done = job.pages_done.load(.acquire);
         const total = job.pages_total.load(.acquire);
         if (self.download_canceled) return std.fmt.allocPrint(self.model.gpa, "{d}/{d} pages saved", .{ done, total });
@@ -41,9 +49,9 @@ pub const Session = struct {
     pub fn updateActivity(self: *Session) void {
         if (self.activity) |activity| activity(if (self.browser.busy) |job| !job.done.load(.acquire) else false);
     }
-    pub fn start(self: *Session, request: online.Request) void {
+    pub fn start(self: *Session, request: tachi.engine.Request) void {
         defer self.updateActivity();
-        if (request == .download and self.browser.busy == null) self.rememberDownload(request) catch {
+        if (request == .download and self.browser.busy == null) self.rememberDownload(request.download) catch {
             self.status = "Cannot start download: out of memory";
             self.download_error = true;
             self.download_canceled = false;
@@ -52,15 +60,11 @@ pub const Session = struct {
         self.browser.start(request) catch |err| {
             self.download_error = request == .download;
             self.download_canceled = false;
-            self.status = if (self.download_error)
-                std.fmt.allocPrint(self.model.gpa, "{s}", .{@errorName(err)}) catch "OutOfMemory"
-            else
-                std.fmt.allocPrint(self.model.gpa, "{s}", .{@errorName(err)}) catch "Operation failed";
+            self.status = std.fmt.allocPrint(self.model.gpa, "{s}", .{@errorName(err)}) catch "Operation failed";
         };
     }
     pub fn poll(self: *Session) !void {
         defer self.updateActivity();
-        if (self.browser.engine) |engine| engine.serviceWorker();
         const job = self.browser.busy orelse return;
         if (!job.done.load(.acquire)) return;
         job.join();
@@ -69,7 +73,7 @@ pub const Session = struct {
         if (job.result.library_changed) try self.reloadLibrary();
         self.download_error = job.failure != null and job.request == .download;
         self.download_canceled = self.download_error and std.mem.eql(u8, job.failure.?, "Canceled");
-        if (self.download_error) try self.rememberDownload(job.request);
+        if (self.download_error) try self.rememberDownload(job.request.download);
         self.status = if (job.failure) |failure|
             if (job.request == .download) try self.downloadDetail(job, failure) else try self.model.gpa.dupe(u8, failure)
         else
@@ -77,17 +81,20 @@ pub const Session = struct {
         if (job.failure != null) {
             if (self.browser.pending_chapter) |id| self.model.gpa.free(id);
             self.browser.pending_chapter = null;
-            if (job.request == .titles and self.browser.titles != null) self.browser.page = self.browser.titles.?.request.titles.page;
+            if (job.request == .browse and self.browser.titles != null) self.browser.page = self.browser.titles.?.request.browse.page;
             job.deinit();
             return;
         }
-        if (job.result.open_id) |id| for (self.model.library.manga, 0..) |m, i| {
+        if (job.request != .download) if (job.result.manga_id) |id| for (self.model.library.manga, 0..) |m, i| {
             if (std.mem.eql(u8, m.id, id)) {
                 try self.act(.{ .open = i });
                 break;
             }
         };
         if (job.request == .download) if (self.browser.pending_chapter) |id| {
+            if (job.result.manga_id) |manga| for (self.model.library.manga, 0..) |m, i| {
+                if (std.mem.eql(u8, m.id, manga)) self.model.manga = i;
+            };
             for (self.model.library.manga[self.model.manga].chapters, 0..) |ch, i| {
                 if (std.mem.eql(u8, ch.id, id)) {
                     try self.act(.{ .read = i });
@@ -97,10 +104,10 @@ pub const Session = struct {
             self.model.gpa.free(id);
             self.browser.pending_chapter = null;
         };
-        const slot: ?*?*online.Job = switch (job.request) {
+        const slot: ?*?*tachi.Job = switch (job.request) {
             .sources, .install, .install_file, .uninstall => &self.browser.sources,
             .extensions => &self.browser.extensions,
-            .titles => &self.browser.titles,
+            .browse => &self.browser.titles,
             .preferences, .set_preference => &self.browser.preferences,
             else => null,
         };
@@ -110,20 +117,34 @@ pub const Session = struct {
         } else job.deinit();
     }
     pub fn reloadLibrary(self: *Session) !void {
-        const path = try std.fs.path.join(self.model.gpa, &.{ self.root, "library.json" });
-        defer self.model.gpa.free(path);
-        const parsed = try lib.readJson(lib.Library, self.model.gpa, self.io, path);
-        errdefer parsed.deinit();
-        try lib.validate(parsed.value);
-        self.model.library = parsed.value;
-        if (self.library_snapshot) |old| old.deinit();
-        self.library_snapshot = parsed;
+        const engine = self.browser.engine orelse return;
+        var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+        errdefer arena.deinit();
+        self.model.library = try engine.loadLibrary(arena.allocator());
+        self.model.clearReading();
+        if (self.library_arena) |*old| old.deinit();
+        self.library_arena = arena;
+    }
+    /// Moves reading progress from the pre-libtachi preferences file into
+    /// libtachi's reading state, once.
+    pub fn migrateProgress(self: *Session) !void {
+        const engine = self.browser.engine orelse return;
+        const legacy = self.model.prefs.progress;
+        if (legacy.len == 0) return;
+        const progress = try self.model.gpa.alloc(tachi.library.Progress, legacy.len);
+        defer self.model.gpa.free(progress);
+        const now = std.Io.Clock.real.now(self.io).toMilliseconds();
+        for (legacy, progress) |old, *new| new.* = .{ .chapter_id = old.id, .page = @intCast(old.page), .read = old.completed, .now = @intCast(now) };
+        try engine.setProgressMany(progress);
+        self.model.prefs.progress = &.{};
+        self.model.dirty = true;
+        try self.reloadLibrary();
     }
     pub fn deinit(self: *Session) void {
         self.clearDownloadIdentity();
         self.browser.deinit(self.model.gpa);
         if (self.activity) |activity| activity(false);
-        if (self.library_snapshot) |parsed| parsed.deinit();
+        if (self.library_arena) |*arena| arena.deinit();
     }
     pub fn act(self: *Session, action: lib.Action) !void {
         const before = self.model.current();
@@ -134,7 +155,8 @@ pub const Session = struct {
             self.status = "";
             self.download_error = false;
             self.clearDownloadIdentity();
-            if (self.browser.busy == null) if (self.browser.engine) |engine| engine.client.shutdown(engine.gpa);
+            // Reading needs no extensions: let a worker give its memory back.
+            if (self.browser.busy == null) if (self.browser.engine) |engine| engine.backend.release();
             if (self.load_image) |load| {
                 const path = self.model.current().?.pages[self.model.page];
                 load(self, path) catch |err| {
@@ -143,12 +165,28 @@ pub const Session = struct {
                 };
             }
         }
+        if (self.model.screen != .reader) self.last_progress_ms = null;
+        if (self.model.progress_changed) self.recordProgress();
         if (self.model.dirty) if (self.save_path) |path| {
             lib.writeJson(self.model.gpa, self.io, path, self.model.prefs) catch |err| {
-                self.status = try std.fmt.allocPrint(self.model.gpa, "Progress not saved: {s}", .{@errorName(err)});
+                self.status = try std.fmt.allocPrint(self.model.gpa, "Settings not saved: {s}", .{@errorName(err)});
                 return;
             };
             self.model.dirty = false;
+        };
+    }
+    /// Records the page shown with libtachi, with the time spent since the
+    /// last page (at most five minutes, so an idle reader does not count).
+    fn recordProgress(self: *Session) void {
+        self.model.progress_changed = false;
+        const engine = self.browser.engine orelse return;
+        const ch = self.model.current() orelse return;
+        const state = self.model.readState(ch);
+        const now: u64 = @intCast(std.Io.Clock.awake.now(self.io).toMilliseconds());
+        const read_ms: i64 = if (self.last_progress_ms) |last| @intCast(@min(now - last, 5 * 60 * 1000)) else 0;
+        self.last_progress_ms = now;
+        engine.setProgress(ch.id, state.page, state.read, read_ms) catch |err| {
+            self.status = std.fmt.allocPrint(self.model.gpa, "Progress not saved: {s}", .{@errorName(err)}) catch "Progress not saved";
         };
     }
 };

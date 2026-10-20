@@ -4,8 +4,8 @@ const app = f.app;
 const lib = @import("library.zig");
 const Session = @import("session.zig").Session;
 const Root = @This();
-const online = @import("online.zig");
-const models = @import("source_models.zig");
+const tachi = @import("tachi");
+const models = tachi.models;
 pub const OnlineCommand = union(enum) { extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel };
 pub const State = struct { focused: bool = false, tapping: bool = false, reader_updates: u8 = 0 };
 pub const Props = struct {};
@@ -67,7 +67,7 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                     const chapter = book.chapters[index];
                     if (chapter.pages.len == 0 and chapter.remote != null) {
                         try session.browser.setPendingChapter(session.model.gpa, chapter.id);
-                        session.start(.{ .download = .{ .book = book, .chapter = chapter } });
+                        session.start(.{ .download = chapter.id });
                         return;
                     }
                 }
@@ -211,22 +211,22 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 16 } });
         defer ui.close();
         try text(ui, if (job.request == .download) "Downloading chapter" else "Working on your reader", 18, 0);
-        if (job.request == .download) {
-            try downloadIdentity(ui, job.request.download.book.title, job.request.download.chapter.title);
-        }
+        if (job.request == .download) if (session.download_identity) |identity| {
+            try downloadIdentity(ui, identity.series, identity.chapter);
+        };
         const total = job.pages_total.load(.acquire);
         var extension_buf: [64]u8 = undefined;
         try text(ui, switch (job.phase.load(.acquire)) {
-            .worker_starting => "Loading libtachi worker... (this may take a minute)",
+            .starting => "Loading libtachi worker... (this may take a minute)",
             .extension_loading => try ui.fmt("Loading {s} extension...", .{job.extensionLoading(&extension_buf)}),
             .operation => switch (job.request) {
                 .sources => "Loading extensions...",
                 .extensions => "Loading extension repository...",
                 .install => "Downloading and installing extension...",
                 .uninstall => "Removing extension...",
-                .titles => if (session.browser.source_name.len > 0) try ui.fmt("Loading {s}...", .{session.browser.source_name}) else "Loading titles...",
+                .browse => if (session.browser.source_name.len > 0) try ui.fmt("Loading {s}...", .{session.browser.source_name}) else "Loading titles...",
                 .download => if (total == 0) "Fetching page list" else "Downloading pages",
-                .scan => "Scanning local manga...",
+                .scan_local => "Scanning local manga...",
                 .preferences, .set_preference => "Loading source settings...",
                 else => "Updating chapter lists...",
             },
@@ -291,8 +291,7 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
                 try ui.print(.{ .font_size = 10, .color = .gray(60) }, "{d} chapters  {s}", .{ model.library.manga[i].chapters.len, model.library.manga[i].author });
             } else {
                 const ch = model.library.manga[model.manga].chapters[i];
-                const p = model.progress(ch.id);
-                if (ch.pages.len == 0) try text(ui, "Tap to download and read", 10, 60) else try ui.print(.{ .font_size = 10, .color = .gray(60) }, "{d} pages  /  {s}", .{ ch.pages.len, if (p) |v| if (v.completed) "Read" else "Reading" else "Unread" });
+                if (ch.pages.len == 0) try text(ui, "Tap to download and read", 10, 60) else try ui.print(.{ .font_size = 10, .color = .gray(60) }, "{d} pages  /  {s}", .{ ch.pages.len, if (model.readState(ch).read) "Read" else if (model.readState(ch).started) "Reading" else "Unread" });
             }
             ui.close();
         }
@@ -333,7 +332,9 @@ fn onlineButton(ui: *app.Ui, key: anytype, label: []const u8, command: OnlineCom
     try app.widgets.button(ui, key, .{ .label = label, .on_click = ui.messages(Root).bind(.{ .online = command }) });
 }
 fn startTitles(session: *Session) void {
-    session.start(.{ .titles = .{ .source = session.browser.source_id, .query = session.browser.query, .page = session.browser.page, .latest = session.browser.latest } });
+    const b = &session.browser;
+    const kind: tachi.Runtime.Browse = if (b.query.len > 0) .{ .search = .{ .query = b.query } } else if (b.latest) .latest else .popular;
+    session.start(.{ .browse = .{ .source = b.source_id, .page = b.page, .kind = kind } });
 }
 fn selectedPreference(session: *Session) ?models.Preference {
     const job = session.browser.preferences orelse return null;
@@ -362,7 +363,7 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
             model.screen = .extensions;
             b.offset = 0;
             try b.setQuery(a, "");
-            session.start(.extensions);
+            session.start(.{ .extensions = .{} });
         },
         .reload_sources => session.start(.sources),
         .pick_source => |i| {
@@ -380,7 +381,7 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
             startTitles(session);
         },
         .pick_title => |i| {
-            const manga = b.titles.?.result.titles.?.mangas[i];
+            const manga = b.titles.?.result.page.?.mangas[i];
             session.start(.{ .add = .{ .source = b.source_id, .manga = manga } });
         },
         .extension => |i| {
@@ -389,7 +390,7 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
                 session.status = "This extension API version is not supported";
                 return;
             }
-            session.start(.{ .install = extension.pkg });
+            session.start(.{ .install = .{ .pkg = extension.pkg } });
             model.screen = .sources;
             b.offset = 0;
         },
@@ -413,7 +414,7 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
             }
         },
         .next => {
-            if (b.offset + lib.Model.rows < b.count(model.screen)) b.offset += lib.Model.rows else if (model.screen == .catalog and b.titles != null and b.titles.?.result.titles.?.hasNextPage) {
+            if (b.offset + lib.Model.rows < b.count(model.screen)) b.offset += lib.Model.rows else if (model.screen == .catalog and b.titles != null and b.titles.?.result.page.?.hasNextPage) {
                 b.page += 1;
                 b.offset = 0;
                 startTitles(session);
@@ -441,9 +442,9 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
                 try ctx.systemText(.{ .title = pref.title orelse "Source setting", .initial = if (current == .string) current.string else "" }, ctx.handler(.pref_text));
             } else session.status = "This source setting has no editable control";
         },
-        .refresh_book => session.start(.{ .refresh = model.library.manga[model.manga] }),
-        .update_all => session.start(.update_all),
-        .scan => session.start(.scan),
+        .refresh_book => session.start(.{ .refresh = model.library.manga[model.manga].id }),
+        .update_all => session.start(.update_library),
+        .scan => session.start(.scan_local),
         .cancel => {},
     }
     ctx.focus("screen");
@@ -494,7 +495,7 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
             const label: []const u8 = switch (screen) {
                 .sources => b.sources.?.result.sources[i].name,
                 .extensions => b.extensions.?.result.extensions[i].name,
-                .catalog => b.titles.?.result.titles.?.mangas[i].title,
+                .catalog => b.titles.?.result.page.?.mangas[i].title,
                 .source_settings => b.preferences.?.result.preferences[i].title orelse "Source preference",
                 else => unreachable,
             };
@@ -537,7 +538,7 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
         ui.spacer();
         try ui.print(.{ .font_size = 11 }, "{d} {s}", .{ count, if (count == 1) "result" else "results" });
         ui.spacer();
-        const more_source_pages = screen == .catalog and b.titles != null and b.titles.?.result.titles.?.hasNextPage;
+        const more_source_pages = screen == .catalog and b.titles != null and b.titles.?.result.page.?.hasNextPage;
         try app.widgets.button(ui, "online-next", .{ .label = "Next", .enabled = b.offset + lib.Model.rows < count or more_source_pages, .on_click = ui.messages(Root).bind(.{ .online = OnlineCommand.next }) });
     }
 }

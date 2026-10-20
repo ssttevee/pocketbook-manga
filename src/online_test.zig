@@ -1,44 +1,40 @@
 const std = @import("std");
+const tachi = @import("tachi");
 const lib = @import("library.zig");
 const Session = @import("session.zig").Session;
-const online = @import("online.zig");
 const smoke = @import("smoke.zig");
-const Source = @import("source_models.zig").SourceInfo;
+const Source = tachi.models.SourceInfo;
 const fixture_source: Source = .{ .id = "42", .name = "Fixture Source", .lang = "en", .supportsLatest = true, .isConfigurable = true, .className = "Fixture", .extensionPkg = "fixture.extension" };
-pub fn fixtureExecutor(engine: *online.Engine, job: *online.Job) !void {
+pub fn fixtureExecutor(engine: *tachi.Engine, job: *tachi.Job) !void {
     const a = job.arena.allocator();
     try job.checkCancelled();
     switch (job.request) {
         .sources, .install, .install_file, .uninstall => job.result.sources = &.{fixture_source},
         .extensions => job.result.extensions = &.{.{ .pkg = "fixture.extension", .name = "Fixture Extension", .versionName = "1.6.1", .versionCode = 1, .libVersion = "1.6", .nsfw = false, .lang = "en", .jarUrl = "https://fixture/extension.jar", .apkUrl = "", .iconUrl = "", .supported = true, .installed = false, .installedVersionCode = null, .hasUpdate = false, .sources = &.{} }},
-        .titles => |request| {
-            // Query text must be copied into the worker request, not borrowed.
-            if (request.query.len > 0) try std.testing.expectEqualStrings("fixture", request.query);
-            job.result.titles = .{ .mangas = &.{.{ .url = "/manga", .title = "Fixture Story" }}, .hasNextPage = false };
+        .browse => |request| {
+            // Query text must be copied into the job, not borrowed.
+            if (request.kind == .search) try std.testing.expectEqualStrings("fixture", request.kind.search.query);
+            job.result.page = .{ .mangas = &.{.{ .url = "/manga", .title = "Fixture Story" }}, .hasNextPage = false };
         },
         .add => |request| {
             const book: lib.Manga = .{ .id = "42:/manga", .title = request.manga.title, .source_id = 42, .remote = request.manga, .chapters = &.{.{ .id = "42:/chapter", .title = "Chapter 1", .remote = .{ .url = "/chapter", .name = "Chapter 1" } }} };
-            const path = try std.fs.path.join(a, &.{ engine.root, "library.json" });
-            try lib.writeJson(a, engine.io, path, lib.Library{ .manga = &.{book} });
-            job.result = .{ .library_changed = true, .open_id = book.id };
+            try engine.store.save(a, .{ .manga = &.{book} });
+            job.result = .{ .library_changed = true, .manga_id = book.id };
         },
-        .download => |request| {
-            var book = request.book;
-            var chapter = request.chapter;
-            chapter.pages = &.{ "fixture/001.png", "fixture/002.png" };
-            book.chapters = &.{chapter};
-            const path = try std.fs.path.join(a, &.{ engine.root, "library.json" });
-            try lib.writeJson(a, engine.io, path, lib.Library{ .manga = &.{book} });
-            job.result = .{ .library_changed = true, .open_id = book.id };
+        .download => |id| {
+            const library = try engine.store.load(a);
+            const updated = (try tachi.library.setPages(a, library, id, &.{ "fixture/001.png", "fixture/002.png" })) orelse return error.UnknownChapter;
+            try engine.store.save(a, updated);
+            job.result = .{ .library_changed = true, .manga_id = library.manga[0].id };
         },
         .preferences => job.result.preferences = &.{.{ .type = "switch", .key = "mirror", .title = "Use mirror", .value = .{ .bool = false } }},
         .set_preference => |request| {
-            const prefs = try a.alloc(@import("source_models.zig").Preference, 1);
+            const prefs = try a.alloc(tachi.models.Preference, 1);
             prefs[0] = .{ .type = "switch", .key = "mirror", .title = "Use mirror", .value = request.value };
             job.result.preferences = prefs;
         },
-        .update_all, .refresh => job.result.library_changed = true,
-        .benchmark, .image, .scan => return error.FixtureFailure,
+        .update_library, .refresh => job.result.library_changed = true,
+        else => return error.FixtureFailure,
     }
 }
 fn finish(session: *Session) !void {
@@ -55,7 +51,8 @@ test "device UI installs a source, searches, adds and downloads a chapter, reads
     var temp = std.testing.tmpDir(.{});
     defer temp.cleanup();
     const root = try temp.dir.realPathFileAlloc(std.testing.io, ".", a);
-    var engine: online.Engine = .{ .gpa = a, .io = std.testing.io, .root = root, .execute_fn = fixtureExecutor };
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = root });
+    engine.execute_fn = fixtureExecutor;
     var model: lib.Model = .{ .gpa = a };
     var session: Session = .{ .model = &model, .io = std.testing.io, .root = root, .load_image = smoke.sampleImage };
     session.browser.engine = &engine;
@@ -84,11 +81,12 @@ test "device UI installs a source, searches, adds and downloads a chapter, reads
     try std.testing.expectEqual(lib.Screen.reader, model.screen);
     _ = smoke.fake.pressKey(.next);
     try std.testing.expectEqual(1, model.page);
-    try std.testing.expect(model.progress("42:/chapter").?.completed);
+    try std.testing.expect(model.readState(model.library.manga[0].chapters[0]).read);
     try smoke.tapText("Back");
     try smoke.tapText("Refresh chapters");
     try finish(&session);
-    try std.testing.expect(model.progress("42:/chapter").?.completed);
+    // The reload came from libtachi's store: progress was recorded there.
+    try std.testing.expect(model.library.manga[0].chapters[0].read);
     try smoke.tapText("Back");
     try smoke.tapText("Browse");
     try finish(&session);
@@ -103,12 +101,13 @@ test "device UI installs a source, searches, adds and downloads a chapter, reads
 test "background failures are reported and leave library and progress intact" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    var engine: online.Engine = .{ .gpa = arena.allocator(), .io = std.testing.io, .root = ".", .execute_fn = fixtureExecutor };
+    var engine: tachi.Engine = .init(arena.allocator(), std.testing.io, tachi.backend.none, .{ .dir = "." });
+    engine.execute_fn = fixtureExecutor;
     var model: lib.Model = .{ .gpa = arena.allocator(), .library = smoke.fixture };
     var session: Session = .{ .model = &model, .io = std.testing.io, .root = "." };
     session.browser.engine = &engine;
     defer session.deinit();
-    session.start(.scan);
+    session.start(.scan_local);
     session.browser.busy.?.join();
     try session.poll();
     try std.testing.expect(std.mem.startsWith(u8, session.status, "FixtureFailure"));
@@ -116,7 +115,7 @@ test "background failures are reported and leave library and progress intact" {
     try std.testing.expect(session.browser.busy == null);
 }
 
-pub fn failedDownload(_: *online.Engine, job: *online.Job) !void {
+pub fn failedDownload(_: *tachi.Engine, job: *tachi.Job) !void {
     job.pages_done.store(1, .release);
     job.pages_total.store(3, .release);
     return error.NetworkDisconnected;
@@ -124,7 +123,8 @@ pub fn failedDownload(_: *online.Engine, job: *online.Job) !void {
 test "download failure stays visible with progress and resume instructions" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    var engine: online.Engine = .{ .gpa = arena.allocator(), .io = std.testing.io, .root = ".", .execute_fn = failedDownload };
+    var engine: tachi.Engine = .init(arena.allocator(), std.testing.io, tachi.backend.none, .{ .dir = "." });
+    engine.execute_fn = failedDownload;
     var model: lib.Model = .{ .gpa = arena.allocator(), .library = smoke.fixture, .screen = .chapters };
     var session: Session = .{ .model = &model, .io = std.testing.io, .root = "." };
     session.browser.engine = &engine;
@@ -132,7 +132,7 @@ test "download failure stays visible with progress and resume instructions" {
     var book = smoke.fixture.manga[0];
     book.title = long_title;
     model.library = .{ .manga = &.{book} };
-    session.start(.{ .download = .{ .book = book, .chapter = book.chapters[0] } });
+    session.start(.{ .download = book.chapters[0].id });
     session.browser.busy.?.join();
     try session.poll();
     try std.testing.expect(session.download_error);
@@ -162,7 +162,8 @@ test "online rows use fabrum pressed state and small partial updates" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
-    var engine: online.Engine = .{ .gpa = a, .io = std.testing.io, .root = root, .execute_fn = fixtureExecutor };
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = root });
+    engine.execute_fn = fixtureExecutor;
     var model: lib.Model = .{ .gpa = a };
     var session: Session = .{ .model = &model, .io = std.testing.io, .root = root };
     session.browser.engine = &engine;
@@ -187,7 +188,7 @@ test "online rows use fabrum pressed state and small partial updates" {
     try smoke.expectRowFeedback("Right to left (manga)");
 }
 
-pub fn stalledDownload(engine: *online.Engine, job: *online.Job) !void {
+pub fn stalledDownload(engine: *tachi.Engine, job: *tachi.Job) !void {
     job.pages_done.store(4, .release);
     job.pages_total.store(12, .release);
     try engine.io.sleep(.fromSeconds(60), .awake);
@@ -196,13 +197,14 @@ test "downloading and cancellation keep the selected series and chapter" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var engine: online.Engine = .{ .gpa = a, .io = std.testing.io, .root = ".", .execute_fn = stalledDownload };
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = "." });
+    engine.execute_fn = stalledDownload;
     var model: lib.Model = .{ .gpa = a, .library = smoke.fixture };
     var session: Session = .{ .model = &model, .io = std.testing.io, .root = "." };
     session.browser.engine = &engine;
     defer session.deinit();
     const book = smoke.fixture.manga[0];
-    session.start(.{ .download = .{ .book = book, .chapter = book.chapters[0] } });
+    session.start(.{ .download = book.chapters[0].id });
     while (session.browser.busy.?.pages_total.load(.acquire) == 0) try std.testing.io.sleep(.fromMilliseconds(1), .awake);
     var harness: @import("fabrum").app.testing.Harness(.{}, @import("ui.zig")) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{@import("fabrum").app.RootValue.of(&session)}, .widgets = .drawn });
     defer harness.deinit();
@@ -221,8 +223,8 @@ test "downloading and cancellation keep the selected series and chapter" {
 }
 
 pub const long_title = "Reincarnated as the Villainous Orphanage Director Destined to Be Defeated, I Ended Up Being Loved by the Main Heroines' Daughters";
-pub fn startingWorker(engine: *online.Engine, job: *online.Job) !void {
-    job.setPhase(.worker_starting);
+pub fn startingWorker(engine: *tachi.Engine, job: *tachi.Job) !void {
+    job.setPhase(.starting);
     var ready: std.Io.Event = .unset;
     try ready.wait(engine.io);
 }
@@ -230,7 +232,8 @@ test "worker startup is shown for downloads and browse and remains immediately c
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var engine: online.Engine = .{ .gpa = a, .io = std.testing.io, .root = ".", .execute_fn = startingWorker };
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = "." });
+    engine.execute_fn = startingWorker;
     var book = smoke.fixture.manga[0];
     book.title = long_title;
     var model: lib.Model = .{ .gpa = a, .library = .{ .manga = &.{book} }, .screen = .chapters };
@@ -239,11 +242,11 @@ test "worker startup is shown for downloads and browse and remains immediately c
     defer session.deinit();
     var harness: @import("fabrum").app.testing.Harness(.{}, @import("ui.zig")) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{@import("fabrum").app.RootValue.of(&session)}, .widgets = .drawn });
     defer harness.deinit();
-    const requests: []const online.Request = &.{ .{ .download = .{ .book = book, .chapter = book.chapters[0] } }, .sources, .{ .titles = .{ .source = 42 } }, .{ .preferences = 42 } };
+    const requests: []const tachi.engine.Request = &.{ .{ .download = book.chapters[0].id }, .sources, .{ .browse = .{ .source = 42 } }, .{ .preferences = 42 } };
     for (requests) |request| {
         session.start(request);
         const job = session.browser.busy.?;
-        while (job.phase.load(.acquire) != .worker_starting) try std.testing.io.sleep(.fromMilliseconds(1), .awake);
+        while (job.phase.load(.acquire) != .starting) try std.testing.io.sleep(.fromMilliseconds(1), .awake);
         try harness.frame();
         try harness.expectText("Loading libtachi worker... (this may take a minute)");
         try harness.expectText("Cancel");
@@ -257,9 +260,9 @@ test "worker startup is shown for downloads and browse and remains immediately c
             try harness.expectNoText("Loading MangaDex extension...");
             try harness.expectText("Fetching page list");
         }
-        const started = @import("worker_wire.zig").pm_now_ms();
+        const started = tachi.worker.tachi_now_ms();
         job.cancel();
-        try std.testing.expect(@import("worker_wire.zig").pm_now_ms() - started < 500);
+        try std.testing.expect(tachi.worker.tachi_now_ms() - started < 500);
         try session.poll();
     }
 }

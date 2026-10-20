@@ -1,21 +1,12 @@
+/* Kernel 3.10 I/O for device_io.zig: stat without statx, and entropy from
+ * /dev/urandom where getrandom is missing. */
 #define _GNU_SOURCE
 #define _FILE_OFFSET_BITS 64
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <signal.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <sys/poll.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
-#include <time.h>
 #include <unistd.h>
-#ifdef __linux__
-#include <sys/prctl.h>
-#endif
 struct pm_stat {
     uint64_t ino, nlink, size;
     int64_t atime_s, mtime_s, ctime_s;
@@ -77,123 +68,4 @@ int pm_entropy(unsigned char *buf, size_t len) {
     }
     close(fd);
     return 0;
-}
-int pm_spawn(const char *exe, char *const *argv, int *parent_fd) {
-    int pair[2];
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair))
-        return -1;
-    int parent = fcntl(pair[0], F_DUPFD_CLOEXEC, 4), child = fcntl(pair[1], F_DUPFD_CLOEXEC, 4);
-    close(pair[0]);
-    close(pair[1]);
-    if (parent < 0 || child < 0) {
-        if (parent >= 0)
-            close(parent);
-        if (child >= 0)
-            close(child);
-        return -1;
-    }
-    int toclose[1024];
-    size_t count = 0;
-    DIR *directory = opendir("/proc/self/fd");
-    if (directory) {
-        struct dirent *entry;
-        while ((entry = readdir(directory)) && count < 1024) {
-            int fd = atoi(entry->d_name);
-            if (fd > 3)
-                toclose[count++] = fd;
-        }
-        closedir(directory);
-    }
-    pid_t owner = getpid(), pid = fork();
-    if (pid == 0) {
-        close(parent);
-#ifdef __linux__
-        if (prctl(PR_SET_PDEATHSIG, SIGKILL) || getppid() != owner)
-            _exit(127);
-#endif
-        if (dup2(child, 3) < 0)
-            _exit(127);
-        close(child);
-        if (fcntl(3, F_SETFD, 0) < 0)
-            _exit(127);
-        for (size_t i = 0; i < count; i++)
-            close(toclose[i]);
-        /* No setsid/setpgrp: remain a child of the InkView task's group. */
-        execv(exe, argv);
-        _exit(127);
-    }
-    close(child);
-    if (pid < 0) {
-        close(parent);
-        return -1;
-    }
-    *parent_fd = parent;
-    return pid;
-}
-int pm_poll(int fd, int ms) {
-    struct pollfd p = {fd, POLLIN, 0};
-    int n;
-    do {
-        n = poll(&p, 1, ms);
-    } while (n < 0 && errno == EINTR);
-    return n;
-}
-ssize_t pm_send(int fd, const void *buf, size_t n) {
-#ifdef MSG_NOSIGNAL
-    return send(fd, buf, n, MSG_NOSIGNAL);
-#else
-    int yes = 1;
-    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, sizeof yes);
-    return send(fd, buf, n, 0);
-#endif
-}
-ssize_t pm_recv(int fd, void *buf, size_t n) { return recv(fd, buf, n, 0); }
-void pm_interrupt(int pid, int fd) {
-    if (fd >= 0)
-        shutdown(fd, SHUT_RDWR);
-    if (pid > 0) {
-        int status;
-        pid_t n;
-        do {
-            n = waitpid(pid, &status, WNOHANG);
-        } while (n < 0 && errno == EINTR);
-        if (n == 0)
-            kill(pid, SIGKILL);
-    }
-}
-int pm_reap(int pid, int block) {
-    int status = 0;
-    pid_t n;
-    do {
-        n = waitpid(pid, &status, block ? 0 : WNOHANG);
-    } while (n < 0 && errno == EINTR);
-    return n == pid || (n < 0 && errno == ECHILD);
-}
-
-uint64_t pm_now_ms(void) {
-    struct timespec t;
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    return (uint64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
-}
-size_t pm_rss_kib(void) {
-    FILE *f = fopen("/proc/self/status", "r");
-    if (!f)
-        return 0;
-    char line[256];
-    unsigned long n = 0;
-    while (fgets(line, sizeof line, f)) {
-        if (sscanf(line, "VmRSS: %lu kB", &n) == 1)
-            break;
-    }
-    fclose(f);
-    return n;
-}
-void pm_eof(int fd) { shutdown(fd, SHUT_WR); }
-
-ssize_t pm_send_now(int fd, const void *buf, size_t n) {
-#ifdef MSG_NOSIGNAL
-    return send(fd, buf, n, MSG_NOSIGNAL | MSG_DONTWAIT);
-#else
-    return send(fd, buf, n, MSG_DONTWAIT);
-#endif
 }

@@ -2,7 +2,7 @@
 
 A standalone manga app for the **PocketBook Verse PB629**, inspired by Mihon / Tachiyomi. Source extensions, browsing, search, chapter updates, image downloads and reading all run **on the reader**. No desktop companion or server is used.
 
-The app uses fabrum, fabrum-platform-inkview, libinkview and libtachi. Its install bundle includes an **OpenJDK 17 runtime built from source for the Verse** (HotSpot's ARM32 client VM with the C1 JIT and class-data sharing), the libtachi host, and public certificate stores. Java and extension work run in a separate, on-demand worker process. The UI never loads the JVM or libtachi. It downloads chapter images with Zig DNS, native TLS and `std.http.Client` over cancellable `std.Io` tasks. Reading downloaded chapters and scanning local manga need only the native InkView app. See [native download design and verification](docs/native-downloads.md).
+The app uses fabrum, fabrum-platform-inkview, libinkview and libtachi. Its install bundle includes an **OpenJDK 17 runtime built from source for the Verse** (HotSpot's ARM32 client VM with the C1 JIT and class-data sharing), the libtachi host, and public certificate stores. The app is a GUI over libtachi's engine: libtachi owns the library, reading progress, chapter sync, downloads and the local source, and runs extensions in its on-demand worker process. The UI process never loads the JVM. Chapter images download through libtachi's native client (Zig DNS and TLS) over cancellable `std.Io` tasks. Reading downloaded chapters and scanning local manga need only the native InkView app. See [native download design and verification](docs/native-downloads.md).
 
 ## Install
 
@@ -29,7 +29,7 @@ After installation, normal use needs only the reader and Wi-Fi. The UI starts th
 - Hardware **Next / Prev** always move in reading order. In RTL mode, tap the page's left half to advance; in LTR mode, tap the right half. At the last page, **Chapter >** opens or downloads the next chapter.
 - **Back** returns to chapters, the library, then exits. **Aa** changes direction and full/partial refresh. Progress is saved on each page change.
 
-For local manga, place extracted JPEG/PNG files in `applications/pocketmanga/Title/Chapter/001.jpg`, then tap **Aa → Scan local manga**. Numeric filename runs sort naturally. Scanning merges titles into the existing library and preserves progress; it does not remove entries for deleted folders. No Java startup or network is needed for local scanning or reading.
+For local manga, place extracted JPEG/PNG files in `applications/pocketmanga/local/Title/Chapter/001.jpg`, as in Mihon's local source, then tap **Aa → Scan local manga**. Numeric filename runs sort naturally. Scanning merges titles into the existing library and preserves progress; it does not remove entries for deleted folders. No Java startup or network is needed for local scanning or reading.
 
 Data lives in `/mnt/ext1/applications/pocketmanga/`. The app accepts another absolute data folder as its first argument when invoked from a shell. `INKVIEW_LIBRARY` can override the InkView library path.
 

@@ -3,11 +3,13 @@ const UiModules = struct {
     fabrum: *std.Build.Module,
     platform: *std.Build.Module,
     image: *std.Build.Module,
-    fn imports(self: UiModules) [3]std.Build.Module.Import {
+    tachi: *std.Build.Module,
+    fn imports(self: UiModules) [4]std.Build.Module.Import {
         return .{
             .{ .name = "fabrum", .module = self.fabrum },
             .{ .name = "fabrum-platform-inkview", .module = self.platform },
             .{ .name = "reader-image", .module = self.image },
+            .{ .name = "tachi", .module = self.tachi },
         };
     }
 };
@@ -19,7 +21,10 @@ fn uiModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
     const image = b.createModule(.{ .root_source_file = b.path("src/image.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "fabrum", .module = fabrum }} });
     const renderer = b.createModule(.{ .root_source_file = b.path("src/renderer.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "fabrum", .module = fabrum }, .{ .name = "base", .module = base }, .{ .name = "reader-image", .module = image } } });
     platform.addImport("fabrum-renderer-z2d", renderer);
-    return .{ .fabrum = fabrum, .platform = platform, .image = image };
+    // The UI process uses libtachi's engine, library and downloads; only the
+    // worker ever loads the JVM.
+    const tachi = b.dependency("tachi", .{ .target = target, .optimize = optimize }).module("tachi");
+    return .{ .fabrum = fabrum, .platform = platform, .image = image, .tachi = tachi };
 }
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
@@ -60,7 +65,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/worker.zig"),
         .target = worker_target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "tachi", .module = b.dependency("tachi", .{ .target = worker_target, .optimize = optimize }).module("tachi") }},
+        .imports = &.{.{ .name = "tachi", .module = device_ui.tachi }},
         .link_libc = true,
     }) });
     worker.root_module.addCSourceFile(.{ .file = b.path("src/posix_compat.c"), .flags = &.{} });
@@ -68,7 +73,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/runtime_probe.zig"),
         .target = device_target,
         .optimize = optimize,
-        .imports = &.{},
+        .imports = &.{.{ .name = "tachi", .module = device_ui.tachi }},
         .link_libc = true,
     }) });
     probe.root_module.addCSourceFile(.{ .file = b.path("src/posix_compat.c"), .flags = &.{} });

@@ -1,13 +1,13 @@
 const std = @import("std");
-const online = @import("online.zig");
+const tachi = @import("tachi");
 const lib = @import("library.zig");
 pub const Browser = struct {
-    engine: ?*online.Engine = null,
-    busy: ?*online.Job = null,
-    sources: ?*online.Job = null,
-    extensions: ?*online.Job = null,
-    titles: ?*online.Job = null,
-    preferences: ?*online.Job = null,
+    engine: ?*tachi.Engine = null,
+    busy: ?*tachi.Job = null,
+    sources: ?*tachi.Job = null,
+    extensions: ?*tachi.Job = null,
+    titles: ?*tachi.Job = null,
+    preferences: ?*tachi.Job = null,
     offset: usize = 0,
     source_id: i64 = 0,
     source_name: []const u8 = "",
@@ -20,16 +20,16 @@ pub const Browser = struct {
     pending_chapter: ?[]const u8 = null,
     edited_preference: ?usize = null,
     ensure_network: ?*const fn () anyerror!void = null,
-    pub fn start(self: *Browser, request: online.Request) !void {
+    pub fn start(self: *Browser, request: tachi.engine.Request) !void {
         if (self.busy != null) return error.Busy;
         const engine = self.engine orelse return error.RuntimeNotConfigured;
         switch (request) {
-            .sources, .install_file, .scan, .preferences, .set_preference, .uninstall => {},
+            .sources, .install_file, .scan_local, .preferences, .set_preference, .uninstall, .delete_download, .remove => {},
             else => if (self.ensure_network) |connect| try connect(),
         }
-        self.busy = try online.Job.start(engine, request);
+        self.busy = try tachi.Job.start(engine, request);
     }
-    pub fn setSource(self: *Browser, gpa: std.mem.Allocator, source: @import("source_models.zig").SourceInfo) !void {
+    pub fn setSource(self: *Browser, gpa: std.mem.Allocator, source: tachi.models.SourceInfo) !void {
         const id = try source.idInt();
         const name = try gpa.dupe(u8, source.name);
         errdefer gpa.free(name);
@@ -56,7 +56,7 @@ pub const Browser = struct {
     pub fn count(self: *const Browser, screen: lib.Screen) usize {
         return switch (screen) {
             .sources => if (self.sources) |j| j.result.sources.len else 0,
-            .catalog => if (self.titles) |j| if (j.result.titles) |page| page.mangas.len else 0 else 0,
+            .catalog => if (self.titles) |j| if (j.result.page) |page| page.mangas.len else 0 else 0,
             .source_settings => if (self.preferences) |j| j.result.preferences.len else 0,
             .extensions => blk: {
                 const job = self.extensions orelse break :blk 0;
@@ -81,8 +81,7 @@ pub const Browser = struct {
         unreachable;
     }
     pub fn deinit(self: *Browser, gpa: std.mem.Allocator) void {
-        if (self.engine) |engine| engine.interrupt();
-        defer if (self.engine) |engine| engine.deinit();
+        if (self.engine) |engine| engine.pause();
         if (self.busy) |job| {
             job.cancel();
             job.deinit();
@@ -91,6 +90,6 @@ pub const Browser = struct {
         if (self.source_name.len > 0) gpa.free(self.source_name);
         if (self.extension_pkg.len > 0) gpa.free(self.extension_pkg);
         if (self.pending_chapter) |id| gpa.free(id);
-        for ([_]?*online.Job{ self.sources, self.extensions, self.titles, self.preferences }) |snapshot| if (snapshot) |job| job.deinit();
+        for ([_]?*tachi.Job{ self.sources, self.extensions, self.titles, self.preferences }) |snapshot| if (snapshot) |job| job.deinit();
     }
 };

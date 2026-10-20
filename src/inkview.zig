@@ -1,5 +1,6 @@
 const std = @import("std");
 const ink = @import("fabrum-platform-inkview");
+const tachi = @import("tachi");
 const lib = @import("library.zig");
 const Root = @import("ui.zig");
 const Session = @import("session.zig").Session;
@@ -34,7 +35,7 @@ fn pngSize(io: std.Io, path: []const u8) ![2]u32 {
 fn loadPage(session: *Session, relative: []const u8) !void {
     const gpa = session.model.gpa;
     if (!lib.safePath(relative)) return error.UnsafePagePath;
-    const path = try @import("downloads.zig").pagePath(gpa, session.root, relative);
+    const path = try session.browser.engine.?.pagePath(gpa, relative);
     defer gpa.free(path);
     // Fit decode to the physical panel to bound memory on the 512MB Verse.
     const host = &ink.App(Root).instance;
@@ -80,22 +81,27 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next();
     const root = args.next() orelse "/mnt/ext1/applications/pocketmanga";
     try std.Io.Dir.cwd().createDirPath(io, root);
-    const library_path = try std.fs.path.join(gpa, &.{ root, "library.json" });
+    // progress.json now only holds display preferences; libtachi keeps the
+    // library and reading state.
     const prefs_path = try std.fs.path.join(gpa, &.{ root, "progress.json" });
-    const library = lib.readJson(lib.Library, gpa, io, library_path) catch |err| switch (err) {
-        error.FileNotFound => null,
-        else => return err,
-    };
-    var model: lib.Model = .{ .gpa = gpa, .library = if (library) |p| p.value else .{} };
-    try lib.validate(model.library);
+    var model: lib.Model = .{ .gpa = gpa };
     const prefs = lib.readJson(lib.Preferences, gpa, io, prefs_path) catch |err| switch (err) {
         error.FileNotFound => null,
         else => return err,
     };
     if (prefs) |p| model.prefs = p.value;
     var session: Session = .{ .model = &model, .root = root, .io = io, .save_path = prefs_path, .load_image = loadPage };
-    var engine: @import("online.zig").Engine = .{ .gpa = gpa, .io = io, .root = root, .environ = init.minimal.environ };
+    // Extensions run in the worker process; the library, downloads and the
+    // local source stay here. Test emulators wrap the worker.
+    const worker_exe = try std.fs.path.join(gpa, &.{ root, "bin/pocketmanga-worker" });
+    var worker: tachi.worker.Client = undefined;
+    try worker.init(gpa, io, .{ .exe = worker_exe, .args = &.{ "--serve", root }, .wrapper = init.minimal.environ.getPosix("POCKETMANGA_WORKER_EMULATOR") });
+    defer worker.deinit();
+    const ca_file = try std.fs.path.join(gpa, &.{ root, "runtime/ca.pem" });
+    var engine: tachi.Engine = .init(gpa, io, worker.backend(), .{ .dir = root, .ca_file = ca_file });
     session.browser.engine = &engine;
+    try session.reloadLibrary();
+    try session.migrateProgress();
     session.browser.ensure_network = connectNetwork;
     const library_name = std.c.getenv("INKVIEW_LIBRARY") orelse "libinkview.so";
     var image_library = try std.DynLib.open(std.mem.span(library_name));
@@ -120,6 +126,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     lifecycle_engine = &engine;
+    lifecycle_worker = &worker;
     lifecycle_session = &session;
     var api = try ink.inkview.Api.load(library_name);
     actual_main = api.InkViewMain;
@@ -141,9 +148,10 @@ pub fn main(init: std.process.Init) !void {
 
 var power_guard: @import("power.zig").Guard = .{};
 fn updatePower(active: bool) void {
-    power_guard.update(active, @import("worker_wire.zig").pm_now_ms());
+    power_guard.update(active, tachi.worker.tachi_now_ms());
 }
-var lifecycle_engine: ?*@import("online.zig").Engine = null;
+var lifecycle_engine: ?*tachi.Engine = null;
+var lifecycle_worker: ?*tachi.worker.Client = null;
 var lifecycle_session: ?*Session = null;
 var actual_main: *const fn (ink.inkview.Handler) callconv(.c) void = undefined;
 var actual_close: *const fn () callconv(.c) void = undefined;
@@ -151,9 +159,9 @@ var app_handler: ink.inkview.Handler = undefined;
 fn stopWorker() void {
     defer updatePower(false);
     if (lifecycle_engine) |engine| {
-        engine.interrupt();
+        engine.pause();
         if (lifecycle_session) |session| if (session.browser.busy) |job| job.cancel();
-        engine.deinit();
+        if (lifecycle_worker) |worker| worker.close();
     }
 }
 fn mainWithLifecycle(handler: ink.inkview.Handler) callconv(.c) void {
@@ -166,7 +174,7 @@ fn closeWithLifecycle() callconv(.c) void {
 }
 fn eventWithLifecycle(kind: c_int, p1: c_int, p2: c_int) callconv(.c) c_int {
     if (kind == @backingInt(ink.inkview.Event.foreground)) if (lifecycle_engine) |engine| {
-        engine.paused.store(false, .release);
+        engine.@"resume"();
     };
     if (kind == @backingInt(ink.inkview.Event.exit) or kind == @backingInt(ink.inkview.Event.background)) stopWorker();
     return app_handler(kind, p1, p2);

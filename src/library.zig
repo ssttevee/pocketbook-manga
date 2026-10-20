@@ -1,33 +1,16 @@
+//! The reader's UI state. The library itself is libtachi's.
 const std = @import("std");
 const Io = std.Io;
-const models = @import("source_models.zig");
-pub const Chapter = struct { id: []const u8, title: []const u8, pages: []const []const u8 = &.{}, remote: ?models.Chapter = null };
-pub const Manga = struct { id: []const u8, title: []const u8, author: []const u8 = "", description: []const u8 = "", chapters: []const Chapter = &.{}, source_id: ?i64 = null, remote: ?models.Manga = null };
-pub const Library = struct { version: u32 = 1, manga: []const Manga = &.{} };
-pub const Entry = struct { id: []const u8, page: usize = 0, completed: bool = false };
-pub const Preferences = struct { rtl: bool = true, full_refresh: bool = true, progress: []const Entry = &.{} };
+const tachi = @import("tachi");
+pub const Library = tachi.library.Library;
+pub const Manga = tachi.library.Manga;
+pub const Chapter = tachi.library.Chapter;
+pub const safePath = tachi.library.safePath;
+/// Display preferences. `progress` is the pre-libtachi reading progress,
+/// read once to migrate it into libtachi's reading state.
+pub const Preferences = struct { rtl: bool = true, full_refresh: bool = true, progress: []const LegacyProgress = &.{} };
+pub const LegacyProgress = struct { id: []const u8, page: usize = 0, completed: bool = false };
 
-pub fn safePath(path: []const u8) bool {
-    if (path.len == 0 or std.fs.path.isAbsolute(path) or std.mem.indexOfScalar(u8, path, '\\') != null or std.mem.indexOfScalar(u8, path, 0) != null) return false;
-    var it = std.mem.splitScalar(u8, path, '/');
-    while (it.next()) |part| if (std.mem.eql(u8, part, "..") or part.len == 0) return false;
-    return true;
-}
-pub fn validate(lib: Library) !void {
-    if (lib.version != 1) return error.UnsupportedLibraryVersion;
-    for (lib.manga, 0..) |m, mi| {
-        if (m.id.len == 0 or m.title.len == 0) return error.InvalidManga;
-        for (lib.manga[0..mi]) |prior| if (std.mem.eql(u8, prior.id, m.id)) return error.DuplicateManga;
-        for (m.chapters, 0..) |ch, ci| {
-            if (ch.id.len == 0) return error.InvalidChapter;
-            for (lib.manga[0 .. mi + 1], 0..) |prior_m, pmi| {
-                const end = if (pmi == mi) ci else prior_m.chapters.len;
-                for (prior_m.chapters[0..end]) |prior| if (std.mem.eql(u8, prior.id, ch.id)) return error.DuplicateChapter;
-            }
-            for (ch.pages) |path| if (!safePath(path)) return error.UnsafePagePath;
-        }
-    }
-}
 pub fn readJson(comptime T: type, gpa: std.mem.Allocator, io: Io, path: []const u8) !std.json.Parsed(T) {
     const bytes = try Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(16 * 1024 * 1024));
     defer gpa.free(bytes);
@@ -59,11 +42,30 @@ pub const Model = struct {
     chapter: usize = 0,
     page: usize = 0,
     offset: usize = 0,
+    /// Display preferences changed and should be saved.
     dirty: bool = false,
+    /// The reader's page or a chapter's read state changed and should be
+    /// recorded with libtachi.
+    progress_changed: bool = false,
     query_text: []const u8 = "",
-    progress_owned: bool = false,
     return_screen: Screen = .library,
+    /// Reading state changed since `library` was loaded, by chapter id; the
+    /// session records each change with libtachi.
+    reading: std.StringHashMapUnmanaged(ReadState) = .empty,
     pub const rows = 7;
+    pub const ReadState = struct { page: u32, read: bool, started: bool };
+
+    /// A chapter's reading state, including changes not yet reloaded.
+    pub fn readState(self: *const Model, ch: Chapter) ReadState {
+        if (self.reading.get(ch.id)) |state| return state;
+        return .{ .page = ch.last_page_read, .read = ch.read, .started = ch.last_read != 0 };
+    }
+
+    /// Forgets the overlay; call when `library` is replaced, before the old
+    /// library's memory goes (the overlay borrows its ids).
+    pub fn clearReading(self: *Model) void {
+        self.reading.clearAndFree(self.gpa);
+    }
 
     pub fn matches(self: *const Model, manga: Manga) bool {
         return self.query_text.len == 0 or std.ascii.findIgnoreCase(manga.title, self.query_text) != null or std.ascii.findIgnoreCase(manga.author, self.query_text) != null;
@@ -89,49 +91,19 @@ pub const Model = struct {
         if (self.chapter >= chapters.len) return null;
         return chapters[self.chapter];
     }
-    pub fn progress(self: *const Model, id: []const u8) ?Entry {
-        for (self.prefs.progress) |p| if (std.mem.eql(u8, p.id, id)) return p;
-        return null;
-    }
+    /// Marks the page now shown; the session records it with libtachi. A
+    /// chapter becomes read on its last page.
     fn remember(self: *Model) !void {
         const ch = self.current() orelse return;
         if (ch.pages.len == 0) return;
-        const entry: Entry = .{ .id = ch.id, .page = self.page, .completed = self.page + 1 == ch.pages.len };
-        if (!self.progress_owned) {
-            const copy = try self.gpa.dupe(Entry, self.prefs.progress);
-            var copied: usize = 0;
-            errdefer {
-                for (copy[0..copied]) |p| self.gpa.free(p.id);
-                self.gpa.free(copy);
-            }
-            for (copy) |*p| {
-                p.id = try self.gpa.dupe(u8, p.id);
-                copied += 1;
-            }
-            self.prefs.progress = copy;
-            self.progress_owned = true;
-        }
-        const entries = @constCast(self.prefs.progress);
-        for (entries) |*p| if (std.mem.eql(u8, p.id, ch.id)) {
-            if (p.page == entry.page and (p.completed or !entry.completed)) return;
-            p.page = entry.page;
-            p.completed = p.completed or entry.completed;
-            self.dirty = true;
-            return;
-        };
-        const id = try self.gpa.dupe(u8, ch.id);
-        errdefer self.gpa.free(id);
-        const appended = try self.gpa.realloc(entries, entries.len + 1);
-        appended[appended.len - 1] = entry;
-        appended[appended.len - 1].id = id;
-        self.prefs.progress = appended;
-        self.dirty = true;
+        const old = self.readState(ch);
+        const state: ReadState = .{ .page = @intCast(self.page), .read = old.read or self.page + 1 == ch.pages.len, .started = true };
+        if (old.page == state.page and old.read == state.read and old.started) return;
+        try self.reading.put(self.gpa, ch.id, state);
+        self.progress_changed = true;
     }
     pub fn deinit(self: *Model) void {
-        if (self.progress_owned) {
-            for (self.prefs.progress) |p| self.gpa.free(p.id);
-            self.gpa.free(self.prefs.progress);
-        }
+        self.reading.deinit(self.gpa);
         if (self.query_text.len > 0) self.gpa.free(self.query_text);
     }
     pub fn dispatch(self: *Model, action: Action) !void {
@@ -152,7 +124,7 @@ pub const Model = struct {
                 const chapters = self.library.manga[self.manga].chapters;
                 if (i >= chapters.len or chapters[i].pages.len == 0) return;
                 self.chapter = i;
-                self.page = @min(if (self.progress(chapters[i].id)) |p| p.page else 0, chapters[i].pages.len - 1);
+                self.page = @min(self.readState(chapters[i]).page, chapters[i].pages.len - 1);
                 self.screen = .reader;
                 try self.remember();
             },
