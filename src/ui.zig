@@ -9,7 +9,7 @@ const models = tachi.models;
 pub const OnlineCommand = union(enum) { extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear };
 pub const State = struct { focused: bool = false, tapping: bool = false, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { act: lib.Action, edit: Session.Edit, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { act: lib.Action, edit: Session.Edit, setting: lib.Setting, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
@@ -19,6 +19,12 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
             if (session.browser.busy == null) ctx.focus("screen");
         },
         .online => |command| try onlineUpdate(session, command, ctx),
+        .setting => |which| if (session.browser.busy == null) {
+            session.changeSetting(which) catch |err| {
+                session.status = try std.fmt.allocPrint(session.model.gpa, "Setting not saved: {s}", .{@errorName(err)});
+            };
+            ctx.focus("screen");
+        },
         .edit => |choice| if (session.browser.busy == null) {
             session.edit(choice) catch |err| {
                 session.status = try std.fmt.allocPrint(session.model.gpa, "Not changed: {s}", .{@errorName(err)});
@@ -213,6 +219,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             .queue => "Downloads",
             .chapter_menu => "Chapter",
             .title_menu => "Title",
+            .engine_settings => "Library settings",
         }, 19, 0);
         ui.spacer();
         if (model.screen == .library and session.browser.busy == null) try button(ui, "browse", "Browse", .help);
@@ -264,12 +271,14 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             try text(ui, "Physical Next always advances a page.", 12, 60);
             try text(ui, "Direction changes the left / right tap zones.", 12, 60);
             try onlineButton(ui, "scan-local", "Scan local manga", .scan);
+            try button(ui, "engine-settings", "Library settings", .{ .feed = .engine_settings });
             ui.spacer();
             try app.widgets.button(ui, "quit", .{ .label = "Close PocketManga", .on_click = on.bind(.quit) });
         },
         .sources, .extensions, .catalog, .source_settings => try browserView(ui, session),
         .updates, .history, .queue => try feedView(ui, session),
         .chapter_menu, .title_menu => try menuView(ui, model),
+        .engine_settings => try settingsView(ui, session),
     }
     if (session.status.len > 0 and !session.download_error and session.browser.busy == null) try text(ui, session.status, 11, 0);
 }
@@ -352,6 +361,58 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
         try app.widgets.button(ui, "next-list", .{ .label = "Next", .enabled = model.offset + lib.Model.rows < count, .on_click = ui.messages(Root).bind(.{ .act = @as(lib.Action, .{ .list_page = 1 }) }) });
     }
 }
+/// libtachi's settings, one row each: checks for switches, values for the rest.
+fn settingsView(ui: *app.Ui, session: *const Session) !void {
+    const model = session.model;
+    const s = session.settings;
+    const on = ui.messages(Root);
+    const settings = std.enums.values(lib.Setting);
+    {
+        try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(10), .child_gap = 8 } });
+        defer ui.close();
+        for (settings[@min(model.offset, settings.len)..@min(model.offset + lib.Model.rows, settings.len)]) |which| {
+            const check = struct {
+                fn mark(on_: bool) []const u8 {
+                    return if (on_) "[x]" else "[ ]";
+                }
+            }.mark;
+            const sort = session.currentSort();
+            const label = switch (which) {
+                .skip_completed => try ui.fmt("{s} Update: skip completed titles", .{check(s.update.skip_completed)}),
+                .skip_unread => try ui.fmt("{s} Update: skip titles with unread chapters", .{check(s.update.skip_unread)}),
+                .skip_not_started => try ui.fmt("{s} Update: skip titles not started", .{check(s.update.skip_not_started)}),
+                .skip_not_due => try ui.fmt("{s} Update: skip titles not due", .{check(s.update.skip_outside_release_period)}),
+                .update_details => try ui.fmt("{s} Update: refresh details too", .{check(s.update.metadata)}),
+                .download_new => try ui.fmt("{s} Download new chapters", .{check(s.downloads.new_chapters)}),
+                .delete_marked_read => try ui.fmt("{s} Delete downloads marked read", .{check(s.downloads.remove_after_marked_read)}),
+                .delete_bookmarked => try ui.fmt("{s} Allow deleting bookmarked", .{check(s.downloads.remove_bookmarked)}),
+                .delete_after_reading => switch (s.downloads.remove_after_read_slots) {
+                    -1 => "After reading: keep downloads",
+                    0 => "After reading: delete that chapter",
+                    else => |n| try ui.fmt("After reading: delete {d} behind", .{n}),
+                },
+                .download_ahead => if (s.downloads.ahead == 0) "While reading: download nothing ahead" else try ui.fmt("While reading: download {d} ahead", .{s.downloads.ahead}),
+                .skip_read => try ui.fmt("{s} Reader: skip read chapters", .{check(s.reader.skip_read)}),
+                .skip_filtered => try ui.fmt("{s} Reader: skip filtered chapters", .{check(s.reader.skip_filtered)}),
+                .skip_duplicates => try ui.fmt("{s} Reader: skip duplicate chapters", .{check(s.reader.skip_duplicates)}),
+                .incognito => try ui.fmt("{s} Incognito (no progress or history)", .{check(s.reader.incognito)}),
+                .downloaded_only => try ui.fmt("{s} Downloaded only", .{check(s.library.downloaded_only)}),
+                .sort_mode => try ui.fmt("Sort: {s}", .{@tagName(sort.mode)}),
+                .sort_ascending => if (sort.ascending) "Order: ascending" else "Order: descending",
+            };
+            try app.widgets.button(ui, .{ .setting = which }, .{ .label = label, .on_click = on.bind(.{ .setting = which }) });
+        }
+        ui.spacer();
+    }
+    {
+        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .all(8), .child_gap = 8, .child_alignment = .center_left } });
+        defer ui.close();
+        try app.widgets.button(ui, "previous-settings", .{ .label = "Previous", .enabled = model.offset > 0, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = -1 }) }) });
+        ui.spacer();
+        try app.widgets.button(ui, "next-settings", .{ .label = "Next", .enabled = model.offset + lib.Model.rows < settings.len, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = 1 }) }) });
+    }
+}
+
 /// What can be done to one chapter, or one title.
 fn menuView(ui: *app.Ui, model: *const lib.Model) !void {
     const manga = model.library.manga[model.manga];

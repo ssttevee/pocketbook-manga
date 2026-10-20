@@ -92,6 +92,14 @@ test "chapter and title menus edit the library through libtachi" {
     try h.click("Remove from library");
     try std.testing.expectEqual(lib.Screen.library, model.screen);
     try std.testing.expectEqual(0, model.titleCount());
+    // Library settings are libtachi's.
+    try h.click("Aa");
+    try h.click("Library settings");
+    try h.click("[x] Update: skip completed titles");
+    try std.testing.expect(!(try engine.loadSettings(a)).update.skip_completed);
+    try h.click("Next");
+    try h.click("[ ] Reader: skip read chapters");
+    try std.testing.expect((try engine.loadSettings(a)).reader.skip_read);
 }
 test "page bounds and stale progress are clamped" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);

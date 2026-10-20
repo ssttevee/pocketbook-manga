@@ -31,7 +31,9 @@ pub fn writeJson(gpa: std.mem.Allocator, io: Io, path: []const u8, value: anytyp
     try Io.Dir.cwd().rename(temp, Io.Dir.cwd(), path, io);
 }
 
-pub const Screen = enum { library, chapters, reader, settings, sources, extensions, catalog, source_settings, updates, history, queue, chapter_menu, title_menu };
+pub const Screen = enum { library, chapters, reader, settings, sources, extensions, catalog, source_settings, updates, history, queue, chapter_menu, title_menu, engine_settings };
+/// libtachi settings the settings screen changes.
+pub const Setting = enum { skip_completed, skip_unread, skip_not_started, skip_not_due, update_details, download_new, delete_marked_read, delete_bookmarked, delete_after_reading, download_ahead, skip_read, skip_filtered, skip_duplicates, incognito, downloaded_only, sort_mode, sort_ascending };
 pub const Pick = struct { manga: usize, chapter: usize };
 pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, open_chapter: Pick, turn: i32, next_chapter, list_page: i32, category: i32, feed: Screen, menu: usize, settings, help, rtl, refresh };
 pub const Model = struct {
@@ -178,6 +180,10 @@ pub const Model = struct {
                 },
                 .settings => self.screen = self.return_screen,
                 .chapter_menu => self.screen = .chapters,
+                .engine_settings => {
+                    self.screen = .settings;
+                    self.offset = 0;
+                },
                 .extensions, .catalog, .source_settings => {
                     self.screen = .sources;
                     self.offset = 0;
@@ -196,6 +202,7 @@ pub const Model = struct {
                     .library => self.titleCount(),
                     .chapters => self.chapterCount(),
                     .updates, .history, .queue => self.feed_count,
+                    .engine_settings => std.enums.values(Setting).len,
                     else => return,
                 };
                 if (count == 0) return;

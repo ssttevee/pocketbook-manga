@@ -25,6 +25,11 @@ pub const Session = struct {
     last_progress_ms: ?u64 = null,
     /// Owns the model's rows and category names.
     rows_arena: ?std.heap.ArenaAllocator = null,
+    /// libtachi's settings as the settings screen shows them.
+    settings: tachi.settings.Settings = .{},
+    settings_arena: ?std.heap.ArenaAllocator = null,
+    /// The category the library shows, for sorting it.
+    category_id: u32 = 0,
     /// The updates, history or queue list being shown, and what owns it.
     feed: []const FeedRow = &.{},
     feed_arena: ?std.heap.ArenaAllocator = null,
@@ -267,6 +272,7 @@ pub const Session = struct {
         const names = try a.alloc([]const u8, groups.len);
         for (groups, names) |group, *name| name.* = if (group.category.id == 0) "Default" else group.category.name;
         if (model.category >= groups.len) model.category = 0;
+        self.category_id = if (groups.len > 0) groups[model.category].category.id else 0;
         var titles: std.ArrayList(usize) = .empty;
         if (groups.len > 0) for (groups[model.category].entries) |entry| {
             try titles.append(a, (@intFromPtr(entry.manga) - @intFromPtr(model.library.manga.ptr)) / @sizeOf(lib.Manga));
@@ -309,6 +315,68 @@ pub const Session = struct {
         if (self.library_arena) |*arena| arena.deinit();
         if (self.rows_arena) |*arena| arena.deinit();
         if (self.feed_arena) |*arena| arena.deinit();
+        if (self.settings_arena) |*arena| arena.deinit();
+    }
+
+    pub fn loadSettings(self: *Session) !void {
+        const engine = self.browser.engine orelse return;
+        var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+        errdefer arena.deinit();
+        self.settings = try engine.loadSettings(arena.allocator());
+        if (self.settings_arena) |*old| old.deinit();
+        self.settings_arena = arena;
+    }
+
+    /// Flips a setting, or moves it to its next value, through libtachi.
+    pub fn changeSetting(self: *Session, which: lib.Setting) !void {
+        const engine = self.browser.engine orelse return;
+        try self.loadSettings();
+        var s = self.settings;
+        switch (which) {
+            .skip_completed => s.update.skip_completed = !s.update.skip_completed,
+            .skip_unread => s.update.skip_unread = !s.update.skip_unread,
+            .skip_not_started => s.update.skip_not_started = !s.update.skip_not_started,
+            .skip_not_due => s.update.skip_outside_release_period = !s.update.skip_outside_release_period,
+            .update_details => s.update.metadata = !s.update.metadata,
+            .download_new => s.downloads.new_chapters = !s.downloads.new_chapters,
+            .delete_marked_read => s.downloads.remove_after_marked_read = !s.downloads.remove_after_marked_read,
+            .delete_bookmarked => s.downloads.remove_bookmarked = !s.downloads.remove_bookmarked,
+            .delete_after_reading => s.downloads.remove_after_read_slots = if (s.downloads.remove_after_read_slots >= 4) -1 else s.downloads.remove_after_read_slots + 1,
+            .download_ahead => s.downloads.ahead = switch (s.downloads.ahead) {
+                0 => 2,
+                2 => 3,
+                3 => 5,
+                5 => 10,
+                else => 0,
+            },
+            .skip_read => s.reader.skip_read = !s.reader.skip_read,
+            .skip_filtered => s.reader.skip_filtered = !s.reader.skip_filtered,
+            .skip_duplicates => s.reader.skip_duplicates = !s.reader.skip_duplicates,
+            .incognito => s.reader.incognito = !s.reader.incognito,
+            .downloaded_only => s.library.downloaded_only = !s.library.downloaded_only,
+            .sort_mode, .sort_ascending => {
+                // Sorting goes through libtachi's rules for categories.
+                var sort = self.currentSort();
+                if (which == .sort_ascending) sort.ascending = !sort.ascending else {
+                    const modes = std.enums.values(tachi.views.SortMode);
+                    const at = std.mem.indexOfScalar(tachi.views.SortMode, modes, sort.mode) orelse 0;
+                    sort.mode = modes[(at + 1) % modes.len];
+                }
+                try engine.setLibrarySort(self.category_id, sort);
+                try self.reloadLibrary();
+                try self.loadSettings();
+                return;
+            },
+        }
+        try engine.saveSettings(s);
+        try self.loadSettings();
+        try self.refreshRows();
+    }
+
+    /// The sort of the category the library shows.
+    pub fn currentSort(self: *const Session) tachi.views.LibrarySort {
+        for (self.model.library.categories) |c| if (c.id == self.category_id) return .decode(c.flags);
+        return .decode(self.settings.library.sort);
     }
     pub fn act(self: *Session, action: lib.Action) !void {
         const before = self.model.current();
@@ -320,6 +388,7 @@ pub const Session = struct {
         if (lists and (action == .search or action == .category or old_screen != self.model.screen or old_manga != self.model.manga or self.model.title_rows == null)) try self.refreshRows();
         const feed = self.model.screen == .updates or self.model.screen == .history or self.model.screen == .queue;
         if (feed and old_screen != self.model.screen) try self.refreshFeed();
+        if (self.model.screen == .engine_settings and old_screen != .engine_settings) try self.loadSettings();
         if (self.model.screen == .reader and (old_screen != .reader or old_page != self.model.page or before == null or !std.mem.eql(u8, before.?.id, self.model.current().?.id))) {
             self.status = "";
             self.download_error = false;
