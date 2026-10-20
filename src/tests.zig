@@ -55,6 +55,44 @@ test "drawn UI opens chapters, turns pages, resumes and saves completion" {
     try std.testing.expectEqual(lib.Screen.reader, model.screen);
     try std.testing.expectEqual(1, model.chapter);
 }
+test "chapter and title menus edit the library through libtachi" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(std.testing.allocator, std.testing.io, tachi.backend.none, .{ .dir = dir });
+    defer engine.queue.deinit(&engine);
+    var stored = fixture;
+    stored.categories = &.{.{ .id = 1, .name = "Favorites" }};
+    try engine.store.save(a, stored);
+    var model: lib.Model = .{ .gpa = a };
+    var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io };
+    defer session.deinit();
+    session.browser.engine = &engine;
+    try session.reloadLibrary();
+    var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try h.click("Test Story");
+    try h.click("...");
+    try std.testing.expectEqual(lib.Screen.chapter_menu, model.screen);
+    try h.click("Bookmark");
+    try std.testing.expectEqual(lib.Screen.chapters, model.screen);
+    try std.testing.expect(model.library.manga[0].chapters[0].bookmark);
+    try h.click("...");
+    try h.click("Mark read");
+    try std.testing.expect(model.library.manga[0].chapters[0].read);
+    try h.click("Back");
+    try h.click("...");
+    try std.testing.expectEqual(lib.Screen.title_menu, model.screen);
+    try h.click("[ ] Favorites");
+    try std.testing.expectEqualSlices(u32, &.{1}, model.library.manga[0].categories);
+    try h.click("Remove from library");
+    try std.testing.expectEqual(lib.Screen.library, model.screen);
+    try std.testing.expectEqual(0, model.titleCount());
+}
 test "page bounds and stale progress are clamped" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();

@@ -9,7 +9,7 @@ const models = tachi.models;
 pub const OnlineCommand = union(enum) { extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear };
 pub const State = struct { focused: bool = false, tapping: bool = false, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { act: lib.Action, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { act: lib.Action, edit: Session.Edit, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
@@ -19,6 +19,12 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
             if (session.browser.busy == null) ctx.focus("screen");
         },
         .online => |command| try onlineUpdate(session, command, ctx),
+        .edit => |choice| if (session.browser.busy == null) {
+            session.edit(choice) catch |err| {
+                session.status = try std.fmt.allocPrint(session.model.gpa, "Not changed: {s}", .{@errorName(err)});
+            };
+            ctx.focus("screen");
+        },
         .online_query => |query| try session.browser.setQuery(session.model.gpa, query),
         .pref_text => |value| if (value) |v| try setPreference(session, .{ .string = v }),
         .pref_choice => |value| if (value) |i| {
@@ -205,6 +211,8 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             .updates => "Updates",
             .history => "History",
             .queue => "Downloads",
+            .chapter_menu => "Chapter",
+            .title_menu => "Title",
         }, 19, 0);
         ui.spacer();
         if (model.screen == .library and session.browser.busy == null) try button(ui, "browse", "Browse", .help);
@@ -261,6 +269,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         },
         .sources, .extensions, .catalog, .source_settings => try browserView(ui, session),
         .updates, .history, .queue => try feedView(ui, session),
+        .chapter_menu, .title_menu => try menuView(ui, model),
     }
     if (session.status.len > 0 and !session.download_error and session.browser.busy == null) try text(ui, session.status, 11, 0);
 }
@@ -312,10 +321,14 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
             const title = if (is_library) model.library.manga[i].title else model.library.manga[model.manga].chapters[i].title;
             const on = ui.messages(Root);
             const key = .{ .row = i };
+            try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_alignment = .center_left }, .border = .{ .color = .gray(130), .widths = .{ .bottom = 1 } } });
+            defer {
+                app.widgets.button(ui, .{ .menu = i }, .{ .label = "...", .on_click = on.bind(.{ .act = @as(lib.Action, .{ .menu = i }) }) }) catch {};
+                ui.close();
+            }
             try ui.open(key, .{
                 .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(37) }, .axis = .y, .padding = .init(8, 8, 3, 3), .child_gap = 1 },
                 .background_color = rowFill(ui, key),
-                .border = .{ .color = .gray(130), .widths = .{ .bottom = 1 } },
                 .on_click = on.bind(.{ .act = if (is_library) @as(lib.Action, .{ .open = i }) else @as(lib.Action, .{ .read = i }) }),
             });
             try text(ui, title, 14, 0);
@@ -339,6 +352,42 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
         try app.widgets.button(ui, "next-list", .{ .label = "Next", .enabled = model.offset + lib.Model.rows < count, .on_click = ui.messages(Root).bind(.{ .act = @as(lib.Action, .{ .list_page = 1 }) }) });
     }
 }
+/// What can be done to one chapter, or one title.
+fn menuView(ui: *app.Ui, model: *const lib.Model) !void {
+    const manga = model.library.manga[model.manga];
+    const on = ui.messages(Root);
+    try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 10 } });
+    defer ui.close();
+    try text(ui, manga.title, 16, 0);
+    const Choice = struct { label: []const u8, edit: Session.Edit };
+    if (model.screen == .chapter_menu) {
+        const ch = manga.chapters[model.menu_chapter];
+        try text(ui, ch.title, 14, 60);
+        const state = model.readState(ch);
+        const choices = [_]Choice{
+            if (state.read) .{ .label = "Mark unread", .edit = .mark_unread } else .{ .label = "Mark read", .edit = .mark_read },
+            .{ .label = "Mark previous read", .edit = .mark_previous },
+            if (ch.bookmark) .{ .label = "Remove bookmark", .edit = .unbookmark } else .{ .label = "Bookmark", .edit = .bookmark },
+            if (ch.pages.len > 0) .{ .label = "Delete download", .edit = .delete_download } else .{ .label = "Download", .edit = .download },
+        };
+        for (choices, 0..) |choice, n| {
+            if (manga.local() and (choice.edit == .download or choice.edit == .delete_download)) continue;
+            try app.widgets.button(ui, .{ .choice = n }, .{ .label = choice.label, .on_click = on.bind(.{ .edit = choice.edit }) });
+        }
+        return;
+    }
+    for ([_]Choice{
+        .{ .label = "Mark all read", .edit = .title_read },
+        .{ .label = "Mark all unread", .edit = .title_unread },
+        .{ .label = "Remove from library", .edit = .remove_title },
+    }, 0..) |choice, n| try app.widgets.button(ui, .{ .choice = n }, .{ .label = choice.label, .on_click = on.bind(.{ .edit = choice.edit }) });
+    if (model.library.categories.len > 0) try text(ui, "Categories", 14, 0);
+    for (model.library.categories) |category| {
+        const member = std.mem.indexOfScalar(u32, manga.categories, category.id) != null;
+        try app.widgets.button(ui, .{ .category = category.id }, .{ .label = try ui.fmt("{s} {s}", .{ if (member) "[x]" else "[ ]", category.name }), .on_click = on.bind(.{ .edit = @as(Session.Edit, .{ .toggle_category = category.id }) }) });
+    }
+}
+
 /// Updates, history and the download queue: chapters across titles.
 fn feedView(ui: *app.Ui, session: *const Session) !void {
     const model = session.model;

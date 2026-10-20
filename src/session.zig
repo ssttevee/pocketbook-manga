@@ -195,6 +195,53 @@ pub const Session = struct {
         self.feed_arena = arena;
     }
 
+    pub const Edit = union(enum) { mark_read, mark_unread, mark_previous, bookmark, unbookmark, download, delete_download, title_read, title_unread, remove_title, toggle_category: u32 };
+
+    /// Applies a chapter or title menu choice through libtachi, then shows
+    /// the list again.
+    pub fn edit(self: *Session, choice: Edit) !void {
+        const engine = self.browser.engine orelse return;
+        const model = self.model;
+        if (model.manga >= model.library.manga.len) return;
+        const manga = model.library.manga[model.manga];
+        const chapter_id: []const u8 = if (model.menu_chapter < manga.chapters.len) manga.chapters[model.menu_chapter].id else "";
+        const one: []const []const u8 = &.{chapter_id};
+        var back: lib.Screen = .chapters;
+        switch (choice) {
+            .mark_read => _ = try engine.markRead(one, true),
+            .mark_unread => _ = try engine.markRead(one, false),
+            .mark_previous => _ = try engine.markPreviousRead(chapter_id),
+            .bookmark => _ = try engine.setBookmark(one, true),
+            .unbookmark => _ = try engine.setBookmark(one, false),
+            .download => _ = try engine.queue.enqueue(engine, one, true),
+            .delete_download => if (try engine.deleteDownloads(one) == 0) {
+                self.status = "Kept by the download deletion settings";
+            },
+            .title_read, .title_unread => {
+                _ = try engine.markTitleRead(manga.id, choice == .title_read);
+                back = .library;
+            },
+            .remove_title => {
+                try engine.setFavorite(manga.id, false);
+                back = .library;
+            },
+            .toggle_category => |id| {
+                var categories: std.ArrayList(u32) = .empty;
+                defer categories.deinit(model.gpa);
+                var had = false;
+                for (manga.categories) |c| {
+                    if (c == id) had = true else try categories.append(model.gpa, c);
+                }
+                if (!had) try categories.append(model.gpa, id);
+                try engine.setCategories(&.{manga.id}, categories.items);
+                back = .title_menu;
+            },
+        }
+        try self.reloadLibrary();
+        model.screen = back;
+        try self.refreshRows();
+    }
+
     /// Queues the current title's unread chapters that aren't downloaded.
     pub fn queueUnread(self: *Session) !void {
         const engine = self.browser.engine orelse return;

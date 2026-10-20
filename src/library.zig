@@ -31,9 +31,9 @@ pub fn writeJson(gpa: std.mem.Allocator, io: Io, path: []const u8, value: anytyp
     try Io.Dir.cwd().rename(temp, Io.Dir.cwd(), path, io);
 }
 
-pub const Screen = enum { library, chapters, reader, settings, sources, extensions, catalog, source_settings, updates, history, queue };
+pub const Screen = enum { library, chapters, reader, settings, sources, extensions, catalog, source_settings, updates, history, queue, chapter_menu, title_menu };
 pub const Pick = struct { manga: usize, chapter: usize };
-pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, open_chapter: Pick, turn: i32, next_chapter, list_page: i32, category: i32, feed: Screen, settings, help, rtl, refresh };
+pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, open_chapter: Pick, turn: i32, next_chapter, list_page: i32, category: i32, feed: Screen, menu: usize, settings, help, rtl, refresh };
 pub const Model = struct {
     gpa: std.mem.Allocator,
     library: Library = .{},
@@ -64,6 +64,8 @@ pub const Model = struct {
     category: usize = 0,
     /// Rows in the updates, history or queue list the session shows.
     feed_count: usize = 0,
+    /// The chapter the chapter menu is for.
+    menu_chapter: usize = 0,
     pub const rows = 7;
     pub const ReadState = struct { page: u32, read: bool, started: bool };
 
@@ -148,6 +150,17 @@ pub const Model = struct {
                 self.screen = screen;
                 self.offset = 0;
             },
+            .menu => |i| switch (self.screen) {
+                .library => if (i < self.library.manga.len) {
+                    self.manga = i;
+                    self.screen = .title_menu;
+                },
+                .chapters => {
+                    self.menu_chapter = i;
+                    self.screen = .chapter_menu;
+                },
+                else => {},
+            },
             .turn => |delta| {
                 if (self.screen != .reader) return;
                 const ch = self.current() orelse return;
@@ -164,6 +177,7 @@ pub const Model = struct {
                     self.offset = self.chapterRow(self.chapter) / rows * rows;
                 },
                 .settings => self.screen = self.return_screen,
+                .chapter_menu => self.screen = .chapters,
                 .extensions, .catalog, .source_settings => {
                     self.screen = .sources;
                     self.offset = 0;
