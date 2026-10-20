@@ -88,6 +88,11 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ, roo
         if (engine.client.pid != -1) return error.WorkerRetainedDuringNativeDownload;
         std.debug.print("ARM extension install, search, details, chapters and authenticated image download passed ({d} bytes/page; native TLS, Referer and cookie; worker released).\n", .{bytes.len});
         const benchmark = try runJob(&engine, .{ .benchmark = .{ .book = book, .chapter = book.chapters[0] } });
+        // A fresh worker registers the fixture lazily, so loading it is reported first.
+        var extension_buf: [64]u8 = undefined;
+        const loaded = benchmark.extensionLoading(&extension_buf);
+        if (loaded.len == 0 or benchmark.phase.load(.acquire) != .operation) return error.MissingExtensionLoadingPhase;
+        std.debug.print("Extension loading reported as its own phase: {s}\n", .{loaded});
         benchmark.deinit();
         if (environ.getPosix("POCKETMANGA_FIXTURE_CANCEL_RESUME") != null) std.debug.print("Native retry resumed completed pages and published chapter.\n", .{});
     }

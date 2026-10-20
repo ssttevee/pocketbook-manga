@@ -215,18 +215,22 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         if (job.request == .download) {
             try downloadIdentity(ui, job.request.download.book.title, job.request.download.chapter.title);
         }
-        const starting = job.phase.load(.acquire) == .worker_starting;
         const total = job.pages_total.load(.acquire);
-        try text(ui, if (starting) "Loading libtachi worker... (this may take a minute)" else switch (job.request) {
-            .sources => "Loading extensions...",
-            .extensions => "Loading extension repository...",
-            .install => "Downloading and installing extension...",
-            .uninstall => "Removing extension...",
-            .titles => if (session.browser.source_name.len > 0) try ui.fmt("Loading {s}...", .{session.browser.source_name}) else "Loading titles...",
-            .download => if (total == 0) "Fetching page list" else "Downloading pages",
-            .scan => "Scanning local manga...",
-            .preferences, .set_preference => "Loading source settings...",
-            else => "Updating chapter lists...",
+        var extension_buf: [64]u8 = undefined;
+        try text(ui, switch (job.phase.load(.acquire)) {
+            .worker_starting => "Loading libtachi worker... (this may take a minute)",
+            .extension_loading => try ui.fmt("Loading {s} extension...", .{job.extensionLoading(&extension_buf)}),
+            .operation => switch (job.request) {
+                .sources => "Loading extensions...",
+                .extensions => "Loading extension repository...",
+                .install => "Downloading and installing extension...",
+                .uninstall => "Removing extension...",
+                .titles => if (session.browser.source_name.len > 0) try ui.fmt("Loading {s}...", .{session.browser.source_name}) else "Loading titles...",
+                .download => if (total == 0) "Fetching page list" else "Downloading pages",
+                .scan => "Scanning local manga...",
+                .preferences, .set_preference => "Loading source settings...",
+                else => "Updating chapter lists...",
+            },
         }, 13, 40);
         if (total > 0) try ui.print(.{ .font_size = 14 }, "{d} / {d} pages", .{ job.pages_done.load(.acquire), total });
         try onlineButton(ui, "cancel-job", "Cancel", .cancel);

@@ -279,7 +279,7 @@ pub fn download(engine: *online.Engine, job: *online.Job) !void {
                 for (image_request.rates) |rate| drain = @max(drain, rate.initialWaitMs);
                 if (drain > 0) try io.sleep(.fromMilliseconds(@intCast(drain)), .awake);
                 const network_start = millis(io);
-                var fallback_job: online.Job = .{ .arena = .init(engine.gpa), .engine = engine, .request = .{ .image = .{ .source = source, .page = image_request.page, .url = image_request.url, .cookies = image_request.cookies } }, .phase_target = &job.phase };
+                var fallback_job: online.Job = .{ .arena = .init(engine.gpa), .engine = engine, .request = .{ .image = .{ .source = source, .page = image_request.page, .url = image_request.url, .cookies = image_request.cookies } }, .status_owner = job };
                 defer fallback_job.arena.deinit();
                 engine.client.call(engine, &fallback_job, fallback_job.request) catch |err| {
                     if (fallback_job.failure) |failure| job.failure = try a.dupe(u8, failure);

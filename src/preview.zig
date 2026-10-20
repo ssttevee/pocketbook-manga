@@ -77,6 +77,10 @@ pub fn main(init: std.process.Init) !void {
     while (session.browser.busy.?.phase.load(.acquire) != .worker_starting) try init.io.sleep(.fromMilliseconds(1), .awake);
     smoke.fake.advance(250);
     try smoke.writeScreen(init.gpa, init.io, "preview/browse-worker-loading.pgm");
+    session.browser.busy.?.setExtensionLoading("MangaDex");
+    _ = smoke.fake.send(.show, 0, 0);
+    smoke.fake.advance(250);
+    try smoke.writeScreen(init.gpa, init.io, "preview/browse-extension-loading.pgm");
     session.browser.busy.?.cancel();
     try session.poll();
     std.debug.print("Rendered 758x1024 application screens into preview/*.pgm\n", .{});

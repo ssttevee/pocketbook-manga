@@ -138,11 +138,15 @@ pub const Client = struct {
                 job.setPhase(.operation);
                 continue;
             }
+            if (response.kind == .loading) {
+                if (response.extension) |name| job.setExtensionLoading(name) else job.setPhase(.operation);
+                continue;
+            }
             job.pages_done.store(response.pages_done, .release);
             job.pages_total.store(response.pages_total, .release);
             self.last_rss_kib = response.rss_kib;
             switch (response.kind) {
-                .ready => unreachable,
+                .ready, .loading => unreachable,
                 .progress => {},
                 .failure => {
                     job.failure = response.failure orelse "Worker failed";

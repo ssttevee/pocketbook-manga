@@ -247,10 +247,14 @@ test "worker startup is shown for downloads and browse and remains immediately c
         try harness.frame();
         try harness.expectText("Loading libtachi worker... (this may take a minute)");
         try harness.expectText("Cancel");
+        job.setExtensionLoading("MangaDex");
+        try harness.frame();
+        try harness.expectNoText("Loading libtachi worker... (this may take a minute)");
+        try harness.expectText("Loading MangaDex extension...");
         if (request == .download) {
             job.setPhase(.operation);
             try harness.frame();
-            try harness.expectNoText("Loading libtachi worker... (this may take a minute)");
+            try harness.expectNoText("Loading MangaDex extension...");
             try harness.expectText("Fetching page list");
         }
         const started = @import("worker_wire.zig").pm_now_ms();

@@ -121,7 +121,7 @@ def main():
             if args.deny_new_syscalls and 'Raw ARM statx and getrandom return ENOSYS' not in result.stdout: raise RuntimeError('Syscall denial did not reach the ARM guest')
             if args.mode == 'fixture':
                 expected_native = 'native=0' if args.redirect else 'native=2' if args.cancel_resume else 'native=3'
-                for expected in ['authenticated image download passed', expected_native, 'JVM benchmark chapter', 'Native libzstd metadata decoded: browse', 'Native libzstd metadata decoded: chapters', 'Native libzstd metadata decoded: pages']:
+                for expected in ['authenticated image download passed', expected_native, 'JVM benchmark chapter', 'Extension loading reported as its own phase', 'Native libzstd metadata decoded: browse', 'Native libzstd metadata decoded: chapters', 'Native libzstd metadata decoded: pages']:
                     if expected not in result.stdout: raise RuntimeError('Fixture did not finish: '+expected)
                 if args.cancel_resume and ('resumed=1' not in result.stdout or 'Native stalled-body cancel returned Canceled' not in result.stdout): raise RuntimeError('Resume/cancel check missing')
                 if args.redirect and 'JVM fallback: JvmRedirect' not in result.stdout: raise RuntimeError('Dynamic fallback missing')

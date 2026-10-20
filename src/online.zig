@@ -5,7 +5,7 @@ const protocol = @import("protocol.zig");
 const lib = @import("library.zig");
 pub const Request = protocol.Request;
 pub const Result = protocol.Result;
-pub const Phase = enum(u8) { operation, worker_starting };
+pub const Phase = enum(u8) { operation, worker_starting, extension_loading };
 pub const Job = struct {
     arena: std.heap.ArenaAllocator,
     engine: *Engine,
@@ -15,8 +15,12 @@ pub const Job = struct {
     future: ?Io.Future(void) = null,
     done: std.atomic.Value(bool) = .init(false),
     phase: std.atomic.Value(Phase) = .init(.operation),
-    // Nested JVM image requests report startup on the owning download job.
-    phase_target: ?*std.atomic.Value(Phase) = null,
+    // Nested JVM image requests report their phase on the owning download job.
+    status_owner: ?*Job = null,
+    // The extension named while `phase` is `.extension_loading`.
+    extension_lock: std.atomic.Mutex = .unlocked,
+    extension_buf: [64]u8 = undefined,
+    extension_len: usize = 0,
     // Spawn to ready, when this job had to start the worker.
     worker_start_ms: u64 = 0,
     pages_done: std.atomic.Value(usize) = .init(0),
@@ -47,7 +51,24 @@ pub const Job = struct {
         };
     }
     pub fn setPhase(self: *Job, phase: Phase) void {
-        (self.phase_target orelse &self.phase).store(phase, .release);
+        (self.status_owner orelse self).phase.store(phase, .release);
+    }
+    pub fn setExtensionLoading(self: *Job, name: []const u8) void {
+        const owner = self.status_owner orelse self;
+        while (!owner.extension_lock.tryLock()) std.atomic.spinLoopHint();
+        const n = @min(name.len, owner.extension_buf.len);
+        @memcpy(owner.extension_buf[0..n], name[0..n]);
+        owner.extension_len = n;
+        owner.extension_lock.unlock();
+        owner.phase.store(.extension_loading, .release);
+    }
+    /// Copies the extension being loaded into `buf`.
+    pub fn extensionLoading(self: *Job, buf: []u8) []const u8 {
+        while (!self.extension_lock.tryLock()) std.atomic.spinLoopHint();
+        defer self.extension_lock.unlock();
+        const n = @min(self.extension_len, buf.len);
+        @memcpy(buf[0..n], self.extension_buf[0..n]);
+        return buf[0..n];
     }
     pub fn checkCancelled(self: *Job) !void {
         try self.engine.io.checkCancel();

@@ -10,6 +10,7 @@ const models = @import("source_models.zig");
 const wire = @import("worker_wire.zig");
 pub const Request = protocol.Request;
 pub const Result = protocol.Result;
+pub const ExtensionState = enum(u8) { none, loading, loaded };
 pub const Job = struct {
     arena: std.heap.ArenaAllocator,
     engine: *Engine,
@@ -19,6 +20,9 @@ pub const Job = struct {
     thread: ?std.Thread = null,
     done: std.atomic.Value(bool) = .init(false),
     runtime_ready: std.atomic.Value(bool) = .init(false),
+    // The worker loop reports each change to the UI.
+    extension: []const u8 = "",
+    extension_state: std.atomic.Value(ExtensionState) = .init(.none),
     cancelled: std.atomic.Value(bool) = .init(false),
     pages_done: std.atomic.Value(usize) = .init(0),
     pages_total: std.atomic.Value(usize) = .init(0),
@@ -122,6 +126,18 @@ pub const Engine = struct {
         }
         const rt = try self.initRuntime();
         job.runtime_ready.store(true, .release);
+        const request_source: ?i64 = switch (job.request) {
+            .titles => |r| r.source,
+            .add => |r| r.source,
+            .refresh => |book| book.source_id,
+            .download => |r| r.book.source_id,
+            .benchmark => |r| r.book.source_id,
+            .image => |r| r.source,
+            .preferences => |id| id,
+            .set_preference => |r| r.source,
+            else => null,
+        };
+        if (request_source) |id| try self.loadSource(job, id);
         switch (job.request) {
             .sources => try self.sources(job),
             .extensions => job.result.extensions = try parse([]const protocol.RepoEntry, a, try std.json.Stringify.valueAlloc(a, try rt.repoList(a, .{}), .{})),
@@ -215,6 +231,16 @@ pub const Engine = struct {
             .scan => unreachable,
         }
     }
+    /// Loads a registered extension before the request uses it, so the UI can
+    /// say which extension is loading.
+    fn loadSource(self: *Engine, job: *Job, id: i64) !void {
+        const rt = self.runtime.?;
+        const name = try rt.extensionToLoad(job.arena.allocator(), id) orelse return;
+        job.extension = name;
+        job.extension_state.store(.loading, .release);
+        defer job.extension_state.store(.loaded, .release);
+        try rt.loadSource(id);
+    }
     fn sources(self: *Engine, job: *Job) !void {
         const a = job.arena.allocator();
         const json = try self.runtime.?.listExtensions();
@@ -245,6 +271,8 @@ pub const Engine = struct {
     }
     fn refreshBook(self: *Engine, job: *Job, id: i64, manga: models.Manga) !lib.Manga {
         const a = job.arena.allocator();
+        // Updating the whole library reaches extensions one at a time.
+        if (job.request == .update_all) try self.loadSource(job, id);
         const args = try std.json.Stringify.valueAlloc(a, .{ .manga = manga }, .{});
         const detail_json = try self.runtime.?.call(id, "details", args);
         defer self.gpa.free(detail_json);
