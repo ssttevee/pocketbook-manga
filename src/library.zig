@@ -67,7 +67,10 @@ pub const Model = struct {
         self.reading.clearAndFree(self.gpa);
     }
 
+    /// Library titles only: titles taken out stay in libtachi's store for
+    /// their history.
     pub fn matches(self: *const Model, manga: Manga) bool {
+        if (!manga.favorite) return false;
         return self.query_text.len == 0 or std.ascii.findIgnoreCase(manga.title, self.query_text) != null or std.ascii.findIgnoreCase(manga.author, self.query_text) != null;
     }
     pub fn titleCount(self: *const Model) usize {
