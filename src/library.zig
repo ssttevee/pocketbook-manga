@@ -32,7 +32,7 @@ pub fn writeJson(gpa: std.mem.Allocator, io: Io, path: []const u8, value: anytyp
 }
 
 pub const Screen = enum { library, chapters, reader, settings, sources, extensions, catalog, source_settings };
-pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, turn: i32, next_chapter, list_page: i32, settings, help, rtl, refresh };
+pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, turn: i32, next_chapter, list_page: i32, category: i32, settings, help, rtl, refresh };
 pub const Model = struct {
     gpa: std.mem.Allocator,
     library: Library = .{},
@@ -52,6 +52,15 @@ pub const Model = struct {
     /// Reading state changed since `library` was loaded, by chapter id; the
     /// session records each change with libtachi.
     reading: std.StringHashMapUnmanaged(ReadState) = .empty,
+    /// The titles libtachi's library view shows in the current category,
+    /// and the current title's chapters as its chapter list shows them, as
+    /// indexes into `library`; the session fills them in. Null shows
+    /// everything in stored order.
+    title_rows: ?[]const usize = null,
+    chapter_rows: ?[]const usize = null,
+    /// Category names in libtachi's order, and the one shown.
+    categories: []const []const u8 = &.{},
+    category: usize = 0,
     pub const rows = 7;
     pub const ReadState = struct { page: u32, read: bool, started: bool };
 
@@ -67,26 +76,23 @@ pub const Model = struct {
         self.reading.clearAndFree(self.gpa);
     }
 
-    /// Library titles only: titles taken out stay in libtachi's store for
-    /// their history.
-    pub fn matches(self: *const Model, manga: Manga) bool {
-        if (!manga.favorite) return false;
-        return self.query_text.len == 0 or std.ascii.findIgnoreCase(manga.title, self.query_text) != null or std.ascii.findIgnoreCase(manga.author, self.query_text) != null;
-    }
     pub fn titleCount(self: *const Model) usize {
-        var count: usize = 0;
-        for (self.library.manga) |m| if (self.matches(m)) {
-            count += 1;
-        };
-        return count;
+        return if (self.title_rows) |list| list.len else self.library.manga.len;
     }
     pub fn titleIndex(self: *const Model, row: usize) usize {
-        var count: usize = 0;
-        for (self.library.manga, 0..) |m, i| if (self.matches(m)) {
-            if (count == row) return i;
-            count += 1;
-        };
-        unreachable;
+        return if (self.title_rows) |list| list[row] else row;
+    }
+    pub fn chapterCount(self: *const Model) usize {
+        if (self.chapter_rows) |list| return list.len;
+        return if (self.manga < self.library.manga.len) self.library.manga[self.manga].chapters.len else 0;
+    }
+    pub fn chapterIndex(self: *const Model, row: usize) usize {
+        return if (self.chapter_rows) |list| list[row] else row;
+    }
+    /// The row showing chapter `index`.
+    fn chapterRow(self: *const Model, index: usize) usize {
+        const list = self.chapter_rows orelse return index;
+        return std.mem.indexOfScalar(usize, list, index) orelse 0;
     }
     pub fn current(self: *const Model) ?Chapter {
         if (self.manga >= self.library.manga.len) return null;
@@ -144,7 +150,7 @@ pub const Model = struct {
             .back => switch (self.screen) {
                 .reader => {
                     self.screen = .chapters;
-                    self.offset = self.chapter / rows * rows;
+                    self.offset = self.chapterRow(self.chapter) / rows * rows;
                 },
                 .settings => self.screen = self.return_screen,
                 .extensions, .catalog, .source_settings => {
@@ -163,12 +169,18 @@ pub const Model = struct {
             .list_page => |delta| {
                 const count = switch (self.screen) {
                     .library => self.titleCount(),
-                    .chapters => self.library.manga[self.manga].chapters.len,
+                    .chapters => self.chapterCount(),
                     else => return,
                 };
                 if (count == 0) return;
                 const next: i64 = @as(i64, @intCast(self.offset)) + @as(i64, delta) * rows;
                 self.offset = @intCast(std.math.clamp(next, 0, @as(i64, @intCast((count - 1) / rows * rows))));
+            },
+            .category => |delta| {
+                if (self.categories.len == 0) return;
+                const next: i64 = @as(i64, @intCast(self.category)) + delta;
+                self.category = @intCast(std.math.clamp(next, 0, @as(i64, @intCast(self.categories.len - 1))));
+                self.offset = 0;
             },
             .settings => {
                 self.return_screen = self.screen;

@@ -20,6 +20,8 @@ pub const Session = struct {
     library_arena: ?std.heap.ArenaAllocator = null,
     /// When the reader last recorded progress, for reading time.
     last_progress_ms: ?u64 = null,
+    /// Owns the model's rows and category names.
+    rows_arena: ?std.heap.ArenaAllocator = null,
     /// The chapter after the one being read, as libtachi's reader list
     /// orders and skips them: an index into the title's chapters.
     next_chapter: ?usize = null,
@@ -127,6 +129,41 @@ pub const Session = struct {
         self.model.clearReading();
         if (self.library_arena) |*old| old.deinit();
         self.library_arena = arena;
+        try self.refreshRows();
+    }
+
+    /// Lays out the library and chapter lists as libtachi's views do: the
+    /// current category's titles, filtered, sorted and searched, and the
+    /// current title's chapters by its chapter flags.
+    pub fn refreshRows(self: *Session) !void {
+        const model = self.model;
+        var arena: std.heap.ArenaAllocator = .init(model.gpa);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        const settings: tachi.settings.Settings = if (self.browser.engine) |engine| try engine.loadSettings(a) else .{};
+        const groups = try tachi.views.libraryView(a, model.library, try tachi.views.libraryOptions(a, model.library, settings, model.query_text, 0));
+        const names = try a.alloc([]const u8, groups.len);
+        for (groups, names) |group, *name| name.* = if (group.category.id == 0) "Default" else group.category.name;
+        if (model.category >= groups.len) model.category = 0;
+        var titles: std.ArrayList(usize) = .empty;
+        if (groups.len > 0) for (groups[model.category].entries) |entry| {
+            try titles.append(a, (@intFromPtr(entry.manga) - @intFromPtr(model.library.manga.ptr)) / @sizeOf(lib.Manga));
+        };
+        var chapters: ?[]const usize = null;
+        if (model.manga < model.library.manga.len) {
+            const manga = model.library.manga[model.manga];
+            var index: std.StringHashMapUnmanaged(usize) = .empty;
+            for (manga.chapters, 0..) |ch, i| try index.put(a, ch.id, i);
+            const shown = try tachi.views.chapterList(a, manga, settings.library.downloaded_only);
+            const rows = try a.alloc(usize, shown.len);
+            for (shown, rows) |ch, *row| row.* = index.get(ch.id).?;
+            chapters = rows;
+        }
+        model.title_rows = titles.items;
+        model.chapter_rows = chapters;
+        model.categories = names;
+        if (self.rows_arena) |*old| old.deinit();
+        self.rows_arena = arena;
     }
     /// Moves reading progress from the pre-libtachi preferences file into
     /// libtachi's reading state, once.
@@ -148,12 +185,16 @@ pub const Session = struct {
         self.browser.deinit(self.model.gpa);
         if (self.activity) |activity| activity(false);
         if (self.library_arena) |*arena| arena.deinit();
+        if (self.rows_arena) |*arena| arena.deinit();
     }
     pub fn act(self: *Session, action: lib.Action) !void {
         const before = self.model.current();
         const old_page = self.model.page;
         const old_screen = self.model.screen;
+        const old_manga = self.model.manga;
         try self.model.dispatch(action);
+        const lists = self.model.screen == .library or self.model.screen == .chapters;
+        if (lists and (action == .search or action == .category or old_screen != self.model.screen or old_manga != self.model.manga or self.model.title_rows == null)) try self.refreshRows();
         if (self.model.screen == .reader and (old_screen != .reader or old_page != self.model.page or before == null or !std.mem.eql(u8, before.?.id, self.model.current().?.id))) {
             self.status = "";
             self.download_error = false;

@@ -255,12 +255,21 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
 }
 fn list(ui: *app.Ui, model: *const lib.Model) !void {
     const is_library = model.screen == .library;
-    const count = if (is_library) model.titleCount() else model.library.manga[model.manga].chapters.len;
+    const count = if (is_library) model.titleCount() else model.chapterCount();
     {
         try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .all(10), .child_gap = 4 } });
         defer ui.close();
         if (is_library and model.library.manga.len > 0) try onlineButton(ui, "update-library", "Update library", .update_all);
         if (is_library) try app.widgets.searchField(ui, "query", .{ .text = model.query_text, .placeholder = "Search title or author", .on_change = ui.messages(Root).handler(.query) });
+        if (is_library and model.categories.len > 1) {
+            try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 8, .child_alignment = .center_left } });
+            defer ui.close();
+            try app.widgets.button(ui, "previous-category", .{ .label = "<", .enabled = model.category > 0, .on_click = ui.messages(Root).bind(.{ .act = @as(lib.Action, .{ .category = -1 }) }) });
+            ui.spacer();
+            try text(ui, model.categories[model.category], 14, 0);
+            ui.spacer();
+            try app.widgets.button(ui, "next-category", .{ .label = ">", .enabled = model.category + 1 < model.categories.len, .on_click = ui.messages(Root).bind(.{ .act = @as(lib.Action, .{ .category = 1 }) }) });
+        }
         if (!is_library) {
             try text(ui, model.library.manga[model.manga].title, 17, 0);
             if (model.library.manga[model.manga].source_id != null) try onlineButton(ui, "refresh-chapters", "Refresh chapters", .refresh_book);
@@ -276,7 +285,7 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
             try text(ui, "Local folders can be scanned in Settings.", 12, 60);
         }
         for (@min(model.offset, count)..@min(model.offset + lib.Model.rows, count)) |row| {
-            const i = if (is_library) model.titleIndex(row) else row;
+            const i = if (is_library) model.titleIndex(row) else model.chapterIndex(row);
             const title = if (is_library) model.library.manga[i].title else model.library.manga[model.manga].chapters[i].title;
             const on = ui.messages(Root);
             const key = .{ .row = i };
