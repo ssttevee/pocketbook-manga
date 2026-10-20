@@ -352,3 +352,31 @@ test "device UI reads a chapter online through libtachi's chapter cache" {
     // Still not a download.
     try std.testing.expectEqual(0, model.library.manga[0].chapters[0].pages.len);
 }
+
+test "device UI asks before adding a title the library may already have" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = root });
+    engine.execute_fn = fixtureExecutor;
+    try engine.store.save(a, .{ .manga = &.{.{ .id = "7:/other", .title = "Fixture Story", .source_id = 7 }} });
+    var model: lib.Model = .{ .gpa = a };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = root };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    try session.reloadLibrary();
+    try smoke.start(std.testing.allocator, std.testing.io, &session);
+    defer smoke.stop();
+    try smoke.tapText("Browse");
+    try finish(&session);
+    try smoke.tapText("Fixture Source");
+    try finish(&session);
+    try smoke.tapText("Fixture Story");
+    try std.testing.expectEqual(lib.Screen.duplicate, model.screen);
+    try smoke.tapText("Add anyway");
+    try finish(&session);
+    try std.testing.expectEqual(lib.Screen.chapters, model.screen);
+}

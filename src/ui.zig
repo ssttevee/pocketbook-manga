@@ -10,7 +10,7 @@ pub const OnlineCommand = union(enum) { toggle_pin, toggle_hidden, show_hidden, 
 pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const State = struct { focused: bool = false, tapping: bool = false, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { act: lib.Action, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { act: lib.Action, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
@@ -20,6 +20,7 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
             if (session.browser.busy == null) ctx.focus("screen");
         },
         .online => |command| try onlineUpdate(session, command, ctx),
+        .confirm_add => |add| if (session.browser.busy == null) session.confirmAdd(add),
         .global_query => |query| if (session.browser.busy == null and std.mem.trim(u8, query, " ").len > 0) {
             if (session.browser.migrate_from) |id| session.model.gpa.free(id);
             session.browser.migrate_from = null;
@@ -262,6 +263,8 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             .categories => "Categories",
             .global_search => if (session.browser.migrate_from != null) "Migrate to" else "Search all",
             .languages => "Languages",
+            .stats => "Statistics",
+            .duplicate => "Already in library?",
         }, 19, 0);
         ui.spacer();
         if (model.screen == .library and session.browser.busy == null) try button(ui, "browse", "Browse", .help);
@@ -324,6 +327,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             try button(ui, "engine-settings", "Library settings", .{ .feed = .engine_settings });
             try button(ui, "categories", "Categories", .{ .feed = .categories });
             try button(ui, "backup", "Backup and restore", .{ .feed = .backup });
+            try button(ui, "stats", "Statistics", .{ .feed = .stats });
             ui.spacer();
             try app.widgets.button(ui, "quit", .{ .label = "Close PocketManga", .on_click = on.bind(.quit) });
         },
@@ -331,6 +335,8 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         .updates, .history, .queue => try feedView(ui, session),
         .chapter_menu, .title_menu => try menuView(ui, model),
         .engine_settings => try settingsView(ui, session),
+        .stats => try statsView(ui, session),
+        .duplicate => try duplicateView(ui, session),
         .backup => try backupView(ui, session),
         .categories => try categoriesView(ui, model),
     }
@@ -465,6 +471,32 @@ fn settingsView(ui: *app.Ui, session: *const Session) !void {
         ui.spacer();
         try app.widgets.button(ui, "next-settings", .{ .label = "Next", .enabled = model.offset + lib.Model.rows < settings.len, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = 1 }) }) });
     }
+}
+
+/// libtachi's library statistics.
+fn statsView(ui: *app.Ui, session: *const Session) !void {
+    const s = session.stats;
+    try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 8 } });
+    defer ui.close();
+    try ui.print(.{ .font_size = 15 }, "{d} titles, {d} completed, {d} started, {d} local", .{ s.titles, s.completed, s.started, s.local });
+    try ui.print(.{ .font_size = 15 }, "{d} of {d} chapters read", .{ s.read_chapters, s.chapters });
+    try ui.print(.{ .font_size = 15 }, "{d} chapters downloaded", .{s.downloaded_chapters});
+    const minutes = @divFloor(s.read_ms, std.time.ms_per_min);
+    try ui.print(.{ .font_size = 15 }, "{d} h {d} min read", .{ @divFloor(minutes, 60), @mod(minutes, 60) });
+    try ui.print(.{ .font_size = 15 }, "{d} titles a library update checks", .{s.update_candidates});
+}
+
+/// Mihon's question before adding a title the library may already have.
+fn duplicateView(ui: *app.Ui, session: *const Session) !void {
+    const pending = session.pending_add orelse return;
+    const on = ui.messages(Root);
+    try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 10 } });
+    defer ui.close();
+    try text(ui, pending.manga.title, 16, 0);
+    try text(ui, "Your library has a title like this:", 13, 40);
+    for (pending.matches) |name| try text(ui, name, 14, 0);
+    try app.widgets.button(ui, "add-anyway", .{ .label = "Add anyway", .on_click = on.bind(.{ .confirm_add = true }) });
+    try app.widgets.button(ui, "dont-add", .{ .label = "Don't add", .on_click = on.bind(.{ .confirm_add = false }) });
 }
 
 /// Backups to create and restore, and a Mihon downloads folder to swap.
@@ -675,10 +707,7 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
             model.screen = .catalog;
             startTitles(session);
         },
-        .pick_title => |i| {
-            const manga = b.titles.?.result.page.?.mangas[i];
-            session.start(.{ .add = .{ .source = b.source_id, .manga = manga } });
-        },
+        .pick_title => |i| try session.addTitle(b.source_id, b.titles.?.result.page.?.mangas[i]),
         .extension => |i| {
             const extension = b.extensions.?.result.extensions[i];
             if (!extension.supported) {
@@ -770,7 +799,7 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
                 session.start(.{ .migrate = .{ .from = from, .source = hit.source, .manga = hit.manga } });
                 a.free(from);
                 b.migrate_from = null;
-            } else session.start(.{ .add = .{ .source = hit.source, .manga = hit.manga } });
+            } else try session.addTitle(hit.source, hit.manga);
         },
         .queue_start, .queue_pause, .queue_clear => if (b.engine) |engine| {
             switch (command) {

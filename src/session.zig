@@ -27,6 +27,12 @@ pub const Session = struct {
     rows_arena: ?std.heap.ArenaAllocator = null,
     /// Owns the model's online chapter and pages.
     online_arena: ?std.heap.ArenaAllocator = null,
+    /// libtachi's library statistics, when shown.
+    stats: tachi.views.Stats = .{},
+    /// A title about to be added that libtachi thinks the library already
+    /// has, with the titles it matched.
+    pending_add: ?struct { source: i64, manga: tachi.models.Manga, matches: []const []const u8 } = null,
+    pending_arena: ?std.heap.ArenaAllocator = null,
     /// libtachi's settings as the settings screen shows them.
     settings: tachi.settings.Settings = .{},
     settings_arena: ?std.heap.ArenaAllocator = null,
@@ -152,6 +158,38 @@ pub const Session = struct {
         if (self.library_arena) |*old| old.deinit();
         self.library_arena = arena;
         try self.refreshRows();
+    }
+
+    /// Adds a browsed title, unless libtachi finds it may already be in
+    /// the library: then asks first, as Mihon does.
+    pub fn addTitle(self: *Session, source: i64, manga: tachi.models.Manga) !void {
+        const engine = self.browser.engine orelse return;
+        var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        const candidate: tachi.library.Manga = .{ .id = try tachi.library.mangaId(a, source, manga.url), .title = manga.title };
+        const found = try engine.duplicates(a, candidate);
+        if (found.len == 0) {
+            arena.deinit();
+            self.start(.{ .add = .{ .source = source, .manga = manga } });
+            return;
+        }
+        const names = try a.alloc([]const u8, found.len);
+        for (found, names) |m, *name| name.* = try a.dupe(u8, m.title);
+        const json = try std.json.Stringify.valueAlloc(a, manga, .{});
+        const copy = try std.json.parseFromSliceLeaky(tachi.models.Manga, a, json, tachi.models.parse_options);
+        if (self.pending_arena) |*old| old.deinit();
+        self.pending_arena = arena;
+        self.pending_add = .{ .source = source, .manga = copy, .matches = names };
+        self.model.screen = .duplicate;
+    }
+
+    /// Answers the duplicate question: add anyway, or not.
+    pub fn confirmAdd(self: *Session, add: bool) void {
+        const pending = self.pending_add orelse return;
+        self.model.screen = .catalog;
+        if (add) self.start(.{ .add = .{ .source = pending.source, .manga = pending.manga } });
+        self.pending_add = null;
     }
 
     /// Opens a chapter read online with the pages libtachi loaded.
@@ -453,6 +491,7 @@ pub const Session = struct {
         if (self.library_arena) |*arena| arena.deinit();
         if (self.rows_arena) |*arena| arena.deinit();
         if (self.online_arena) |*arena| arena.deinit();
+        if (self.pending_arena) |*arena| arena.deinit();
         if (self.feed_arena) |*arena| arena.deinit();
         if (self.settings_arena) |*arena| arena.deinit();
     }
@@ -529,6 +568,11 @@ pub const Session = struct {
         if (feed and old_screen != self.model.screen) try self.refreshFeed();
         if (self.model.screen == .engine_settings and old_screen != .engine_settings) try self.loadSettings();
         if (self.model.screen == .backup and old_screen != .backup) try self.refreshBackups();
+        if (self.model.screen == .stats and old_screen != .stats) if (self.browser.engine) |engine| {
+            var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+            defer arena.deinit();
+            self.stats = try engine.stats(arena.allocator());
+        };
         if (self.model.screen == .reader and (old_screen != .reader or old_page != self.model.page or before == null or !std.mem.eql(u8, before.?.id, self.model.current().?.id))) {
             self.status = "";
             self.download_error = false;
