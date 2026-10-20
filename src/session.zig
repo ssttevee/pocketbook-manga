@@ -3,6 +3,9 @@ const tachi = @import("tachi");
 const lib = @import("library.zig");
 const Browser = @import("browser.zig").Browser;
 const Image = @import("reader-image");
+/// A row of the updates, history or download queue screens.
+pub const FeedRow = struct { pick: lib.Pick, title: []const u8, detail: []const u8 };
+
 pub const Session = struct {
     model: *lib.Model,
     io: std.Io,
@@ -22,6 +25,9 @@ pub const Session = struct {
     last_progress_ms: ?u64 = null,
     /// Owns the model's rows and category names.
     rows_arena: ?std.heap.ArenaAllocator = null,
+    /// The updates, history or queue list being shown, and what owns it.
+    feed: []const FeedRow = &.{},
+    feed_arena: ?std.heap.ArenaAllocator = null,
     /// The chapter after the one being read, as libtachi's reader list
     /// orders and skips them: an index into the title's chapters.
     next_chapter: ?usize = null,
@@ -70,6 +76,7 @@ pub const Session = struct {
     }
     pub fn poll(self: *Session) !void {
         defer self.updateActivity();
+        if (self.model.screen == .queue and self.browser.busy == null) try self.refreshFeed();
         const job = self.browser.busy orelse return;
         if (!job.done.load(.acquire)) return;
         job.join();
@@ -132,6 +139,74 @@ pub const Session = struct {
         try self.refreshRows();
     }
 
+    /// Fills the updates, history or download queue list from libtachi.
+    pub fn refreshFeed(self: *Session) !void {
+        const model = self.model;
+        var arena: std.heap.ArenaAllocator = .init(model.gpa);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        const settings: tachi.settings.Settings = if (self.browser.engine) |engine| try engine.loadSettings(a) else .{};
+        var rows: std.ArrayList(FeedRow) = .empty;
+        // Rows map back to the model's library by chapter id.
+        var picks: std.StringHashMapUnmanaged(lib.Pick) = .empty;
+        for (model.library.manga, 0..) |m, mi| for (m.chapters, 0..) |ch, ci| try picks.put(a, ch.id, .{ .manga = mi, .chapter = ci });
+        switch (model.screen) {
+            .updates, .history => {
+                const now = std.Io.Clock.real.now(self.io).toMilliseconds();
+                const u = settings.updates;
+                // The store has reading state the model hasn't reloaded.
+                const library = if (self.browser.engine) |engine| try engine.loadLibrary(a) else model.library;
+                const items = if (model.screen == .updates) try tachi.views.updates(a, library, .{
+                    .downloaded = u.downloaded,
+                    .unread = u.unread,
+                    .started = u.started,
+                    .bookmarked = u.bookmarked,
+                    .hide_excluded_scanlators = u.hide_excluded_scanlators,
+                    .categories = u.categories,
+                    .exclude_categories = u.exclude_categories,
+                    .downloaded_only = settings.library.downloaded_only,
+                    .now = @intCast(now),
+                }) else try tachi.views.history(a, library, "");
+                for (items) |item| {
+                    const pick = picks.get(item.chapter.id) orelse continue;
+                    const ch = item.chapter;
+                    try rows.append(a, .{ .pick = pick, .title = item.manga.title, .detail = try std.fmt.allocPrint(a, "{s}  /  {s}", .{ ch.title, if (ch.read) "Read" else if (ch.last_read != 0) "Reading" else "Unread" }) });
+                }
+                if (model.screen == .updates) if (self.browser.engine) |engine| engine.markUpdatesSeen() catch {};
+            },
+            .queue => if (self.browser.engine) |engine| {
+                for (try engine.queue.snapshot(engine, a)) |entry| {
+                    const pick = picks.get(entry.chapter_id) orelse continue;
+                    const m = model.library.manga[pick.manga];
+                    const detail = switch (entry.status) {
+                        .queued => "Queued",
+                        .downloading => try std.fmt.allocPrint(a, "Downloading {d}/{d}", .{ entry.pages_done, entry.pages_total }),
+                        .failed => try std.fmt.allocPrint(a, "Failed: {s}", .{entry.failure orelse "error"}),
+                    };
+                    try rows.append(a, .{ .pick = pick, .title = m.title, .detail = try std.fmt.allocPrint(a, "{s}  /  {s}", .{ m.chapters[pick.chapter].title, detail }) });
+                }
+            },
+            else => {},
+        }
+        model.feed_count = rows.items.len;
+        if (model.offset >= rows.items.len) model.offset = 0;
+        self.feed = rows.items;
+        if (self.feed_arena) |*old| old.deinit();
+        self.feed_arena = arena;
+    }
+
+    /// Queues the current title's unread chapters that aren't downloaded.
+    pub fn queueUnread(self: *Session) !void {
+        const engine = self.browser.engine orelse return;
+        const model = self.model;
+        if (model.manga >= model.library.manga.len) return;
+        var ids: std.ArrayList([]const u8) = .empty;
+        defer ids.deinit(model.gpa);
+        for (model.library.manga[model.manga].chapters) |ch| if (!model.readState(ch).read and ch.pages.len == 0) try ids.append(model.gpa, ch.id);
+        const added = try engine.queue.enqueue(engine, ids.items, true);
+        self.status = try std.fmt.allocPrint(model.gpa, "{d} chapters queued", .{added});
+    }
+
     /// Lays out the library and chapter lists as libtachi's views do: the
     /// current category's titles, filtered, sorted and searched, and the
     /// current title's chapters by its chapter flags.
@@ -186,6 +261,7 @@ pub const Session = struct {
         if (self.activity) |activity| activity(false);
         if (self.library_arena) |*arena| arena.deinit();
         if (self.rows_arena) |*arena| arena.deinit();
+        if (self.feed_arena) |*arena| arena.deinit();
     }
     pub fn act(self: *Session, action: lib.Action) !void {
         const before = self.model.current();
@@ -195,6 +271,8 @@ pub const Session = struct {
         try self.model.dispatch(action);
         const lists = self.model.screen == .library or self.model.screen == .chapters;
         if (lists and (action == .search or action == .category or old_screen != self.model.screen or old_manga != self.model.manga or self.model.title_rows == null)) try self.refreshRows();
+        const feed = self.model.screen == .updates or self.model.screen == .history or self.model.screen == .queue;
+        if (feed and old_screen != self.model.screen) try self.refreshFeed();
         if (self.model.screen == .reader and (old_screen != .reader or old_page != self.model.page or before == null or !std.mem.eql(u8, before.?.id, self.model.current().?.id))) {
             self.status = "";
             self.download_error = false;

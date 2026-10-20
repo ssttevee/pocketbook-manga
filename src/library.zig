@@ -31,8 +31,9 @@ pub fn writeJson(gpa: std.mem.Allocator, io: Io, path: []const u8, value: anytyp
     try Io.Dir.cwd().rename(temp, Io.Dir.cwd(), path, io);
 }
 
-pub const Screen = enum { library, chapters, reader, settings, sources, extensions, catalog, source_settings };
-pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, turn: i32, next_chapter, list_page: i32, category: i32, settings, help, rtl, refresh };
+pub const Screen = enum { library, chapters, reader, settings, sources, extensions, catalog, source_settings, updates, history, queue };
+pub const Pick = struct { manga: usize, chapter: usize };
+pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, open_chapter: Pick, turn: i32, next_chapter, list_page: i32, category: i32, feed: Screen, settings, help, rtl, refresh };
 pub const Model = struct {
     gpa: std.mem.Allocator,
     library: Library = .{},
@@ -61,6 +62,8 @@ pub const Model = struct {
     /// Category names in libtachi's order, and the one shown.
     categories: []const []const u8 = &.{},
     category: usize = 0,
+    /// Rows in the updates, history or queue list the session shows.
+    feed_count: usize = 0,
     pub const rows = 7;
     pub const ReadState = struct { page: u32, read: bool, started: bool };
 
@@ -137,6 +140,14 @@ pub const Model = struct {
                 self.screen = .reader;
                 try self.remember();
             },
+            .open_chapter => |pick| if (pick.manga < self.library.manga.len) {
+                self.manga = pick.manga;
+                try self.dispatch(.{ .read = pick.chapter });
+            },
+            .feed => |screen| {
+                self.screen = screen;
+                self.offset = 0;
+            },
             .turn => |delta| {
                 if (self.screen != .reader) return;
                 const ch = self.current() orelse return;
@@ -170,6 +181,7 @@ pub const Model = struct {
                 const count = switch (self.screen) {
                     .library => self.titleCount(),
                     .chapters => self.chapterCount(),
+                    .updates, .history, .queue => self.feed_count,
                     else => return,
                 };
                 if (count == 0) return;

@@ -42,6 +42,18 @@ test "drawn UI opens chapters, turns pages, resumes and saves completion" {
     try h.click("Aa");
     try h.click("Right to left (manga)");
     try std.testing.expect(!model.prefs.rtl);
+    // History lists the chapter read last; tapping it opens the reader.
+    try h.click("Back");
+    try h.click("Back");
+    try h.click("Back");
+    try std.testing.expectEqual(lib.Screen.library, model.screen);
+    try h.click("History");
+    try std.testing.expectEqual(lib.Screen.history, model.screen);
+    try std.testing.expectEqual(1, session.feed.len);
+    try std.testing.expectEqual(1, session.feed[0].pick.chapter);
+    try h.click("Test Story");
+    try std.testing.expectEqual(lib.Screen.reader, model.screen);
+    try std.testing.expectEqual(1, model.chapter);
 }
 test "page bounds and stale progress are clamped" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);

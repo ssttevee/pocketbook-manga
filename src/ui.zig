@@ -6,7 +6,7 @@ const Session = @import("session.zig").Session;
 const Root = @This();
 const tachi = @import("tachi");
 const models = tachi.models;
-pub const OnlineCommand = union(enum) { extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel };
+pub const OnlineCommand = union(enum) { extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear };
 pub const State = struct { focused: bool = false, tapping: bool = false, reader_updates: u8 = 0 };
 pub const Props = struct {};
 pub const Msg = union(enum) { act: lib.Action, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
@@ -61,17 +61,24 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                 return;
             }
             const effective: lib.Action = if (action == .next_chapter) .{ .read = session.next_chapter orelse return } else action;
-            if (effective == .read) {
-                const book = session.model.library.manga[session.model.manga];
-                if (effective.read < book.chapters.len) {
-                    const chapter = book.chapters[effective.read];
+            const pick: ?lib.Pick = switch (effective) {
+                .read => |i| .{ .manga = session.model.manga, .chapter = i },
+                .open_chapter => |p| p,
+                else => null,
+            };
+            // A chapter not downloaded yet is downloaded first, then opened.
+            if (pick) |p| if (p.manga < session.model.library.manga.len) {
+                const book = session.model.library.manga[p.manga];
+                if (p.chapter < book.chapters.len) {
+                    const chapter = book.chapters[p.chapter];
                     if (chapter.pages.len == 0 and chapter.remote != null) {
+                        session.model.manga = p.manga;
                         try session.browser.setPendingChapter(session.model.gpa, chapter.id);
                         session.start(.{ .download = chapter.id });
                         return;
                     }
                 }
-            }
+            };
             if (effective == .back) session.browser.offset = 0;
             try session.act(effective);
             if (session.model.screen == .reader) refreshReader(state, session, ctx);
@@ -173,7 +180,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
     const session = ui.use(Session);
     const model = session.model;
     const on = ui.messages(Root);
-    if (session.browser.busy != null) try ui.every("network-poll", .fromMilliseconds(200), on.bind(.poll));
+    if (session.browser.busy != null) try ui.every("network-poll", .fromMilliseconds(200), on.bind(.poll)) else if (model.screen == .queue) try ui.every("queue-poll", .fromMilliseconds(2000), on.bind(.poll));
     if (!state.focused) try ui.after("initial-focus", .fromMilliseconds(0), on.bind(.focus));
     try ui.open("screen", .{
         .layout = .{ .sizing = .grow(.{}), .axis = .y },
@@ -195,6 +202,9 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             .extensions => "Extensions",
             .catalog => "Browse",
             .source_settings => "Source settings",
+            .updates => "Updates",
+            .history => "History",
+            .queue => "Downloads",
         }, 19, 0);
         ui.spacer();
         if (model.screen == .library and session.browser.busy == null) try button(ui, "browse", "Browse", .help);
@@ -250,6 +260,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             try app.widgets.button(ui, "quit", .{ .label = "Close PocketManga", .on_click = on.bind(.quit) });
         },
         .sources, .extensions, .catalog, .source_settings => try browserView(ui, session),
+        .updates, .history, .queue => try feedView(ui, session),
     }
     if (session.status.len > 0 and !session.download_error and session.browser.busy == null) try text(ui, session.status, 11, 0);
 }
@@ -259,7 +270,14 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
     {
         try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .all(10), .child_gap = 4 } });
         defer ui.close();
-        if (is_library and model.library.manga.len > 0) try onlineButton(ui, "update-library", "Update library", .update_all);
+        if (is_library) {
+            try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 6, .child_alignment = .center_left } });
+            defer ui.close();
+            if (model.library.manga.len > 0) try onlineButton(ui, "update-library", "Update", .update_all);
+            try button(ui, "updates", "Updates", .{ .feed = .updates });
+            try button(ui, "history", "History", .{ .feed = .history });
+            try button(ui, "queue", "Downloads", .{ .feed = .queue });
+        }
         if (is_library) try app.widgets.searchField(ui, "query", .{ .text = model.query_text, .placeholder = "Search title or author", .on_change = ui.messages(Root).handler(.query) });
         if (is_library and model.categories.len > 1) {
             try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 8, .child_alignment = .center_left } });
@@ -272,7 +290,12 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
         }
         if (!is_library) {
             try text(ui, model.library.manga[model.manga].title, 17, 0);
-            if (model.library.manga[model.manga].source_id != null) try onlineButton(ui, "refresh-chapters", "Refresh chapters", .refresh_book);
+            if (model.library.manga[model.manga].source_id != null) {
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 6, .child_alignment = .center_left } });
+                defer ui.close();
+                try onlineButton(ui, "refresh-chapters", "Refresh chapters", .refresh_book);
+                try onlineButton(ui, "queue-unread", "Queue unread", .queue_unread);
+            }
         }
         try ui.print(.{ .font_size = 12, .color = .gray(60) }, "{d} {s}  /  Library", .{ count, if (is_library) (if (count == 1) "title" else "titles") else (if (count == 1) "chapter" else "chapters") });
     }
@@ -314,6 +337,51 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
         try ui.print(.{ .font_size = 12 }, "{d}/{d}", .{ if (count == 0) @as(usize, 0) else model.offset / lib.Model.rows + 1, (count + lib.Model.rows - 1) / lib.Model.rows });
         ui.spacer();
         try app.widgets.button(ui, "next-list", .{ .label = "Next", .enabled = model.offset + lib.Model.rows < count, .on_click = ui.messages(Root).bind(.{ .act = @as(lib.Action, .{ .list_page = 1 }) }) });
+    }
+}
+/// Updates, history and the download queue: chapters across titles.
+fn feedView(ui: *app.Ui, session: *const Session) !void {
+    const model = session.model;
+    const count = session.feed.len;
+    const on = ui.messages(Root);
+    if (model.screen == .queue) {
+        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .all(10), .child_gap = 6, .child_alignment = .center_left } });
+        defer ui.close();
+        try onlineButton(ui, "queue-start", "Start", .queue_start);
+        try onlineButton(ui, "queue-pause", "Pause", .queue_pause);
+        try onlineButton(ui, "queue-clear", "Clear", .queue_clear);
+    }
+    {
+        try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .x(10), .child_gap = 4 } });
+        defer ui.close();
+        if (count == 0) try text(ui, switch (model.screen) {
+            .updates => "No new chapters",
+            .history => "Nothing read yet",
+            else => "No downloads queued",
+        }, 16, 0);
+        for (@min(model.offset, count)..@min(model.offset + lib.Model.rows, count)) |row| {
+            const item = session.feed[row];
+            const key = .{ .feed = row };
+            try ui.open(key, .{
+                .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(37) }, .axis = .y, .padding = .init(8, 8, 3, 3), .child_gap = 1 },
+                .background_color = rowFill(ui, key),
+                .border = .{ .color = .gray(130), .widths = .{ .bottom = 1 } },
+                .on_click = if (model.screen == .queue) null else on.bind(.{ .act = @as(lib.Action, .{ .open_chapter = item.pick }) }),
+            });
+            try text(ui, item.title, 14, 0);
+            try text(ui, item.detail, 10, 60);
+            ui.close();
+        }
+        ui.spacer();
+    }
+    {
+        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .all(8), .child_gap = 8, .child_alignment = .center_left } });
+        defer ui.close();
+        try app.widgets.button(ui, "previous-feed", .{ .label = "Previous", .enabled = model.offset > 0, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = -1 }) }) });
+        ui.spacer();
+        try ui.print(.{ .font_size = 12 }, "{d}/{d}", .{ if (count == 0) @as(usize, 0) else model.offset / lib.Model.rows + 1, (count + lib.Model.rows - 1) / lib.Model.rows });
+        ui.spacer();
+        try app.widgets.button(ui, "next-feed", .{ .label = "Next", .enabled = model.offset + lib.Model.rows < count, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = 1 }) }) });
     }
 }
 fn reader(ui: *app.Ui, session: *const Session) !void {
@@ -455,6 +523,15 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
         .update_all => session.start(.{ .update_library = .{} }),
         .scan => session.start(.scan_local),
         .cancel => {},
+        .queue_unread => try session.queueUnread(),
+        .queue_start, .queue_pause, .queue_clear => if (b.engine) |engine| {
+            switch (command) {
+                .queue_start => try engine.queue.start(engine),
+                .queue_pause => engine.queue.pause(engine),
+                else => try engine.queue.clear(engine),
+            }
+            try session.refreshFeed();
+        },
     }
     ctx.focus("screen");
 }
