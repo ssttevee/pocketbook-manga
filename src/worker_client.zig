@@ -128,31 +128,29 @@ pub const Client = struct {
         while (true) {
             const response = try wire.receiveTimed(engine.io, self.fd, a);
             if (response.version != p.version or response.id != id) return error.WorkerProtocolMismatch;
-            if (response.kind == .ready) {
-                if (!self.ready.swap(true, .acq_rel)) {
-                    job.worker_start_ms = wire.pm_now_ms() - self.spawned_ms;
-                    std.log.info("worker ready startup_ms={d}", .{job.worker_start_ms});
-                }
-                job.setPhase(.operation);
-                continue;
-            }
-            if (response.kind == .loading) {
-                if (response.extension) |name| job.setExtensionLoading(name) else job.setPhase(.operation);
-                continue;
-            }
-            job.pages_done.store(response.pages_done, .release);
-            job.pages_total.store(response.pages_total, .release);
-            self.last_rss_kib = response.rss_kib;
             switch (response.kind) {
-                .ready, .loading => unreachable,
-                .progress => {},
-                .failure => {
-                    job.failure = response.failure orelse "Worker failed";
-                    return error.ExtensionFailure;
+                .ready => {
+                    if (!self.ready.swap(true, .acq_rel)) {
+                        job.worker_start_ms = wire.pm_now_ms() - self.spawned_ms;
+                        std.log.info("worker ready startup_ms={d}", .{job.worker_start_ms});
+                    }
+                    job.setPhase(.operation);
                 },
-                .result => {
-                    job.result = response.result orelse return error.InvalidWorkerResult;
-                    return;
+                .loading => {
+                    if (response.extension) |name| job.setExtensionLoading(name) else job.setPhase(.operation);
+                },
+                .progress, .failure, .result => {
+                    job.pages_done.store(response.pages_done, .release);
+                    job.pages_total.store(response.pages_total, .release);
+                    self.last_rss_kib = response.rss_kib;
+                    if (response.kind == .failure) {
+                        job.failure = response.failure orelse "Worker failed";
+                        return error.ExtensionFailure;
+                    }
+                    if (response.kind == .result) {
+                        job.result = response.result orelse return error.InvalidWorkerResult;
+                        return;
+                    }
                 },
             }
         }
