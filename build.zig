@@ -3,12 +3,12 @@ const UiModules = struct {
     fabrum: *std.Build.Module,
     platform: *std.Build.Module,
     image: *std.Build.Module,
-    fn imports(self: UiModules, b: *std.Build) []const std.Build.Module.Import {
-        return b.allocator.dupe(std.Build.Module.Import, &.{
+    fn imports(self: UiModules) [3]std.Build.Module.Import {
+        return .{
             .{ .name = "fabrum", .module = self.fabrum },
             .{ .name = "fabrum-platform-inkview", .module = self.platform },
             .{ .name = "reader-image", .module = self.image },
-        }) catch @panic("OOM");
+        };
     }
 };
 fn uiModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) UiModules {
@@ -24,11 +24,12 @@ fn uiModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const host_ui = uiModules(b, b.graph.host, optimize);
+    const host_imports = host_ui.imports();
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/tests.zig"),
         .target = b.graph.host,
         .optimize = optimize,
-        .imports = host_ui.imports(b),
+        .imports = &host_imports,
         .link_libc = true,
     }) });
     tests.root_module.addCSourceFile(.{ .file = b.path("src/posix_compat.c"), .flags = &.{} });
@@ -37,18 +38,19 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/preview.zig"),
         .target = b.graph.host,
         .optimize = optimize,
-        .imports = host_ui.imports(b),
+        .imports = &host_imports,
         .link_libc = true,
     }) });
     preview.root_module.addCSourceFile(.{ .file = b.path("src/posix_compat.c"), .flags = &.{} });
     b.step("preview", "Render sample screens through fake InkView into preview/").dependOn(&b.addRunArtifact(preview).step);
     const device_target = b.resolveTargetQuery(.{ .cpu_arch = .arm, .os_tag = .linux, .abi = .gnueabi, .cpu_model = .{ .explicit = &std.Target.arm.cpu.cortex_a7 }, .glibc_version = .{ .major = 2, .minor = 23, .patch = 0 } });
     const device_ui = uiModules(b, device_target, optimize);
+    const device_imports = device_ui.imports();
     const device = b.addExecutable(.{ .name = "pocketmanga.app", .root_module = b.createModule(.{
         .root_source_file = b.path("src/inkview.zig"),
         .target = device_target,
         .optimize = optimize,
-        .imports = device_ui.imports(b),
+        .imports = &device_imports,
         .link_libc = true,
     }) });
     device.root_module.addCSourceFile(.{ .file = b.path("src/posix_compat.c"), .flags = &.{} });
