@@ -251,7 +251,7 @@ pub const Session = struct {
                 for (try tachi.views.upcoming(a, library, settings.updates.upcoming_categories, settings.updates.upcoming_exclude_categories, @intCast(now), 0)) |m| {
                     const first = if (m.chapters.len > 0) m.chapters[0].id else continue;
                     const pick = picks.get(first) orelse continue;
-                    const days = @divFloor(m.next_update - @as(i64, @intCast(now)), std.time.ms_per_day);
+                    const days = std.math.divCeil(i64, m.next_update - @as(i64, @intCast(now)), std.time.ms_per_day) catch 0;
                     try rows.append(a, .{ .pick = .{ .manga = pick.manga, .chapter = 0 }, .title = m.title, .detail = if (days <= 0) "Expected today" else try std.fmt.allocPrint(a, "Expected in {d} days", .{days}) });
                 }
             },

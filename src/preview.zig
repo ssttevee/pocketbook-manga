@@ -84,7 +84,81 @@ pub fn main(init: std.process.Init) !void {
     try smoke.writeScreen(init.gpa, init.io, "preview/browse-extension-loading.pgm");
     session.browser.busy.?.cancel();
     try session.poll();
+    try libraryScreens(init, &session, &model);
     std.debug.print("Rendered 758x1024 application screens into preview/*.pgm\n", .{});
+}
+
+/// The screens over libtachi's library views and actions, from a library
+/// with categories, history, new chapters and a download queued.
+fn libraryScreens(init: std.process.Init, session: *Session, model: *lib.Model) !void {
+    const tachi = @import("tachi");
+    const io = init.io;
+    const a = model.gpa;
+    const dir = "preview/demo-library";
+    try std.Io.Dir.cwd().deleteTree(io, dir);
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    var engine: tachi.Engine = .init(a, io, tachi.backend.none, .{ .dir = dir });
+    defer engine.queue.deinit(&engine);
+    engine.execute_fn = @import("online_test.zig").fixtureExecutor;
+    const now = std.Io.Clock.real.now(io).toMilliseconds();
+    const day = std.time.ms_per_day;
+    try engine.store.save(a, .{
+        .manga = &.{
+            .{ .id = "42:/lantern", .title = "The Copper Lantern", .source_id = 42, .remote = .{ .url = "/lantern", .title = "The Copper Lantern", .status = 1 }, .categories = &.{1}, .date_added = now - 30 * day, .chapters = &.{
+                .{ .id = "42:/lantern/3", .title = "Chapter 3 - Embers", .number = 3, .source_order = 0, .scanlator = "Lamp Scans", .date_fetch = now - day, .date_upload = now - day, .remote = .{ .url = "/lantern/3", .name = "Chapter 3 - Embers" } },
+                .{ .id = "42:/lantern/2", .title = "Chapter 2 - The long road", .number = 2, .source_order = 1, .scanlator = "Lamp Scans", .last_page_read = 4, .last_read = now - 2 * std.time.ms_per_hour, .date_fetch = now - 40 * day, .remote = .{ .url = "/lantern/2", .name = "Chapter 2 - The long road" } },
+                .{ .id = "42:/lantern/1", .title = "Chapter 1 - A new beginning", .number = 1, .source_order = 2, .scanlator = "Other Group", .read = true, .last_read = now - day, .date_fetch = now - 40 * day, .remote = .{ .url = "/lantern/1", .name = "Chapter 1 - A new beginning" } },
+            } },
+            .{ .id = "42:/notebook", .title = "A Traveller's Notebook", .source_id = 42, .remote = .{ .url = "/notebook", .title = "A Traveller's Notebook", .status = 1 }, .categories = &.{2}, .next_update = now + 3 * day, .fetch_interval = 7, .chapters = &.{
+                .{ .id = "42:/notebook/1", .title = "Entry 1", .number = 1, .remote = .{ .url = "/notebook/1", .name = "Entry 1" } },
+            } },
+            .{ .id = "local:Observatory", .title = "Stories from the Observatory", .categories = &.{1}, .chapters = &.{
+                .{ .id = "local:Observatory/1", .title = "Night one", .pages = &.{"local/Observatory/1/1.png"} },
+            } },
+        },
+        .categories = &.{ .{ .id = 1, .name = "Reading", .order = 0, .flags = 0x40 }, .{ .id = 2, .name = "Later", .order = 1, .flags = 0x40 } },
+        .sources = &.{.{ .id = 42, .name = "Fixture Source", .lang = "en" }},
+    });
+    _ = try engine.queue.enqueue(&engine, &.{"42:/notebook/1"}, false);
+    session.root = dir;
+    session.browser.engine = &engine;
+    // The engine goes with this function.
+    defer session.browser.engine = null;
+    model.screen = .library;
+    model.offset = 0;
+    try session.reloadLibrary();
+    _ = smoke.fake.send(.show, 0, 0);
+    smoke.fake.advance(250);
+    try smoke.writeScreen(init.gpa, io, "preview/library-categories.pgm");
+    for ([_][]const u8{ "Updates", "History", "Downloads", "Upcoming" }) |screen| {
+        try smoke.tapText(screen);
+        var name_buf: [64]u8 = undefined;
+        try smoke.writeScreen(init.gpa, io, try std.fmt.bufPrint(&name_buf, "preview/{s}.pgm", .{screen}));
+        try smoke.tapText("Back");
+    }
+    try smoke.tapText("The Copper Lantern");
+    try smoke.tapText("...");
+    try smoke.writeScreen(init.gpa, io, "preview/chapter-menu.pgm");
+    try smoke.tapText("Back");
+    try smoke.tapText("Back");
+    try smoke.tapText("...");
+    try smoke.writeScreen(init.gpa, io, "preview/title-menu.pgm");
+    try smoke.tapText("Chapter options");
+    try smoke.writeScreen(init.gpa, io, "preview/chapter-options.pgm");
+    try smoke.tapText("Back");
+    try smoke.tapText("Back");
+    try smoke.tapText("Aa");
+    try smoke.tapText("Library settings");
+    try smoke.writeScreen(init.gpa, io, "preview/library-settings.pgm");
+    try smoke.tapText("Back");
+    try smoke.tapText("Categories");
+    try smoke.writeScreen(init.gpa, io, "preview/categories.pgm");
+    try smoke.tapText("Back");
+    try smoke.tapText("Backup and restore");
+    try smoke.writeScreen(init.gpa, io, "preview/backup.pgm");
+    try smoke.tapText("Back");
+    try smoke.tapText("Statistics");
+    try smoke.writeScreen(init.gpa, io, "preview/statistics.pgm");
 }
 
 fn finish(session: *Session) !void {

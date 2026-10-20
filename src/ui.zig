@@ -517,9 +517,9 @@ fn titleOptionsView(ui: *app.Ui, session: *const Session) !void {
     for ([_]Choice{
         .{ .label = try ui.fmt("Sort by {s}", .{sort}), .edit = .chapter_sort },
         .{ .label = if (flags.ascending) "Oldest first" else "Newest first", .edit = .chapter_direction },
-        .{ .label = try ui.fmt("Show {s}", .{tri(flags.unread, "unread only", "read only")}), .edit = .filter_unread },
-        .{ .label = try ui.fmt("Show {s}", .{tri(flags.downloaded, "downloaded only", "not downloaded only")}), .edit = .filter_downloaded },
-        .{ .label = try ui.fmt("Show {s}", .{tri(flags.bookmarked, "bookmarked only", "not bookmarked only")}), .edit = .filter_bookmarked },
+        .{ .label = try ui.fmt("Read: {s}", .{tri(flags.unread, "unread only", "read only")}), .edit = .filter_unread },
+        .{ .label = try ui.fmt("Downloads: {s}", .{tri(flags.downloaded, "downloaded only", "not downloaded")}), .edit = .filter_downloaded },
+        .{ .label = try ui.fmt("Bookmarks: {s}", .{tri(flags.bookmarked, "bookmarked only", "not bookmarked")}), .edit = .filter_bookmarked },
         .{ .label = if (manga.fetch_interval < 0) try ui.fmt("Update every {d} days", .{-manga.fetch_interval}) else if (manga.fetch_interval > 0) try ui.fmt("Update every {d} days (estimated)", .{manga.fetch_interval}) else "Update interval: estimated", .edit = .interval },
     }, 0..) |choice, n| try app.widgets.button(ui, .{ .option = n }, .{ .label = choice.label, .on_click = on.bind(.{ .edit = choice.edit }) });
     var arena: std.heap.ArenaAllocator = .init(model.gpa);
@@ -654,7 +654,7 @@ fn feedView(ui: *app.Ui, session: *const Session) !void {
         try onlineButton(ui, "queue-clear", "Clear", .queue_clear);
     }
     {
-        try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .x(10), .child_gap = 4 } });
+        try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .init(10, 10, 8, 0), .child_gap = 4 } });
         defer ui.close();
         if (count == 0) try text(ui, switch (model.screen) {
             .updates => "No new chapters",
