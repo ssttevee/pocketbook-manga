@@ -216,3 +216,27 @@ fn rememberWithAllocationFailures(a: std.mem.Allocator) !void {
 test "progress updates preserve borrowed entries and clean up every allocation failure" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, rememberWithAllocationFailures, .{});
 }
+
+test "full refresh handles empty lists and keeps numeric chapter ordering" {
+    const catalog = @import("catalog.zig");
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const old: lib.Library = .{ .manga = &.{.{ .id = "a", .title = "A", .chapters = &.{
+        .{ .id = "downloaded", .title = "Chapter 2", .pages = &.{"2.png"} },
+        .{ .id = "removed", .title = "Chapter 1" },
+    } }} };
+    const empty = try catalog.refresh(a, old, .{ .id = "a", .title = "A" });
+    try std.testing.expectEqual(1, empty.manga[0].chapters.len);
+    try std.testing.expectEqualStrings("downloaded", empty.manga[0].chapters[0].id);
+    const incoming: lib.Manga = .{ .id = "a", .title = "Updated", .chapters = &.{
+        .{ .id = "b", .title = "First alphabetically", .remote = .{ .url = "/b", .name = "B", .chapterNumber = 20 } },
+        .{ .id = "a", .title = "Last alphabetically", .remote = .{ .url = "/a", .name = "A", .chapterNumber = 10 } },
+    } };
+    const refreshed = try catalog.refresh(a, .{ .manga = &.{.{ .id = "a", .title = "A" }} }, incoming);
+    try lib.validate(refreshed);
+    try std.testing.expectEqualStrings("a", refreshed.manga[0].chapters[0].id);
+    try std.testing.expectEqualStrings("b", refreshed.manga[0].chapters[1].id);
+    const added = try catalog.refresh(a, .{}, incoming);
+    try std.testing.expectEqualStrings("Updated", added.manga[0].title);
+}
