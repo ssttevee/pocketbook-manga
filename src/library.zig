@@ -113,12 +113,9 @@ pub const Model = struct {
         }
         const entries = @constCast(self.prefs.progress);
         for (entries) |*p| if (std.mem.eql(u8, p.id, ch.id)) {
-            const completed = p.completed;
             if (p.page == entry.page and (p.completed or !entry.completed)) return;
-            const owned_id = p.id;
-            p.* = entry;
-            p.id = owned_id;
-            p.completed = p.completed or completed;
+            p.page = entry.page;
+            p.completed = p.completed or entry.completed;
             self.dirty = true;
             return;
         };

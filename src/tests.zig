@@ -193,3 +193,26 @@ test "poll destroys a completed job when library reload fails" {
     try std.testing.expectError(error.FileNotFound, session.poll());
     try std.testing.expect(session.browser.busy == null);
 }
+
+fn rememberWithAllocationFailures(a: std.mem.Allocator) !void {
+    const original: []const lib.Entry = &.{
+        .{ .id = "c1", .page = 0 },
+        .{ .id = "other", .page = 4, .completed = true },
+    };
+    var model: lib.Model = .{ .gpa = a, .library = fixture, .prefs = .{ .progress = original } };
+    defer model.deinit();
+    try model.dispatch(.{ .open = 0 });
+    try model.dispatch(.{ .read = 0 });
+    try model.dispatch(.{ .turn = 1 });
+    try model.dispatch(.{ .turn = -1 });
+    try std.testing.expect(model.progress("c1").?.completed);
+    try std.testing.expectEqual(0, model.progress("c1").?.page);
+    try std.testing.expectEqual(4, model.progress("other").?.page);
+    try std.testing.expect(!original[0].completed);
+    try model.dispatch(.{ .read = 1 });
+    try std.testing.expect(model.progress("c2").?.completed);
+}
+
+test "progress updates preserve borrowed entries and clean up every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, rememberWithAllocationFailures, .{});
+}
