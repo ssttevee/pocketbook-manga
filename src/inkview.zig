@@ -6,78 +6,39 @@ const Root = @import("ui.zig");
 const Session = @import("session.zig").Session;
 const f = @import("fabrum");
 
-// The bitmap ABI is documented by libinkview's SDK. The platform loads its
-// core API; the application resolves the optional image decoders here.
-const Bitmap = extern struct { width: u16, height: u16, depth: u16, scanline: u16 };
-const Jpeg = *const fn ([*:0]const u8, c_int, c_int, c_int, c_int, c_int) callconv(.c) ?*Bitmap;
-const Png = *const fn ([*:0]const u8, c_int, c_int, c_int, c_int) callconv(.c) ?*Bitmap;
-var jpeg: Jpeg = undefined;
-var png: Png = undefined;
+const Vips = @import("vips.zig");
+const Regions = @import("region_service.zig");
+var codecs: ?*const Vips.Library = null;
+extern "c" fn setenv([*:0]const u8, [*:0]const u8, c_int) c_int;
 var network_connect: *const fn (?[*:0]const u8) callconv(.c) c_int = undefined;
 fn connectNetwork() !void {
     if (network_connect(null) != 0) return error.WifiConnectionFailed;
 }
-var page_pixels: []u8 = &.{};
-
-/// Width and height from a PNG's IHDR chunk.
-fn pngSize(io: std.Io, path: []const u8) ![2]u32 {
-    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
-    defer file.close(io);
-    var header: [24]u8 = undefined;
-    if (try file.readPositionalAll(io, &header, 0) != header.len) return error.InvalidPng;
-    if (!std.mem.eql(u8, header[0..8], "\x89PNG\r\n\x1a\n") or !std.mem.eql(u8, header[12..16], "IHDR")) return error.InvalidPng;
-    const width = std.mem.readInt(u32, header[16..20], .big);
-    const height = std.mem.readInt(u32, header[20..24], .big);
-    if (width == 0 or height == 0) return error.InvalidPng;
-    return .{ width, height };
-}
-
 fn decodeImage(session: *Session, relative: []const u8, width: usize, height: usize) !@import("reader-image") {
-    const gpa = session.model.gpa;
     if (!lib.safePath(relative)) return error.UnsafePagePath;
+    const decoder = codecs orelse return error.ImageRuntimeUnavailable;
+    const gpa = session.model.gpa;
     const path = try session.browser.engine.?.pagePath(gpa, relative);
     defer gpa.free(path);
-    const w: c_int = @intCast(width);
-    const h: c_int = @intCast(height);
-    const ext = std.fs.path.extension(relative);
-    const bitmap = if (std.ascii.eqlIgnoreCase(ext, ".png")) bitmap: {
-        // LoadPNGStretch crashes fitting landscape pages itself, so fit them here.
-        const size = try pngSize(session.io, path);
-        const fit = @min(@as(f32, @floatFromInt(w)) / @as(f32, @floatFromInt(size[0])), @as(f32, @floatFromInt(h)) / @as(f32, @floatFromInt(size[1])));
-        const fw: c_int = @max(1, @as(c_int, @intFromFloat(@round(@as(f32, @floatFromInt(size[0])) * fit))));
-        const fh: c_int = @max(1, @as(c_int, @intFromFloat(@round(@as(f32, @floatFromInt(size[1])) * fit))));
-        break :bitmap png(path, fw, fh, 0, 1);
-    } else if (std.ascii.eqlIgnoreCase(ext, ".jpg") or std.ascii.eqlIgnoreCase(ext, ".jpeg"))
-        jpeg(path, w, h, 64, 128, 1)
-    else
-        return error.UnsupportedImageFormat;
-    const bm = bitmap orelse return error.ImageDecodeFailed;
-    defer std.c.free(bm);
-    const depth = bm.depth & 0xff;
-    if (bm.width == 0 or bm.height == 0 or bm.width > 4096 or bm.height > 4096) return error.InvalidBitmap;
-    if (depth != 8 and depth != 4 and depth != 1 and depth != 24) return error.UnsupportedBitmapDepth;
-    if (@as(usize, bm.scanline) < (@as(usize, bm.width) * depth + 7) / 8) return error.InvalidBitmap;
-    const bytes: [*]const u8 = @as([*]const u8, @ptrCast(bm)) + @sizeOf(Bitmap);
-    // Enforce the requested memory bound even if a firmware decoder returns
-    // its original dimensions instead of fitting to the supplied viewport.
-    const scale = @min(@as(f32, 1), @min(@as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(bm.width)), @as(f32, @floatFromInt(height)) / @as(f32, @floatFromInt(bm.height))));
-    const output_width: usize = @max(1, @as(usize, @intFromFloat(@floor(@as(f32, @floatFromInt(bm.width)) * scale))));
-    const output_height: usize = @max(1, @as(usize, @intFromFloat(@floor(@as(f32, @floatFromInt(bm.height)) * scale))));
-    const pixels = try gpa.alloc(u8, output_width * output_height);
+    const terminated = try gpa.dupeSentinel(u8, path, 0);
+    defer gpa.free(terminated);
+    const source = try decoder.probe(terminated);
+    const scale = @min(@as(f64, @floatFromInt(width)) / @as(f64, @floatFromInt(source.width)), @as(f64, @floatFromInt(height)) / @as(f64, @floatFromInt(source.height)));
+    var image = try decoder.open(terminated, scale);
+    defer image.deinit();
+    const w = @min(width, image.size.width);
+    const h = @min(height, image.size.height);
+    const pixels = try gpa.alloc(u8, w * h);
     errdefer gpa.free(pixels);
-    for (0..output_height) |y| for (0..output_width) |x| {
-        const source_x = x * bm.width / output_width;
-        const source_y = y * bm.height / output_height;
-        const row = bytes + source_y * bm.scanline;
-        pixels[y * output_width + x] = switch (depth) {
-            8 => row[source_x],
-            4 => @as(u8, if (source_x % 2 == 0) row[source_x / 2] >> 4 else row[source_x / 2] & 15) * 17,
-            1 => if ((row[source_x / 8] >> @as(u3, @intCast(7 - source_x % 8))) & 1 == 1) 255 else 0,
-            24 => @intCast((@as(u32, row[source_x * 3]) * 299 + @as(u32, row[source_x * 3 + 1]) * 587 + @as(u32, row[source_x * 3 + 2]) * 114) / 1000),
-            else => unreachable,
-        };
-    };
-    return .{ .width = output_width, .height = output_height, .pixels = pixels, .revision = std.hash.Wyhash.hash(0, relative) };
+    try image.region(0, 0, w, h, pixels, w);
+    return .{ .width = w, .height = h, .pixels = pixels, .revision = std.hash.Wyhash.hash(0, pixels) };
+}
+fn loadPage(session: *Session, _: []const u8) !void {
+    // The declarative reader task performs all source I/O and decoding. Input
+    // callbacks only invalidate the previous frame and capture panel scale.
+    session.clearRegionImage();
+    session.region_epoch +%= 1;
+    session.display_scale = ink.App(Root).instance.screen.scale;
 }
 
 fn canFetchCover(_: *Session) bool {
@@ -88,13 +49,6 @@ fn canFetchCover(_: *Session) bool {
     return worker.alive() and worker.workerReady();
 }
 
-fn loadPage(session: *Session, relative: []const u8) !void {
-    const host = &ink.App(Root).instance;
-    const image = try decodeImage(session, relative, @intCast(host.api.ScreenWidth()), @intCast(host.api.ScreenHeight()));
-    session.model.gpa.free(page_pixels);
-    page_pixels = @constCast(image.pixels);
-    session.image = image;
-}
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     var device_io = @import("device_io.zig").DeviceIo.init(init.io);
@@ -106,7 +60,7 @@ pub fn main(init: std.process.Init) !void {
     // progress.json now only holds display preferences; libtachi keeps the
     // library and reading state.
     const prefs_path = try std.fs.path.join(gpa, &.{ root, "progress.json" });
-    var model: lib.Model = .{ .gpa = gpa };
+    var model: lib.Model = .{ .gpa = gpa, .region_reader = true, .reader_requires_presentation = true };
     const prefs = lib.readJson(lib.Preferences, gpa, io, prefs_path) catch |err| switch (err) {
         error.FileNotFound => null,
         else => return err,
@@ -132,11 +86,28 @@ pub fn main(init: std.process.Init) !void {
     try session.reloadLibrary();
     try session.migrateProgress();
     session.browser.ensure_network = connectNetwork;
+    // Load the private, glibc2.23 image closure before InkView chooses its
+    // C++ runtime. Both must resolve a compatible libstdc++ in one process.
+    const image_tmp = try gpa.printSentinel("{s}/cache/image-tmp", .{root}, 0);
+    try std.Io.Dir.cwd().createDirPath(io, image_tmp);
+    if (setenv("TMPDIR", image_tmp, 1) != 0) return error.ImageTemporaryDirectoryFailed;
+    const codec_path = init.minimal.environ.getPosix("POCKETMANGA_IMAGE_LIBRARY") orelse try std.fs.path.join(gpa, &.{ root, "runtime/image/lib/libpocketmanga-image.so" });
+    var image_codecs = Vips.Library.load(codec_path) catch |err| {
+        std.log.err("Cannot load image runtime {s}: {s}", .{ codec_path, @errorName(err) });
+        return err;
+    };
+    defer image_codecs.deinit();
+    codecs = &image_codecs;
+    defer codecs = null;
+    const region_cache = try std.fs.path.join(gpa, &.{ root, "cache/regions" });
+    var region_service: Regions.Service = undefined;
+    region_service.init(gpa, &image_codecs, region_cache);
+    defer region_service.deinit();
+    session.region_service = &region_service;
+    defer session.clearRegionImage();
     const library_name = std.c.getenv("INKVIEW_LIBRARY") orelse "libinkview.so";
     var image_library = try std.DynLib.open(std.mem.span(library_name));
     network_connect = image_library.lookup(@TypeOf(network_connect), "NetConnect") orelse return error.MissingNetworkApi;
-    jpeg = image_library.lookup(Jpeg, "LoadJPEG") orelse return error.MissingJpegDecoder;
-    png = image_library.lookup(Png, "LoadPNGStretch") orelse return error.MissingPngDecoder;
     power_guard = @import("power.zig").Guard.load(&image_library);
     session.activity = updatePower;
     defer power_guard.update(false, 0);

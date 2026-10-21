@@ -29,10 +29,11 @@ pub fn render(self: *Self, commands: []const f.layout.RenderCommand, surface: f.
         if (cmd.data != .content) continue;
         const image = Image.from(cmd.data.content) orelse continue;
         const b = cmd.bbox;
-        const x0: usize = @intFromFloat(@max(0, @ceil(b.x * pixels.scale)));
-        const y0: usize = @intFromFloat(@max(0, @ceil(b.y * pixels.scale)));
-        const x1: usize = @intFromFloat(@min(@as(f32, @floatFromInt(pixels.width)), @floor((b.x + b.w) * pixels.scale)));
-        const y1: usize = @intFromFloat(@min(@as(f32, @floatFromInt(pixels.height)), @floor((b.y + b.h) * pixels.scale)));
+        const native = image.native_scale != null;
+        const x0: usize = @intFromFloat(@max(0, if (native) @round(b.x * pixels.scale) else @ceil(b.x * pixels.scale)));
+        const y0: usize = @intFromFloat(@max(0, if (native) @round(b.y * pixels.scale) else @ceil(b.y * pixels.scale)));
+        const x1: usize = if (native) @min(pixels.width, x0 + image.width) else @intFromFloat(@min(@as(f32, @floatFromInt(pixels.width)), @floor((b.x + b.w) * pixels.scale)));
+        const y1: usize = if (native) @min(pixels.height, y0 + image.height) else @intFromFloat(@min(@as(f32, @floatFromInt(pixels.height)), @floor((b.y + b.h) * pixels.scale)));
         if (x1 <= x0 or y1 <= y0) continue;
         for (damage orelse &whole) |r| {
             const left = @max(x0, @as(usize, @intFromFloat(@max(0, @floor(r.x * pixels.scale)))));
@@ -41,8 +42,8 @@ pub fn render(self: *Self, commands: []const f.layout.RenderCommand, surface: f.
             const bottom = @min(y1, @as(usize, @intFromFloat(@max(0, @ceil((r.y + r.h) * pixels.scale)))));
             if (right <= left or bottom <= top) continue;
             for (top..bottom) |y| for (left..right) |x| {
-                const source_x = @min(image.width - 1, (x - x0) * image.width / (x1 - x0));
-                const source_y = @min(image.height - 1, (y - y0) * image.height / (y1 - y0));
+                const source_x = if (native) x - x0 else @min(image.width - 1, (x - x0) * image.width / (x1 - x0));
+                const source_y = if (native) y - y0 else @min(image.height - 1, (y - y0) * image.height / (y1 - y0));
                 pixels.data[y * pixels.stride + x] = image.pixels[source_y * image.width + source_x];
             };
         }

@@ -209,3 +209,56 @@ test "partial reader mode still cleans every twelve page turns" {
         try std.testing.expectEqual(if (i == 11) fake.Update.Kind.full else fake.Update.Kind.partial, fake.state.updates.items[fake.state.updates.items.len - 1].kind);
     }
 }
+
+test "native region pixels bypass resampling at panel scale with damage and padded rows" {
+    var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture };
+    defer model.deinit();
+    var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io };
+    defer session.deinit();
+    try start(std.testing.allocator, std.testing.io, &session);
+    defer stop();
+    const host = &Host.instance;
+    const panel = fake.state.canvas;
+    const width: usize = @intCast(panel.width);
+    const height: usize = @intCast(panel.height);
+    const stride: usize = @intCast(panel.scanline);
+    try std.testing.expect(stride > width);
+    const scale = host.screen.scale;
+    try std.testing.expect(scale != 1);
+    var pixels: [17 * 13]u8 = undefined;
+    for (&pixels, 0..) |*pixel, i| pixel.* = @intCast((i * 37 + i / 17 * 11) % 251);
+    var image: @import("reader-image") = .{
+        .width = 17,
+        .height = 13,
+        .pixels = &pixels,
+        .revision = 1,
+        .native_scale = scale,
+    };
+    // Fractional point positions round to physical (13, 7). Resampling by
+    // bbox edges would trim the first row/column and change this pattern.
+    const commands: [1]f.layout.RenderCommand = .{.{
+        .bbox = .init(13.2 / scale, 7.2 / scale, 17 / scale, 13 / scale),
+        .data = .{ .content = &image.content },
+    }};
+    const target = try std.testing.allocator.alloc(u8, stride * height);
+    defer std.testing.allocator.free(target);
+    const surface: f.layout.Surface = .{ .pixels = .{
+        .data = target,
+        .width = @intCast(width),
+        .height = @intCast(height),
+        .stride = @intCast(stride),
+        .format = .gray8,
+        .scale = scale,
+    } };
+    const damage: [1]f.Rect = .{.init(18.25 / scale, 10.25 / scale, 5.5 / scale, 3.5 / scale)};
+    for ([_]bool{ false, true }) |partial| {
+        @memset(target, 0xA5);
+        try host.renderer.render(&commands, surface, if (partial) &damage else null);
+        for (0..height) |y| for (0..stride) |x| {
+            const covered = x >= 13 and x < 30 and y >= 7 and y < 20;
+            const damaged = !partial or (x >= 18 and x < 24 and y >= 10 and y < 14);
+            const expected: u8 = if (covered and damaged) pixels[(y - 7) * 17 + x - 13] else if (x < width and damaged) 255 else 0xA5;
+            try std.testing.expectEqual(expected, target[y * stride + x]);
+        };
+    }
+}

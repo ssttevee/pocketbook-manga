@@ -163,6 +163,9 @@ test {
     _ = @import("browser_layout_test.zig");
     _ = @import("cover_test.zig");
     _ = @import("reader_navigation_test.zig");
+    _ = @import("region_cache_test.zig");
+    _ = @import("region_integration_test.zig");
+    _ = @import("reader_gesture_test.zig");
     _ = @import("power.zig");
     _ = @import("device_io.zig");
 }

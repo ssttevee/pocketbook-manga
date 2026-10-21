@@ -107,3 +107,37 @@ test "region anchor storage is bounded and ordinary pages do not consume entries
     try std.testing.expectEqual(@as(u8, 8), model.prefs.reader_position_next);
     model.clearReading();
 }
+
+test "asynchronous readers complete only after the final region is presented" {
+    var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true, .reader_requires_presentation = true };
+    defer model.deinit();
+    try model.dispatch(.{ .read = 0 });
+    try model.configureReader(tall, view);
+    try model.dispatch(.{ .pan = 1 });
+    try std.testing.expect(!model.reader_presented);
+    try model.dispatch(.{ .turn = 1 });
+    try model.configureReader(tall, view);
+    try model.dispatch(.{ .pan = 1 });
+    try std.testing.expect(model.readerAtEnd());
+    try std.testing.expect(!model.reader_presented);
+    try std.testing.expect(!model.readState(fixture.manga[0].chapters[0]).read);
+    try model.configureReader(tall, view);
+    try std.testing.expect(model.reader_presented);
+    try std.testing.expect(model.readState(fixture.manga[0].chapters[0]).read);
+    try model.dispatch(.{ .pan = -1 });
+    try std.testing.expect(!model.reader_presented);
+    try model.dispatch(.{ .turn = -1 });
+    try std.testing.expect(!model.reader_presented);
+    try std.testing.expect(model.reader_geometry == null);
+}
+
+test "private reading moves the viewport without storing region anchors" {
+    var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true, .reader_record_positions = false };
+    defer model.deinit();
+    try model.dispatch(.{ .read = 0 });
+    try model.configureReader(tall, view);
+    try model.dispatch(.{ .pan = 0.5 });
+    try std.testing.expectApproxEqAbs(@as(f64, 0.5), model.reader_position, 0.00001);
+    for (model.prefs.reader_positions) |anchor| try std.testing.expect(anchor == null);
+    try std.testing.expect(!model.dirty);
+}

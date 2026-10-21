@@ -6,16 +6,24 @@ const Session = @import("session.zig").Session;
 const Root = @This();
 const tachi = @import("tachi");
 const models = tachi.models;
+const regions = @import("region_service.zig");
 pub const OnlineCommand = union(enum) { stores, refresh_stores, remove_store: usize, toggle_pin, toggle_hidden, show_hidden, languages, toggle_language: usize, sources, extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear, pick_global: usize };
 pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const Navigation = enum { library, updates, history, browse, more };
-pub const State = struct { more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, reader_updates: u8 = 0 };
+pub const State = struct { more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, pointer_start: ?f.Vec2 = null, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { navigate: Navigation, reading_settings, library_grid, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
     switch (msg) {
+        .region_frame => |outcome| {
+            const result = outcome catch |err| {
+                if (err != error.Canceled) try session.formatStatus("Cannot render page: {s}", .{@errorName(err)});
+                return;
+            };
+            if (try session.acceptRegion(result)) refreshReader(state, session, ctx);
+        },
         .navigate => |destination| {
             if (session.browser.busy != null) return;
             // Reselecting Browse preserves its active tab, filter and list page.
@@ -187,15 +195,33 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
         },
         .pointer => |event| {
             switch (event.phase) {
-                .press => state.tapping = true,
-                .drag, .cancel, .long_press => state.tapping = false,
-                .release => {
-                    if (!state.tapping) return;
+                .press => {
+                    state.tapping = true;
+                    state.pointer_start = event.local;
+                },
+                .drag => state.tapping = false,
+                .cancel, .long_press => {
                     state.tapping = false;
-                    if (event.local.x < 0 or event.local.y < 0 or event.local.x > event.size.x or event.local.y > event.size.y) return;
-                    const left = event.local.x < event.size.x / 2;
-                    const forward = left == session.model.prefs.rtl;
-                    try session.act(.{ .turn = if (forward) 1 else -1 });
+                    state.pointer_start = null;
+                },
+                .release => {
+                    const start = state.pointer_start orelse return;
+                    state.pointer_start = null;
+                    const was_tapping = state.tapping;
+                    state.tapping = false;
+                    const drag = event.local.sub(start);
+                    if (@abs(drag.x) >= 12 or @abs(drag.y) >= 12) {
+                        const geometry = session.model.reader_geometry orelse return;
+                        const delta = readerDrag(geometry, drag, event.size);
+                        if (delta == 0) return;
+                        try session.act(.{ .pan = delta });
+                    } else {
+                        if (!was_tapping) return;
+                        if (event.local.x < 0 or event.local.y < 0 or event.local.x > event.size.x or event.local.y > event.size.y) return;
+                        const left = event.local.x < event.size.x / 2;
+                        const forward = left == session.model.prefs.rtl;
+                        try session.act(.{ .turn = if (forward) 1 else -1 });
+                    }
                     refreshReader(state, session, ctx);
                     ctx.focus("screen");
                 },
@@ -248,6 +274,7 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
 }
 // Panel policy leaves cleaning refreshes to reading, never to row press/release.
 fn refreshReader(state: *State, session: *const Session, ctx: *app.Update(Root)) void {
+    if (session.region_service != null and !session.regionCurrent()) return;
     state.reader_updates += 1;
     if (session.model.prefs.full_refresh or state.reader_updates >= 12) {
         state.reader_updates = 0;
@@ -545,7 +572,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         .backup => try backupView(ui, session),
         .categories => try categoriesView(ui, model),
     }
-    if (session.status.len > 0 and !session.download_error and session.browser.busy == null) try text(ui, session.status, 11, 0);
+    if (session.status.len > 0 and model.screen != .reader and !session.download_error and session.browser.busy == null) try text(ui, session.status, 11, 0);
     if (session.cover_job != null) try ui.every("cover-poll", .fromMilliseconds(200), on.bind(.poll));
     if (navigation) |selected| try navigationBar(ui, selected, session.browser.busy == null);
 }
@@ -1107,24 +1134,76 @@ fn feedView(ui: *app.Ui, session: *const Session) !void {
         try app.widgets.button(ui, "next-feed", .{ .label = "Next", .enabled = model.offset + lib.Model.rows < count, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = 1 }) }) });
     }
 }
+/// Convert a completed physical drag to reading-order progress. Comparing
+/// logical pointer and element sizes cancels the display's pixel scale.
+fn readerDrag(geometry: lib.viewport.Geometry, drag: f.Vec2, size: f.Vec2) f64 {
+    return switch (geometry.axis) {
+        .page => 0,
+        .vertical => if (size.y > 0 and geometry.output.height > geometry.viewport.height)
+            -@as(f64, drag.y / size.y) * @as(f64, @floatFromInt(geometry.viewport.height)) / @as(f64, @floatFromInt(geometry.output.height - geometry.viewport.height))
+        else
+            0,
+        .horizontal => if (size.x > 0 and geometry.output.width > geometry.viewport.width)
+            -@as(f64, drag.x / size.x) * @as(f64, @floatFromInt(geometry.viewport.width)) / @as(f64, @floatFromInt(geometry.output.width - geometry.viewport.width)) * @as(f64, if (geometry.rtl) -1 else 1)
+        else
+            0,
+    };
+}
+
 fn reader(ui: *app.Ui, session: *const Session) !void {
     const model = session.model;
     const ch = model.current() orelse return;
     const on = ui.messages(Root);
+    if (session.region_service) |service| {
+        const mutable = @constCast(session);
+        // Reader chrome is fixed: 48pt toolbar and 36pt footer. Use the
+        // physical content viewport, not the full panel, for the one resize.
+        const viewport: lib.viewport.Size = .{
+            .width = @intFromFloat(@max(1, @round(ui.core.viewport.x * session.display_scale))),
+            .height = @intFromFloat(@max(1, @round(@max(1, ui.core.viewport.y - 84) * session.display_scale))),
+        };
+        if (!std.meta.eql(mutable.region_viewport, viewport)) {
+            mutable.clearRegionImage();
+            model.reader_presented = false;
+            mutable.region_viewport = viewport;
+        }
+        const request: regions.Request = .{
+            .root = session.root,
+            .relative = ch.pages[model.page],
+            .chapter = ch.id,
+            .page = model.page,
+            .epoch = session.region_epoch,
+            .viewport = viewport,
+            .position = model.reader_position,
+            .backward = model.reader_pending_end,
+            .rtl = model.prefs.rtl,
+            .engine = session.browser.engine,
+        };
+        try ui.task("reader-region", .{ .restart = .{ request.relative, request.chapter, request.page, request.epoch, viewport, @as(u64, @bitCast(request.position)), request.backward, request.rtl } }, regions.render, .{ service, request, on.handler(.region_frame) }, on.handler(.region_frame));
+    }
     {
         try ui.open("page", .{ .layout = .{ .sizing = .grow(.{}), .child_alignment = .center }, .background_color = .white, .on_pointer = on.handler(.pointer) });
         defer ui.close();
-        if (session.image) |*image| ui.content(@constCast(&image.content)) else try text(ui, if (session.load_image == null) "Page preview" else "Page unavailable", 14, 0);
+        if (session.image) |*image| ui.content(@constCast(&image.content)) else try text(ui, if (session.status.len > 0) session.status else if (session.region_service != null) "Loading page…" else if (session.load_image == null) "Page preview" else "Page unavailable", 14, 0);
     }
     {
-        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .all(6), .child_gap = 6, .child_alignment = .center_left }, .border = .{ .color = .black, .widths = .{ .top = 1 } } });
+        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(36) }, .padding = .init(6, 6, 0, 0), .child_gap = 6, .child_alignment = .center_left }, .border = .{ .color = .black, .widths = .{ .top = 1 } } });
         defer ui.close();
         try button(ui, "left-page", if (model.prefs.rtl) "Next" else "Prev", .{ .turn = if (model.prefs.rtl) 1 else -1 });
         ui.spacer();
-        try ui.print(.{ .font_size = 12 }, "{d} / {d}", .{ model.page + 1, ch.pages.len });
+        if (model.reader_geometry) |geometry| {
+            if (geometry.axis != .page) {
+                const percent: u8 = @intFromFloat(@round(lib.viewport.clamp(model.reader_position) * 100));
+                try ui.print(.{ .font_size = 12 }, "{d}/{d} {d}% {s}", .{ model.page + 1, ch.pages.len, percent, switch (geometry.axis) {
+                    .vertical => "down",
+                    .horizontal => if (geometry.rtl) "left" else "right",
+                    .page => unreachable,
+                } });
+            } else try ui.print(.{ .font_size = 12 }, "{d} / {d}", .{ model.page + 1, ch.pages.len });
+        } else try ui.print(.{ .font_size = 12 }, "{d} / {d}", .{ model.page + 1, ch.pages.len });
         ui.spacer();
         try button(ui, "right-page", if (model.prefs.rtl) "Prev" else "Next", .{ .turn = if (model.prefs.rtl) -1 else 1 });
-        if (model.page + 1 == ch.pages.len and session.next_chapter != null)
+        if (model.page + 1 == ch.pages.len and model.readerAtEnd() and (session.region_service == null or session.regionCurrent()) and session.next_chapter != null)
             try app.widgets.button(ui, "next-chapter", .{ .label = "Chapter >", .on_click = on.bind(.{ .act = .next_chapter }) });
     }
 }
@@ -1463,4 +1542,20 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
         const more_source_pages = screen == .catalog and b.titles != null and b.titles.?.result.page.?.hasNextPage;
         try browseControl(ui, "online-next", "Next", .next, b.offset + lib.Model.rows < count or more_source_pages);
     }
+}
+
+test "reader drag maps both axes and display scales into reading order" {
+    const source: lib.viewport.Size = .{ .width = 1000, .height = 12000 };
+    const viewport: lib.viewport.Size = .{ .width = 758, .height = 900 };
+    const tall = lib.viewport.Geometry.init(source, viewport, true);
+    const a = readerDrag(tall, .init(0, -100), .init(758, 900));
+    const b = readerDrag(tall, .init(0, -50), .init(379, 450));
+    try std.testing.expect(a > 0);
+    try std.testing.expectApproxEqAbs(a, b, 0.000001);
+    for ([_]bool{ false, true }) |rtl| {
+        const wide = lib.viewport.Geometry.init(.{ .width = 12000, .height = 1000 }, viewport, rtl);
+        const delta = readerDrag(wide, .init(-100, 0), .init(758, 900));
+        try std.testing.expect(if (rtl) delta < 0 else delta > 0);
+    }
+    try std.testing.expectEqual(@as(f64, 0), readerDrag(tall, .init(-100, 0), .zero));
 }

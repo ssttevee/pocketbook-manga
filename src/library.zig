@@ -50,6 +50,10 @@ pub const Model = struct {
     /// Enabled by the region-capable image provider. Until dimensions arrive,
     /// opening the last image must not mark a long chapter complete.
     region_reader: bool = false,
+    /// Asynchronous providers count completion only after publishing pixels.
+    reader_requires_presentation: bool = false,
+    reader_record_positions: bool = true,
+    reader_presented: bool = false,
     reader_geometry: ?viewport.Geometry = null,
     reader_position: f64 = 0,
     reader_pending_end: bool = false,
@@ -141,6 +145,7 @@ pub const Model = struct {
     /// Called after the source dimensions are known, and again after a resize.
     pub fn configureReader(self: *Model, source: viewport.Size, view: viewport.Size) !void {
         self.reader_geometry = viewport.Geometry.init(source, view, self.prefs.rtl);
+        self.reader_presented = true;
         if (self.reader_pending_end) {
             self.reader_position = 1;
             self.reader_pending_end = false;
@@ -151,6 +156,7 @@ pub const Model = struct {
 
     fn restoreRegion(self: *Model, chapter_id: []const u8) void {
         self.reader_geometry = null;
+        self.reader_presented = false;
         self.reader_pending_end = false;
         self.reader_position = 0;
         const key = chapterKey(chapter_id);
@@ -170,7 +176,8 @@ pub const Model = struct {
     }
 
     fn rememberRegion(self: *Model) !void {
-        if (!self.region_reader) return;
+        if (self.reader_requires_presentation and !self.reader_presented) return;
+        if (!self.region_reader or !self.reader_record_positions) return;
         const geometry = self.reader_geometry orelse return;
         if (geometry.axis == .page) return;
         const ch = self.current() orelse return;
@@ -197,7 +204,7 @@ pub const Model = struct {
         const ch = self.current() orelse return;
         if (ch.pages.len == 0) return;
         const old = self.readState(ch);
-        const state: ReadState = .{ .page = @intCast(self.page), .read = old.read or (self.page + 1 == ch.pages.len and self.readerAtEnd()), .started = true };
+        const state: ReadState = .{ .page = @intCast(self.page), .read = old.read or (self.page + 1 == ch.pages.len and self.readerAtEnd() and (!self.reader_requires_presentation or self.reader_presented)), .started = true };
         if (old.page == state.page and old.read == state.read and old.started) return;
         try self.reading.put(self.gpa, ch.id, state);
         self.progress_changed = true;
@@ -257,6 +264,7 @@ pub const Model = struct {
                 if (self.region_reader) {
                     const geometry = self.reader_geometry orelse return;
                     if (geometry.step(self.reader_position, delta)) |position| {
+                        if (position != self.reader_position) self.reader_presented = false;
                         self.reader_position = position;
                         try self.remember();
                         try self.rememberRegion();
@@ -267,6 +275,7 @@ pub const Model = struct {
                 const next: usize = @intCast(std.math.clamp(p, 0, @as(i64, @intCast(ch.pages.len - 1))));
                 if (next != self.page) {
                     self.page = next;
+                    self.reader_presented = false;
                     self.reader_geometry = null;
                     self.reader_position = 0;
                     self.reader_pending_end = delta < 0;
@@ -275,7 +284,9 @@ pub const Model = struct {
             },
             .pan => |delta| {
                 if (self.screen != .reader or !self.region_reader or self.reader_geometry == null) return;
-                self.reader_position = viewport.clamp(self.reader_position + delta);
+                const position = viewport.clamp(self.reader_position + delta);
+                if (position != self.reader_position) self.reader_presented = false;
+                self.reader_position = position;
                 try self.remember();
                 try self.rememberRegion();
             },
