@@ -1078,10 +1078,12 @@ fn feedView(ui: *app.Ui, session: *const Session) !void {
     if (model.screen == .queue) {
         try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .all(10), .child_gap = 6, .child_alignment = .center_left } });
         defer ui.close();
-        try onlineButton(ui, "queue-start", "Start", .queue_start);
-        try onlineButton(ui, "queue-pause", "Pause", .queue_pause);
-        try onlineButton(ui, "queue-clear", "Clear", .queue_clear);
-        if (session.browser.engine) |engine| if (engine.queue.waitingForWifi()) try text(ui, "Waiting for Wi-Fi", 12, 40);
+        const engine = session.browser.engine;
+        const running = if (engine) |e| e.queue.running() else false;
+        const waiting = if (engine) |e| e.queue.waitingForWifi() else false;
+        try text(ui, if (running) "Queue running" else if (waiting) "Waiting for Wi-Fi" else if (count == 0) "Queue empty" else "Queue paused", 14, 0);
+        if (running) try onlineButton(ui, "queue-pause", "Stop", .queue_pause) else if (count > 0) try onlineButton(ui, "queue-start", "Start", .queue_start);
+        if (count > 0) try onlineButton(ui, "queue-clear", "Clear", .queue_clear);
     }
     if (model.screen == .queue) {
         const blocked = for (session.feed) |item| {

@@ -588,6 +588,26 @@ test "restored blocked queue entries become actionable rows" {
     try std.testing.expect(!@import("session.zig").browserVerificationRequired("BrowserVerificationRequiredButDifferent"));
 }
 
+test "queue controls show a paused queue and only its applicable action" {
+    const f = @import("fabrum");
+    var model: lib.Model = .{ .gpa = std.testing.allocator, .library = smoke.fixture, .screen = .queue, .feed_count = 1 };
+    const feed: []const @import("session.zig").FeedRow = &.{.{ .pick = .{ .manga = 0, .chapter = 0 }, .title = "Queued title", .detail = "Queued" }};
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = ".", .feed = feed };
+    var h: f.app.testing.Harness(.{}, @import("ui.zig")) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try h.expectText("Queue paused");
+    try h.expectText("Start");
+    try std.testing.expect(h.findText("Stop") == null);
+    session.feed = &.{};
+    model.feed_count = 0;
+    try h.frame();
+    try h.expectText("Queue empty");
+    try std.testing.expect(h.findText("Start") == null);
+    try std.testing.expect(h.findText("Stop") == null);
+}
+
+
 test "entering reading releases a retained worker after background downloads finish" {
     const Backend = tachi.backend.Backend;
     const Fake = struct {

@@ -565,8 +565,12 @@ pub const Session = struct {
                     const blocked = entry.status == .failed and browserVerificationRequired(entry.failure orelse "");
                     const detail = switch (entry.status) {
                         .queued => "Queued",
-                        .downloading => try std.fmt.allocPrint(a, "Downloading {d}/{d}", .{ entry.pages_done, entry.pages_total }),
-                        .failed => if (blocked) "Cannot download: browser verification" else try std.fmt.allocPrint(a, "Failed: {s}", .{entry.failure orelse "error"}),
+                        .downloading => if (entry.pages_total > 0) try std.fmt.allocPrint(a, "Downloading {d}/{d}", .{ entry.pages_done, entry.pages_total }) else switch (entry.phase) {
+                            .starting => "Loading worker",
+                            .extension_loading => "Loading extension",
+                            .operation => "Listing pages",
+                        },
+                        .failed => if (blocked) "Cannot download: browser verification" else if (std.mem.eql(u8, entry.failure orelse "", "StorageUnavailable")) "SD card unavailable: insert the original card" else try std.fmt.allocPrint(a, "Failed: {s}", .{entry.failure orelse "error"}),
                     };
                     try rows.append(a, .{ .pick = pick, .title = m.title, .blocked = blocked, .detail = if (blocked) try std.fmt.allocPrint(a, "{s} / {s}", .{ detail, m.chapters[pick.chapter].title }) else try std.fmt.allocPrint(a, "{s}  /  {s}", .{ m.chapters[pick.chapter].title, detail }) });
                 }
