@@ -148,7 +148,7 @@ pub const Service = struct {
         hash.update(std.mem.asBytes(&view.width));
         hash.update(std.mem.asBytes(&view.height));
         // Include pipeline version: cached pixels must change with filters.
-        hash.update("gray-white-lanczos3-v1");
+        hash.update("gray-white-lanczos3-strips-v2");
         return hash.final();
     }
 

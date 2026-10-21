@@ -17,7 +17,11 @@ pub const Geometry = struct {
         const view: Size = .{ .width = @max(1, viewport.width), .height = @max(1, viewport.height) };
         const width_scale = @as(f64, @floatFromInt(view.width)) / @as(f64, @floatFromInt(src.width));
         const height_scale = @as(f64, @floatFromInt(view.height)) / @as(f64, @floatFromInt(src.height));
-        const axis: Axis = if (width_scale > height_scale * 1.25) .vertical else if (height_scale > width_scale * 1.25) .horizontal else .page;
+        // Sources sometimes split a portrait page into a full page and a very
+        // shallow footer strip. Height-fitting those strips magnifies them many
+        // times; fit them whole instead. Ordinary spreads still pan horizontally.
+        const shallow_strip = @as(u64, src.width) > @as(u64, src.height) * 4 and height_scale > 2;
+        const axis: Axis = if (width_scale > height_scale * 1.25) .vertical else if (height_scale > width_scale * 1.25 and !shallow_strip) .horizontal else .page;
         const scale = switch (axis) {
             .vertical => width_scale,
             .horizontal => height_scale,
@@ -112,4 +116,23 @@ test "ordinary pages fit completely and normalized position survives resizing" {
     try std.testing.expectEqual(tall.region(0), tall.region(std.math.nan(f64)));
     try std.testing.expectEqual(tall.region(1), tall.region(42));
     try std.testing.expectEqual(@as(u32, 1), Geometry.init(.{ .width = 0, .height = 0 }, .{ .width = 0, .height = 0 }, false).output.width);
+}
+
+test "shallow page fragments fit whole instead of magnifying to screen height" {
+    for ([_]bool{ false, true }) |rtl| {
+        const strip = Geometry.init(.{ .width = 1125, .height = 100 }, .{ .width = 758, .height = 1024 }, rtl);
+        try std.testing.expectEqual(Axis.page, strip.axis);
+        try std.testing.expectEqual(Size{ .width = 758, .height = 67 }, strip.output);
+        try std.testing.expectEqual(Rect{ .x = 0, .y = 0, .width = 758, .height = 67 }, strip.region(0));
+        try std.testing.expectEqual(@as(?f64, null), strip.step(0, 1));
+        const spread = Geometry.init(.{ .width = 2250, .height = 1500 }, strip.viewport, rtl);
+        try std.testing.expectEqual(Axis.horizontal, spread.axis);
+        try std.testing.expect(spread.step(0, 1) != null);
+        const low_resolution_spread = Geometry.init(.{ .width = 600, .height = 400 }, strip.viewport, rtl);
+        try std.testing.expectEqual(Axis.horizontal, low_resolution_spread.axis);
+        const boundary = Geometry.init(.{ .width = 4096, .height = 512 }, strip.viewport, rtl);
+        try std.testing.expectEqual(Axis.horizontal, boundary.axis);
+        const below_boundary = Geometry.init(.{ .width = 4096, .height = 511 }, strip.viewport, rtl);
+        try std.testing.expectEqual(Axis.page, below_boundary.axis);
+    }
 }
