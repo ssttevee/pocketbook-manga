@@ -17,6 +17,11 @@ pub const Msg = union(enum) { storage_loaded: anyerror!storage.Snapshot, storage
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
+    // Finish an accepted storage operation before navigation can discard its result.
+    if (session.storage_busy) switch (msg) {
+        .quit, .poll, .focus => {},
+        else => return,
+    };
     switch (msg) {
         .dismiss_error => session.dismissError(),
         .jump_page => {
@@ -72,9 +77,9 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                 },
                 .manage => if (session.browser.engine != null) {
                     session.storage_managing = true;
-                    try session.act(.{ .feed = .library });
-                    try session.refreshRows();
-                    session.setStatus("Downloaded titles. Open a title, then use a chapter's menu to delete its download.");
+                    // The inventory task owns filtering and filesystem inspection.
+                    try session.model.dispatch(.{ .feed = .library });
+                    session.setStatus("");
                 },
             }
         },
@@ -579,7 +584,8 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         if (total > 0) try ui.print(.{ .font_size = 14 }, "{d} / {d} pages", .{ job.pages_done.load(.acquire), total });
         try onlineButton(ui, "cancel-job", "Cancel", .cancel);
     } else switch (model.screen) {
-        .library, .chapters => try list(ui, model),
+        .library => if (session.storage_managing) try ui.child(@import("storage_manager.zig"), "storage-manager", .{}) else try list(ui, model),
+        .chapters => try list(ui, model),
         .reader => try reader(ui, session),
         .settings => if (state.more_root) try moreView(ui) else {
             try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 16 } });
@@ -659,7 +665,7 @@ fn toolbar(ui: *app.Ui, session: *const Session, navigation: ?Navigation) !void 
         defer ui.close();
         if (navigation == null and session.browser.busy == null) try button(ui, "back", "Back", .back);
         try text(ui, switch (model.screen) {
-            .library => if (session.storage_managing) "Downloaded titles" else "Library",
+            .library => if (session.storage_managing) "Downloads" else "Library",
             .chapters => "Chapters",
             .reader => "Reader",
             .settings => if (navigation == .more) "More" else "Settings",

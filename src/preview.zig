@@ -115,7 +115,7 @@ fn libraryScreens(init: std.process.Init, session: *Session, model: *lib.Model) 
             .{ .id = "42:/lantern", .title = "The Copper Lantern", .cover = "demo/lantern.png", .source_id = 42, .remote = .{ .url = "/lantern", .title = "The Copper Lantern", .status = 1 }, .categories = &.{1}, .date_added = now - 30 * day, .chapters = &.{
                 .{ .id = "42:/lantern/3", .title = "Chapter 3 - Embers", .number = 3, .source_order = 0, .scanlator = "Lamp Scans", .date_fetch = now - day, .date_upload = now - day, .remote = .{ .url = "/lantern/3", .name = "Chapter 3 - Embers" } },
                 .{ .id = "42:/lantern/2", .title = "Chapter 2 - The long road", .number = 2, .source_order = 1, .scanlator = "Lamp Scans", .last_page_read = 4, .last_read = now - 2 * std.time.ms_per_hour, .date_fetch = now - 40 * day, .remote = .{ .url = "/lantern/2", .name = "Chapter 2 - The long road" } },
-                .{ .id = "42:/lantern/1", .title = "Chapter 1 - A new beginning", .number = 1, .source_order = 2, .scanlator = "Other Group", .read = true, .last_read = now - day, .date_fetch = now - 40 * day, .remote = .{ .url = "/lantern/1", .name = "Chapter 1 - A new beginning" } },
+                .{ .id = "42:/lantern/1", .title = "Chapter 1 - A new beginning", .pages = &.{"downloads/lantern/1.png"}, .number = 1, .source_order = 2, .scanlator = "Other Group", .read = true, .last_read = now - day, .date_fetch = now - 40 * day, .remote = .{ .url = "/lantern/1", .name = "Chapter 1 - A new beginning" } },
             } },
             .{ .id = "42:/notebook", .title = "A Traveller's Notebook", .cover = "demo/notebook.png", .source_id = 42, .remote = .{ .url = "/notebook", .title = "A Traveller's Notebook", .status = 1 }, .categories = &.{2}, .next_update = now + 3 * day, .fetch_interval = 7, .chapters = &.{
                 .{ .id = "42:/notebook/1", .title = "Entry 1", .number = 1, .remote = .{ .url = "/notebook/1", .name = "Entry 1" } },
@@ -170,6 +170,16 @@ fn libraryScreens(init: std.process.Init, session: *Session, model: *lib.Model) 
     try smoke.tapText("Back");
     try smoke.tapText("Statistics");
     try smoke.writeScreen(init.gpa, io, "preview/statistics.pgm");
+    try smoke.tapText("Back");
+    try smoke.tapText("Manage storage");
+    smoke.fake.advance(250);
+    try smoke.tapText("Manage downloaded chapters");
+    for (0..100) |_| {
+        smoke.fake.advance(50);
+        if (@import("fabrum").app.testing.findText(smoke.Host.Runtime.Text, smoke.Host.instance.runtime.context(), "Loading downloaded chapters...") == null) break;
+        try io.sleep(.fromMilliseconds(10), .awake);
+    }
+    try smoke.writeScreen(init.gpa, io, "preview/download-manager.pgm");
 }
 
 fn finish(session: *Session) !void {

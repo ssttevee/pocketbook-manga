@@ -58,6 +58,7 @@ pub const Session = struct {
     /// Saved pages for resumable downloads, indexed into the current title.
     chapter_downloads: []const ?tachi.downloads.ResumeProgress = &.{},
     storage_managing: bool = false,
+    storage_busy: bool = false,
     /// Owns the model's online chapter and pages.
     online_arena: ?std.heap.ArenaAllocator = null,
     /// libtachi's trackers: who is logged in, and score formats.
@@ -890,8 +891,7 @@ pub const Session = struct {
         var arena: std.heap.ArenaAllocator = .init(model.gpa);
         errdefer arena.deinit();
         const a = arena.allocator();
-        var settings: tachi.settings.Settings = if (self.browser.engine) |engine| try engine.loadSettings(a) else .{};
-        if (self.storage_managing) settings.library.downloaded_only = true;
+        const settings: tachi.settings.Settings = if (self.browser.engine) |engine| try engine.loadSettings(a) else .{};
         const groups = try tachi.views.libraryView(a, model.library, try tachi.views.libraryOptions(a, model.library, settings, model.query_text, 0));
         const names = try a.alloc([]const u8, groups.len);
         for (groups, names) |group, *name| name.* = if (group.category.id == 0) "Default" else group.category.name;

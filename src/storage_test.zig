@@ -82,7 +82,7 @@ test "storage inspection counts both volumes and cache clearing preserves downlo
     try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "internal/cache/chapters/pages/page.png", .{}));
 }
 
-test "download management filters temporarily and returns through the series to storage" {
+test "download management shows compact selectable chapters and returns to storage" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -104,15 +104,23 @@ test "download management filters temporarily and returns through the series to 
     defer h.deinit();
     try h.frame();
     try h.click("Manage downloaded chapters");
-    try h.expectText("Downloaded titles");
-    try h.expectText("Saved story");
+    try h.runTasks();
+    try h.expectText("Downloads");
+    try h.expectText("[ ] Saved story");
     try std.testing.expect(h.findText("Online story") == null);
     try std.testing.expect(!(try engine.loadSettings(a)).library.downloaded_only);
-    try h.click("Saved story");
-    try h.expectText("Downloaded chapter");
+    try h.expectText("Downloaded chapter · 1/1");
     try std.testing.expect(h.findText("Undownloaded chapter") == null);
+    try h.click("[ ] Saved story");
+    try h.expectText("1 chapter · 1 selected");
+    try h.click("Read");
+    try std.testing.expect(session.storage_busy);
     try h.click("Back");
-    try h.expectText("Downloaded titles");
+    try std.testing.expectEqual(lib.Screen.library, model.screen);
+    try std.testing.expect(session.storage_managing);
+    try h.runTasks();
+    try std.testing.expect(!session.storage_busy);
+    try std.testing.expect((try engine.loadLibrary(a)).manga[0].chapters[0].read);
     try h.click("Back");
     try std.testing.expectEqual(lib.Screen.storage, model.screen);
     try std.testing.expect(!session.storage_managing);
