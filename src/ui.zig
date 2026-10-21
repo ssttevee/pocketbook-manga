@@ -6,7 +6,7 @@ const Session = @import("session.zig").Session;
 const Root = @This();
 const tachi = @import("tachi");
 const models = tachi.models;
-pub const OnlineCommand = union(enum) { stores, refresh_stores, remove_store: usize, toggle_pin, toggle_hidden, show_hidden, languages, toggle_language: usize, extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear, pick_global: usize };
+pub const OnlineCommand = union(enum) { stores, refresh_stores, remove_store: usize, toggle_pin, toggle_hidden, show_hidden, languages, toggle_language: usize, sources, extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear, pick_global: usize };
 pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const Navigation = enum { library, updates, history, browse, more };
 pub const State = struct { more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, reader_updates: u8 = 0 };
@@ -18,6 +18,11 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     switch (msg) {
         .navigate => |destination| {
             if (session.browser.busy != null) return;
+            // Reselecting Browse preserves its active tab, filter and list page.
+            if (destination == .browse and (session.model.screen == .sources or session.model.screen == .extensions)) {
+                ctx.focus("screen");
+                return;
+            }
             state.more_root = destination == .more;
             state.reading_from_more = false;
             session.browser.offset = 0;
@@ -28,11 +33,8 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                 .browse => .help,
                 .more => .settings,
             };
-            // Reselecting Browse keeps its current source snapshot.
-            if (destination != .browse or session.model.screen != .sources) {
-                try session.act(action);
-                if (destination == .browse) session.start(.sources);
-            }
+            try session.act(action);
+            if (destination == .browse) session.start(.sources);
             ctx.focus("screen");
         },
         .poll => {
@@ -290,7 +292,7 @@ fn rootNavigation(screen: lib.Screen, more_root: bool) ?Navigation {
         .library => .library,
         .updates => .updates,
         .history => .history,
-        .sources => .browse,
+        .sources, .extensions => .browse,
         .settings => if (more_root) .more else null,
         else => null,
     };
@@ -348,9 +350,20 @@ fn navigationIcon(ui: *app.Ui, destination: Navigation) !void {
             ui.close();
         },
         .history, .browse => {
-            try ui.open(null, .{ .layout = .{ .sizing = .fixed(17), .child_alignment = .center }, .border = .{ .color = .black, .widths = .outside(1) }, .corner_radius = .uniform(9) });
-            try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(if (destination == .history) 2 else 5), .height = .fixed(7) } }, .background_color = .black });
-            ui.close();
+            try ui.open(null, .{ .layout = .{ .sizing = .fixed(17) }, .border = .{ .color = .black, .widths = .outside(1) }, .corner_radius = .uniform(9) });
+            if (destination == .history) {
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(2), .height = .fixed(6) } }, .floating = .{ .mode = .parent, .offset = .init(7, 3) }, .background_color = .black });
+                ui.close();
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(5), .height = .fixed(2) } }, .floating = .{ .mode = .parent, .offset = .init(7, 7) }, .background_color = .black });
+                ui.close();
+            } else {
+                // A stepped diagonal needle stays crisp on the monochrome panel.
+                for (0..7) |step| {
+                    const position: f32 = @floatFromInt(step);
+                    try ui.open(null, .{ .layout = .{ .sizing = .fixed(2) }, .floating = .{ .mode = .parent, .offset = .init(4 + position, 10 - position) }, .background_color = if (step < 3) .gray(125) else .black });
+                    ui.close();
+                }
+            }
             ui.close();
         },
         .more => {
@@ -420,7 +433,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             .reader => "Reader",
             .settings => if (state.more_root) "More" else "Settings",
             .sources => "Browse",
-            .extensions => "Extensions",
+            .extensions => "Browse",
             .catalog => "Browse",
             .source_settings => "Source settings",
             .updates => "Updates",
@@ -1031,6 +1044,7 @@ fn menuView(ui: *app.Ui, model: *const lib.Model) !void {
 /// Updates, history and the download queue: chapters across titles.
 fn feedView(ui: *app.Ui, session: *const Session) !void {
     const model = session.model;
+    const artwork = @constCast(session);
     const count = session.feed.len;
     const on = ui.messages(Root);
     if (model.screen == .queue) {
@@ -1042,25 +1056,43 @@ fn feedView(ui: *app.Ui, session: *const Session) !void {
         if (session.browser.engine) |engine| if (engine.queue.waitingForWifi()) try text(ui, "Waiting for Wi-Fi", 12, 40);
     }
     {
-        try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .init(10, 10, 8, 0), .child_gap = 4 } });
+        try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .init(10, 10, 8, 0), .child_gap = 1 } });
         defer ui.close();
-        if (count == 0) try text(ui, switch (model.screen) {
-            .updates => "No new chapters",
-            .history => "Nothing read yet",
-            .upcoming => "Nothing expected",
-            else => "No downloads queued",
-        }, 16, 0);
+        if (count == 0) {
+            ui.spacer();
+            try text(ui, switch (model.screen) {
+                .updates => "No new chapters",
+                .history => "Nothing read yet",
+                .upcoming => "Nothing expected",
+                else => "No downloads queued",
+            }, 18, 0);
+            try text(ui, switch (model.screen) {
+                .updates => "New chapters from your library appear here.",
+                .history => "Your reading history will appear here.",
+                .upcoming => "Expected releases from your library appear here.",
+                else => "Queue chapters from a title to download them.",
+            }, 12, 90);
+        }
         for (@min(model.offset, count)..@min(model.offset + lib.Model.rows, count)) |row| {
             const item = session.feed[row];
             const key = .{ .feed = row };
             try ui.open(key, .{
-                .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(37) }, .axis = .y, .padding = .init(8, 8, 3, 3), .child_gap = 1 },
+                .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(40) }, .padding = .init(2, 2, 3, 3), .child_gap = 10, .child_alignment = .center_left },
                 .background_color = rowFill(ui, key),
-                .border = .{ .color = .gray(130), .widths = .{ .bottom = 1 } },
                 .on_click = if (model.screen == .queue) null else on.bind(.{ .act = @as(lib.Action, .{ .open_chapter = item.pick }) }),
             });
-            try text(ui, item.title, 14, 0);
-            try text(ui, item.detail, 10, 60);
+            {
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(23), .height = .fixed(34) }, .child_alignment = .center }, .background_color = .gray(235), .corner_radius = .uniform(2) });
+                defer ui.close();
+                if (item.pick.manga < model.library.manga.len) if (artwork.coverImage(model.library.manga[item.pick.manga])) |image| ui.content(&image.content);
+            }
+            {
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .child_gap = 3 } });
+                defer ui.close();
+                try text(ui, item.title, 14, 0);
+                try text(ui, item.detail, 10, 90);
+            }
+            if (model.screen == .history) try text(ui, "Resume", 11, 65);
             ui.close();
         }
         ui.spacer();
@@ -1127,6 +1159,11 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
         return;
     }
     switch (command) {
+        .sources => {
+            b.offset = 0;
+            try session.act(.help);
+            session.start(.sources);
+        },
         .extensions => {
             model.screen = .extensions;
             b.offset = 0;
@@ -1275,28 +1312,68 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
     }
     ctx.focus("screen");
 }
+fn browseTabs(ui: *app.Ui, screen: lib.Screen) !void {
+    try ui.open("browse-tabs", .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(28) } } });
+    defer ui.close();
+    inline for (.{ lib.Screen.sources, lib.Screen.extensions }) |tab| {
+        const active = screen == tab;
+        try ui.open(.{ .browse_tab = tab }, .{
+            .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .grow(.{}) }, .child_alignment = .center },
+            .background_color = if (active) .gray(245) else .white,
+            .border = .{ .color = if (active) .black else .gray(225), .widths = .{ .bottom = if (active) 3 else 1 } },
+            .on_click = if (active) null else if (tab == .sources) ui.messages(Root).bind(.{ .online = OnlineCommand.sources }) else ui.messages(Root).bind(.{ .online = OnlineCommand.extensions }),
+            .focusable = !active,
+        });
+        try text(ui, if (tab == .sources) "Sources" else "Extensions", 14, if (active) 0 else 65);
+        ui.close();
+    }
+}
+
+fn browseControl(ui: *app.Ui, key: anytype, label: []const u8, command: OnlineCommand, enabled: bool) !void {
+    try ui.open(key, .{
+        .layout = .{ .sizing = .{ .height = .fixed(24) }, .padding = .x(6), .child_alignment = .center },
+        .background_color = if (enabled and ui.pressed(key)) .gray(218) else .transparent,
+        .on_click = if (enabled) ui.messages(Root).bind(.{ .online = command }) else null,
+        .focusable = enabled,
+    });
+    defer ui.close();
+    try text(ui, label, 12, if (enabled) 0 else 130);
+}
+
+fn sourceInitial(ui: *app.Ui, label: []const u8) !void {
+    try ui.open(null, .{
+        .layout = .{ .sizing = .fixed(24), .child_alignment = .center },
+        .background_color = .gray(235),
+        .corner_radius = .uniform(6),
+    });
+    defer ui.close();
+    // Keep the first Unicode scalar intact for translated source names.
+    const initial = if (label.len == 0) "?" else label[0..@min(label.len, std.unicode.utf8ByteSequenceLength(label[0]) catch 1)];
+    try text(ui, initial, 16, 40);
+}
+
 fn browserView(ui: *app.Ui, session: *const Session) !void {
     const b = &session.browser;
     const screen = session.model.screen;
+    const root = screen == .sources or screen == .extensions;
+    if (root) try browseTabs(ui, screen);
     {
-        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .all(8), .child_gap = 5 } });
+        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = if (root) .init(8, 8, 1, 1) else .all(8), .child_gap = if (root) 2 else 5 } });
         defer ui.close();
         switch (screen) {
             .sources => {
-                try app.widgets.searchField(ui, "global-query", .{ .text = "", .placeholder = "Search all sources", .on_change = ui.messages(Root).handler(.global_query) });
-                try onlineButton(ui, "extensions", "Install / update extensions", .extensions);
+                try app.widgets.searchField(ui, "global-query", .{ .text = "", .placeholder = "Search all sources", .sizing = .{ .width = .grow(.{}), .height = .fixed(24) }, .on_change = ui.messages(Root).handler(.global_query) });
                 try ui.open(null, .{ .layout = .{ .child_gap = 6 } });
-                try onlineButton(ui, "reload-sources", "Reload sources", .reload_sources);
-                try onlineButton(ui, "show-hidden", if (b.show_hidden) "Enabled sources" else "All sources", .show_hidden);
-                try onlineButton(ui, "languages", "Languages", .languages);
+                try browseControl(ui, "reload-sources", "Reload sources", .reload_sources, true);
+                try browseControl(ui, "show-hidden", if (b.show_hidden) "Enabled sources" else "All sources", .show_hidden, true);
+                try browseControl(ui, "languages", "Languages", .languages, true);
                 ui.close();
             },
             .global_search => try text(ui, if (b.migrate_from != null) "Tap the title to move to; its read chapters, categories and notes come along." else "Tap a title to add it and view chapters.", 12, 40),
             .languages => try text(ui, "Sources in checked languages are listed and searched.", 12, 40),
             .extensions => {
-                try app.widgets.searchField(ui, "extension-query", .{ .text = b.query, .placeholder = "Filter extensions or language", .on_change = ui.messages(Root).handler(.online_query) });
-                try onlineButton(ui, "stores", "Extension stores", .stores);
-                try text(ui, "Tap an extension to install or update it.", 12, 40);
+                try app.widgets.searchField(ui, "extension-query", .{ .text = b.query, .placeholder = "Filter extensions or language", .sizing = .{ .width = .grow(.{}), .height = .fixed(24) }, .on_change = ui.messages(Root).handler(.online_query) });
+                try browseControl(ui, "stores", "Extension stores", .stores, true);
             },
             .catalog => {
                 try text(ui, b.source_name, 16, 0);
@@ -1321,7 +1398,7 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
     }
     const count = b.count(screen);
     {
-        try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .x(10), .child_gap = 4 } });
+        try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .x(10), .child_gap = 0 } });
         defer ui.close();
         if (count == 0) try text(ui, switch (screen) {
             .sources => "Install an extension to get started.",
@@ -1350,18 +1427,19 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
             };
             const key = .{ .online_row = i };
             try ui.open(key, .{
-                .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(33) }, .axis = .y, .padding = .init(8, 8, 3, 3) },
-                .background_color = rowFill(ui, key),
-                .border = .{ .color = .gray(140), .widths = .{ .bottom = 1 } },
+                .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(33) }, .axis = if (root) .x else .y, .padding = .init(4, 4, 3, 3), .child_gap = if (root) 8 else 0, .child_alignment = .center_left },
+                .background_color = if (ui.pressed(key)) .gray(218) else .white,
                 .on_click = ui.messages(Root).bind(.{ .online = command }),
             });
+            if (root) try sourceInitial(ui, label);
+            try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y } });
             try text(ui, label, 14, 0);
             switch (screen) {
-                .sources => try ui.print(.{ .font_size = 10, .color = .gray(60) }, "{s}  {s}", .{ b.source_rows[i].lang, b.source_notes[i] }),
+                .sources => try ui.print(.{ .font_size = 10, .color = .gray(60), .overflow = .ellipsis_end, .wrap_mode = .none }, "{s}  {s}", .{ b.source_rows[i].lang, b.source_notes[i] }),
                 .global_search => try text(ui, b.globalHit(i).?.source_name, 10, 60),
                 .extensions => {
                     const e = b.extensions.?.result.extensions[i];
-                    try ui.print(.{ .font_size = 10, .color = .gray(60) }, "{s}  {s}{s}{s}", .{ e.lang, if (!e.supported) "Unsupported" else if (e.hasUpdate) "Update available" else if (e.installed) "Installed" else "Install", if (e.nsfw) "  [18+]" else "", if (e.jarUrl == null) "  APK" else "" });
+                    try ui.print(.{ .font_size = 10, .color = .gray(60), .overflow = .ellipsis_end, .wrap_mode = .none }, "{s}  {s}{s}{s}", .{ e.lang, if (!e.supported) "Unsupported" else if (e.hasUpdate) "Update available" else if (e.installed) "Installed" else "Install", if (e.nsfw) "  [18+]" else "", if (e.jarUrl == null) "  APK" else "" });
                 },
                 .source_settings => {
                     const p = b.preferences.?.result.preferences[i];
@@ -1371,17 +1449,18 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
                 else => {},
             }
             ui.close();
+            ui.close();
         }
         ui.spacer();
     }
     {
-        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .all(8), .child_gap = 8, .child_alignment = .center_left } });
+        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(32) }, .padding = .x(8), .child_gap = 8, .child_alignment = .center_left } });
         defer ui.close();
-        try app.widgets.button(ui, "online-prev", .{ .label = "Previous", .enabled = b.offset > 0 or (screen == .catalog and b.page > 1), .on_click = ui.messages(Root).bind(.{ .online = OnlineCommand.previous }) });
+        try browseControl(ui, "online-prev", "Previous", .previous, b.offset > 0 or (screen == .catalog and b.page > 1));
         ui.spacer();
         try ui.print(.{ .font_size = 11 }, "{d} {s}", .{ count, if (count == 1) "result" else "results" });
         ui.spacer();
         const more_source_pages = screen == .catalog and b.titles != null and b.titles.?.result.page.?.hasNextPage;
-        try app.widgets.button(ui, "online-next", .{ .label = "Next", .enabled = b.offset + lib.Model.rows < count or more_source_pages, .on_click = ui.messages(Root).bind(.{ .online = OnlineCommand.next }) });
+        try browseControl(ui, "online-next", "Next", .next, b.offset + lib.Model.rows < count or more_source_pages);
     }
 }

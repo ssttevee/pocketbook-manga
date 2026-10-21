@@ -100,7 +100,7 @@ test "device UI installs a source, searches, adds and downloads a chapter, reads
     defer smoke.stop();
     try smoke.tapText("Browse");
     try finish(&session);
-    try smoke.tapText("Install / update extensions");
+    try smoke.tapText("Extensions");
     try finish(&session);
     try smoke.tapText("Fixture Extension");
     try finish(&session);
@@ -226,7 +226,7 @@ test "online rows use fabrum pressed state and small partial updates" {
     try smoke.tapText("Browse");
     try finish(&session);
     try smoke.expectRowFeedback("Fixture Source");
-    try smoke.tapText("Install / update extensions");
+    try smoke.tapText("Extensions");
     try finish(&session);
     try smoke.expectRowFeedback("Fixture Extension");
     try smoke.tapText("Fixture Extension");
@@ -422,7 +422,7 @@ test "device UI adds and removes an extension store" {
     defer smoke.stop();
     try smoke.tapText("Browse");
     try finish(&session);
-    try smoke.tapText("Install / update extensions");
+    try smoke.tapText("Extensions");
     try finish(&session);
     try smoke.tapText("Extension stores");
     try std.testing.expectEqual(lib.Screen.stores, model.screen);

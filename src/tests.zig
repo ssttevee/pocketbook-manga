@@ -160,6 +160,7 @@ test {
     _ = @import("smoke.zig");
     _ = @import("online_test.zig");
     _ = @import("navigation_test.zig");
+    _ = @import("browser_layout_test.zig");
     _ = @import("cover_test.zig");
     _ = @import("power.zig");
     _ = @import("device_io.zig");
@@ -573,4 +574,26 @@ test "title header and seven chapter rows fit with a real cover and long metadat
     try std.testing.expect(pager.bbox.y + pager.bbox.h <= 464);
     const status = h.findText("Library updated").?;
     try std.testing.expect(status.bbox.y + status.bbox.h <= 464);
+}
+
+test "history cover rows and pagination fit above the root navigation" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var model: lib.Model = .{ .gpa = arena.allocator(), .library = @import("smoke.zig").fixture, .screen = .history, .feed_count = 7 };
+    var feed: [7]@import("session.zig").FeedRow = undefined;
+    for (&feed, 0..) |*row, i| row.* = .{ .pick = .{ .manga = 0, .chapter = 0 }, .title = try std.fmt.allocPrint(arena.allocator(), "History title {d}", .{i}), .detail = "Chapter 1 · Reading" };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = ".", .feed = &feed, .load_cover = @import("smoke.zig").sampleCover };
+    defer session.deinit();
+    session.setStatus("Progress saved");
+    var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    const last = h.findText("History title 6").?;
+    const pager = h.findText("Next").?;
+    const nav = h.findElement(h.root().element("bottom-navigation")).?;
+    try std.testing.expect(last.bbox.y + last.bbox.h <= pager.bbox.y);
+    try std.testing.expect(pager.bbox.y + pager.bbox.h <= nav.bbox.y);
+    try std.testing.expect(nav.bbox.y + nav.bbox.h <= 464);
+    try h.click("History title 6");
+    try std.testing.expectEqual(lib.Screen.reader, model.screen);
 }

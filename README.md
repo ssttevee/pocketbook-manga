@@ -19,7 +19,10 @@ After installation, normal use needs only the reader and Wi-Fi. The UI starts th
 
 ## Use
 
-- **Browse → Install / update extensions:** filter the repository by name or language, then tap an extension to install or update it. libtachi checks the repository's signing key. Unsupported extension API versions are labelled.
+- **Library** uses two portrait cover cards per page, with unread and downloaded counts. Tap **List** for seven compact rows per page; the layout choice is saved. Category tabs and search filter either layout.
+- The bottom tabs follow Mihon: **Library, Updates, History, Browse, More**. **More** holds downloads, categories, statistics, backups, trackers and settings.
+- Local, custom and cached covers work offline. Missing online covers load quietly while the libtachi worker is already ready; opening a downloaded chapter never starts the JVM just for artwork. Unsupported or failed covers keep a placeholder.
+- **Browse → Extensions:** filter the repository by name or language, then tap an extension to install or update it. libtachi checks the repository's signing key. Unsupported extension API versions are labelled.
 - Tap an installed **source** to view popular titles. Use the reader's system keyboard and **Search**, or switch to **Latest**. **Previous / Next** browse results and source pages.
 - Tap a **title** to add it to your library and fetch its chapters. Tap an undownloaded **chapter** to download it and begin reading. Zig downloads plain GET images using the source's resolved requests, headers, cookies and rate limits. Unsupported requests and unknown response-transforming interceptors use the extension's JVM client. Each completed page is saved atomically; retry keeps completed pages, including after cancellation. Failures remain visible with progress and resume instructions.
 - **Refresh chapters** updates a title; **Update library** refreshes online titles. Existing page downloads and reading progress survive metadata updates.
@@ -29,7 +32,7 @@ After installation, normal use needs only the reader and Wi-Fi. The UI starts th
 - Hardware **Next / Prev** always move in reading order. In RTL mode, tap the page's left half to advance; in LTR mode, tap the right half. At the last page, **Chapter >** opens or downloads the next chapter.
 - **Back** returns to chapters, the library, then exits. **Aa** changes direction and full/partial refresh. Progress is saved on each page change.
 
-For local manga, place extracted JPEG/PNG files in `applications/pocketmanga/local/Title/Chapter/001.jpg`, as in Mihon's local source, then tap **Aa → Scan local manga**. Numeric filename runs sort naturally. Scanning merges titles into the existing library and preserves progress; it does not remove entries for deleted folders. No Java startup or network is needed for local scanning or reading.
+For local manga, place extracted JPEG/PNG files in `applications/pocketmanga/local/Title/Chapter/001.jpg`, as in Mihon's local source, then tap **More → Scan local manga**. Numeric filename runs sort naturally. Scanning merges titles into the existing library and preserves progress; it does not remove entries for deleted folders. No Java startup or network is needed for local scanning or reading.
 
 Data lives in `/mnt/ext1/applications/pocketmanga/`. The app accepts another absolute data folder as its first argument when invoked from a shell. `INKVIEW_LIBRARY` can override the InkView library path.
 
@@ -111,7 +114,7 @@ UI tests drive the actual fabrum InkView host through its fake framebuffer: sour
 
 ## Current limits
 
-This is an initial implementation, not feature parity with Mihon. There are no trackers, categories, cover grids, CBZ import, zoom, webtoon scrolling or custom repository UI yet. libtachi supports extensions-lib **1.6**; WebView/Cloudflare challenges, Android bitmap descrambling and some source-specific native compression remain libtachi limitations. JPEG and PNG images are supported; WebP/AVIF chapters fail explicitly.
+This is an initial implementation, not feature parity with Mihon. CBZ import, zoom and webtoon scrolling are not yet exposed by this UI. libtachi supports extensions-lib **1.6**; WebView/Cloudflare challenges, Android bitmap descrambling and some source-specific native compression remain libtachi limitations. JPEG and PNG images are supported; WebP/AVIF chapters fail explicitly.
 
 Zero interprets Java bytecode. Startup and extension loading can be slow on the Verse, especially with large multi-source extensions. The worker starts with a 16 MiB heap, capped at 128 MiB, with 96 MiB for class metadata and 512 KiB Java thread stacks (Serial GC, two active processors); installing many large extensions can exhaust that budget. Network responses have the source client's normal timeouts. Downloads publish their manifest only after every page succeeds; completed pages survive failure or cancellation for retry.
 

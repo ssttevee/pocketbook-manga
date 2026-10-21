@@ -12,6 +12,11 @@ pub fn main(init: std.process.Init) !void {
     try smoke.start(init.gpa, init.io, &session);
     defer smoke.stop();
     try smoke.writeScreen(init.gpa, init.io, "preview/library.pgm");
+    model.prefs.library_grid = false;
+    _ = smoke.fake.send(.show, 0, 0);
+    try smoke.writeScreen(init.gpa, init.io, "preview/library-list.pgm");
+    model.prefs.library_grid = true;
+    _ = smoke.fake.send(.show, 0, 0);
     try smoke.tapText("The Copper Lantern");
     try smoke.writeScreen(init.gpa, init.io, "preview/chapters.pgm");
     try smoke.pressText("Chapter 1 - A new beginning");
@@ -34,7 +39,7 @@ pub fn main(init: std.process.Init) !void {
     try smoke.tapText("Browse");
     try finish(&session);
     try smoke.writeScreen(init.gpa, init.io, "preview/sources.pgm");
-    try smoke.tapText("Install / update extensions");
+    try smoke.tapText("Extensions");
     try finish(&session);
     try smoke.writeScreen(init.gpa, init.io, "preview/extensions.pgm");
     try smoke.tapText("Fixture Extension");
