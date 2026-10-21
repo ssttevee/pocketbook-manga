@@ -167,6 +167,7 @@ test {
     _ = @import("region_integration_test.zig");
     _ = @import("reader_gesture_test.zig");
     _ = @import("power.zig");
+    _ = @import("wake_probe.zig");
     _ = @import("device_io.zig");
 }
 

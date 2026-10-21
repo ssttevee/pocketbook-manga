@@ -115,6 +115,8 @@ The extra QEMU build makes post-3.10 **guest** ARM syscalls return `ENOSYS` (inc
 
 UI tests drive the actual fabrum InkView host through its fake framebuffer: source installation, keyboard search, adding a title, downloading and opening a chapter, source preferences, physical keys, tap zones, Back, progress after metadata replacement, and failure handling. Partial image redraws are compared against a full redraw, including padded framebuffer rows.
 
+The separate [reader wake diagnostic](docs/reader-wake.md) tests completion delivery on physical firmware with periodic task polling disabled, without replacing the production app.
+
 ## Current limits
 
 This is an initial implementation, not feature parity with Mihon. CBZ import and zoom are not yet exposed by this UI. libtachi supports extensions-lib **1.6**; WebView/Cloudflare challenges, Android bitmap descrambling and some source-specific native compression remain libtachi limitations.

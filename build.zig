@@ -78,6 +78,15 @@ pub fn build(b: *std.Build) void {
     }) });
     probe.root_module.addCSourceFile(.{ .file = b.path("src/posix_compat.c"), .flags = &.{} });
     b.step("runtime-probe", "Build ARM UI/worker protocol diagnostic").dependOn(&b.addInstallArtifact(probe, .{}).step);
+    const wake_probe = b.addExecutable(.{ .name = "pocketmanga-wake-probe", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/wake_probe.zig"),
+        .target = device_target,
+        .optimize = optimize,
+        .imports = &device_imports,
+        .link_libc = true,
+    }) });
+    wake_probe.root_module.addCSourceFile(.{ .file = b.path("src/posix_compat.c"), .flags = &.{} });
+    b.step("wake-probe", "Build the standalone reader wake diagnostic").dependOn(&b.addInstallArtifact(wake_probe, .{}).step);
     const install = b.addInstallArtifact(device, .{});
     const launcher = b.addInstallFile(b.path("tools/pocketmanga-log.app"), "bin/pocketmanga-log.app");
     const device_step = b.step("device", "Build native Verse 6.8+ UI and isolated JVM worker");
