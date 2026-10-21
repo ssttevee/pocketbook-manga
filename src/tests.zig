@@ -93,7 +93,7 @@ test "chapter and title menus edit the library through libtachi" {
     try std.testing.expectEqual(lib.Screen.library, model.screen);
     try std.testing.expectEqual(0, model.titleCount());
     // Library settings are libtachi's.
-    try h.click("Aa");
+    try h.click("More");
     try h.click("Library settings");
     try h.click("[x] Update: skip completed titles");
     try std.testing.expect(!(try engine.loadSettings(a)).update.skip_completed);
@@ -121,7 +121,7 @@ test "categories and backups are managed through libtachi" {
     try h.frame();
     try session.addCategory("Later");
     try session.addCategory("Now");
-    try h.click("Aa");
+    try h.click("More");
     try h.click("Categories");
     try h.frame();
     try std.testing.expectEqual(2, model.library.categories.len);
@@ -159,6 +159,7 @@ test "page bounds and stale progress are clamped" {
 test {
     _ = @import("smoke.zig");
     _ = @import("online_test.zig");
+    _ = @import("navigation_test.zig");
     _ = @import("power.zig");
     _ = @import("device_io.zig");
 }
@@ -416,4 +417,37 @@ fn statusWithAllocationFailures(a: std.mem.Allocator) !void {
 
 test "status replacement owns formatted messages and survives allocation failure" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, statusWithAllocationFailures, .{});
+}
+
+test "library category tabs reach categories outside the visible window" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var library = fixture;
+    library.categories = &.{
+        .{ .id = 1, .order = 1, .name = "Favorites" },
+        .{ .id = 2, .order = 2, .name = "Reading" },
+        .{ .id = 3, .order = 3, .name = "Completed" },
+        .{ .id = 4, .order = 4, .name = "Later" },
+    };
+    var model: lib.Model = .{ .gpa = arena.allocator(), .library = library };
+    var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io };
+    defer session.deinit();
+    try session.refreshRows();
+    var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try h.click("Reading");
+    try std.testing.expectEqual(2, model.category);
+    try h.click("Completed");
+    try std.testing.expectEqual(3, model.category);
+    try h.click("Later");
+    try std.testing.expectEqual(4, model.category);
+    try h.click("Completed");
+    try std.testing.expectEqual(3, model.category);
+    try h.click("Reading");
+    try std.testing.expectEqual(2, model.category);
+    try h.click("Favorites");
+    try std.testing.expectEqual(1, model.category);
+    try h.click("Default");
+    try std.testing.expectEqual(0, model.category);
 }

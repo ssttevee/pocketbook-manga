@@ -453,7 +453,7 @@ test "device UI logs in to a tracker and tracks a title" {
     try session.reloadLibrary();
     try smoke.start(std.testing.allocator, std.testing.io, &session);
     defer smoke.stop();
-    try smoke.tapText("Aa");
+    try smoke.tapText("More");
     try smoke.tapText("Trackers");
     try smoke.tapText("Log in");
     try std.testing.expectEqual(lib.Screen.tracker_login, model.screen);
@@ -467,7 +467,7 @@ test "device UI logs in to a tracker and tracks a title" {
     try std.testing.expectEqual(lib.Screen.trackers, model.screen);
     try std.testing.expect(session.trackers.loggedIn(1));
     try smoke.tapText("Back");
-    try smoke.tapText("Back");
+    try smoke.tapText("Library");
     try smoke.tapText("...");
     try smoke.tapText("Tracking");
     try smoke.tapText("Find");

@@ -156,7 +156,7 @@ test "InkView system keyboard filters the library by title" {
     var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io };
     try start(std.testing.allocator, std.testing.io, &session);
     defer stop();
-    try tapText("Search title or author");
+    try tapText("Search library");
     try std.testing.expectEqual(1, fake.state.keyboards.items.len);
     fake.keyboardResult("observatory");
     fake.advance(1);

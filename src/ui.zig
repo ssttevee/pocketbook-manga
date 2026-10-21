@@ -8,16 +8,41 @@ const tachi = @import("tachi");
 const models = tachi.models;
 pub const OnlineCommand = union(enum) { stores, refresh_stores, remove_store: usize, toggle_pin, toggle_hidden, show_hidden, languages, toggle_language: usize, extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear, pick_global: usize };
 pub const BackupCommand = enum { create, export_downloads, import_downloads };
-pub const State = struct { focused: bool = false, tapping: bool = false, reader_updates: u8 = 0 };
+pub const Navigation = enum { library, updates, history, browse, more };
+pub const State = struct { more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { navigate: Navigation, reading_settings, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
     switch (msg) {
+        .navigate => |destination| {
+            if (session.browser.busy != null) return;
+            state.more_root = destination == .more;
+            state.reading_from_more = false;
+            session.browser.offset = 0;
+            const action: lib.Action = switch (destination) {
+                .library => .{ .feed = .library },
+                .updates => .{ .feed = .updates },
+                .history => .{ .feed = .history },
+                .browse => .help,
+                .more => .settings,
+            };
+            // Reselecting Browse keeps its current source snapshot.
+            if (destination != .browse or session.model.screen != .sources) {
+                try session.act(action);
+                if (destination == .browse) session.start(.sources);
+            }
+            ctx.focus("screen");
+        },
         .poll => {
             try session.poll();
             if (session.browser.busy == null) ctx.focus("screen");
+        },
+        .reading_settings => {
+            state.more_root = false;
+            state.reading_from_more = true;
+            ctx.focus("screen");
         },
         .online => |command| try onlineUpdate(session, command, ctx),
         .confirm_add => |add| if (session.browser.busy == null) session.confirmAdd(add),
@@ -117,13 +142,23 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
         },
         .act => |action| {
             if (session.browser.busy != null) return;
+            if (action == .back and state.reading_from_more and session.model.screen == .settings) {
+                state.reading_from_more = false;
+                state.more_root = true;
+                ctx.focus("screen");
+                return;
+            }
+            if (action == .settings) {
+                state.more_root = false;
+                state.reading_from_more = false;
+            }
             if (action == .help) {
                 session.browser.offset = 0;
                 try session.act(action);
                 session.start(.sources);
                 return;
             }
-            const effective: lib.Action = if (action == .next_chapter) .{ .read = session.next_chapter orelse return } else action;
+            const effective: lib.Action = if (action == .back and state.more_root and (session.model.screen == .queue or session.model.screen == .upcoming)) .{ .feed = .settings } else if (action == .next_chapter) .{ .read = session.next_chapter orelse return } else action;
             const pick: ?lib.Pick = switch (effective) {
                 .read => |i| .{ .manga = session.model.manga, .chapter = i },
                 .open_chapter => |p| p,
@@ -193,7 +228,17 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                 .f => |n| if (n == 10) .settings else return,
                 else => return,
             };
-            try session.act(action);
+            if (action == .settings) {
+                state.more_root = false;
+                state.reading_from_more = false;
+            }
+            if (action == .back and state.reading_from_more and model.screen == .settings) {
+                state.reading_from_more = false;
+                state.more_root = true;
+                return;
+            }
+            const effective: lib.Action = if (action == .back and state.more_root and (model.screen == .queue or model.screen == .upcoming)) .{ .feed = .settings } else action;
+            try session.act(effective);
             if (model.screen == .reader) refreshReader(state, session, ctx);
         },
     }
@@ -210,7 +255,7 @@ fn rowFill(ui: *app.Ui, key: anytype) f.Color {
     // Same interaction queries and 12% pressed shading as app.drawn.button.
     if (ui.pressed(key)) return .gray(216);
     if (ui.capabilities().hover and ui.hovered(key)) return .gray(247);
-    return .gray(246);
+    return .white;
 }
 fn downloadIdentity(ui: *app.Ui, series: []const u8, chapter: []const u8) !void {
     const style: f.layout.text.Style = .{ .font_size = 17, .wrap_mode = .words };
@@ -239,6 +284,116 @@ fn text(ui: *app.Ui, value: []const u8, size: f32, gray: u8) !void {
 fn button(ui: *app.Ui, key: anytype, label: []const u8, action: lib.Action) !void {
     try app.widgets.button(ui, key, .{ .label = label, .on_click = ui.messages(Root).bind(.{ .act = action }) });
 }
+fn rootNavigation(screen: lib.Screen, more_root: bool) ?Navigation {
+    return switch (screen) {
+        .library => .library,
+        .updates => .updates,
+        .history => .history,
+        .sources => .browse,
+        .settings => if (more_root) .more else null,
+        else => null,
+    };
+}
+
+fn navigationBar(ui: *app.Ui, selected: Navigation, enabled: bool) !void {
+    try ui.open("bottom-navigation", .{
+        .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(58) }, .padding = .init(4, 4, 4, 4), .child_alignment = .center },
+        .background_color = .gray(247),
+        .border = .{ .color = .gray(220), .widths = .{ .top = 1 } },
+    });
+    defer ui.close();
+    inline for (std.meta.tags(Navigation)) |destination| {
+        const active = destination == selected;
+        try ui.open(@tagName(destination), .{
+            .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .grow(.{}) }, .axis = .y, .child_gap = 3, .child_alignment = .center },
+            .on_click = if (enabled) ui.messages(Root).bind(.{ .navigate = destination }) else null,
+            .focusable = enabled,
+        });
+        try ui.open(null, .{
+            .layout = .{ .sizing = .{ .width = .fixed(44), .height = .fixed(25) }, .child_alignment = .center },
+            .background_color = if (active or ui.pressed(@tagName(destination))) .gray(218) else .transparent,
+            .corner_radius = .uniform(13),
+        });
+        try navigationIcon(ui, destination);
+        ui.close();
+        try text(ui, switch (destination) {
+            .library => "Library",
+            .updates => "Updates",
+            .history => "History",
+            .browse => "Browse",
+            .more => "More",
+        }, 11, if (active) 0 else 65);
+        ui.close();
+    }
+}
+
+// Draw the navigation marks from simple shapes so the device font needs no icons.
+fn navigationIcon(ui: *app.Ui, destination: Navigation) !void {
+    switch (destination) {
+        .library => {
+            try ui.open(null, .{ .layout = .{ .child_gap = 2, .child_alignment = .bottom_center } });
+            for ([_]f32{ 13, 16, 12 }) |height| {
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(4), .height = .fixed(height) } }, .border = .{ .color = .black, .widths = .outside(1) } });
+                ui.close();
+            }
+            ui.close();
+        },
+        .updates => {
+            try ui.open(null, .{ .layout = .{ .axis = .y, .child_gap = 3 } });
+            for (0..3) |_| {
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(16), .height = .fixed(2) } }, .background_color = .black });
+                ui.close();
+            }
+            ui.close();
+        },
+        .history, .browse => {
+            try ui.open(null, .{ .layout = .{ .sizing = .fixed(17), .child_alignment = .center }, .border = .{ .color = .black, .widths = .outside(1) }, .corner_radius = .uniform(9) });
+            try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(if (destination == .history) 2 else 5), .height = .fixed(7) } }, .background_color = .black });
+            ui.close();
+            ui.close();
+        },
+        .more => {
+            try ui.open(null, .{ .layout = .{ .child_gap = 3 } });
+            for (0..3) |_| {
+                try ui.open(null, .{ .layout = .{ .sizing = .fixed(3) }, .background_color = .black, .corner_radius = .uniform(2) });
+                ui.close();
+            }
+            ui.close();
+        },
+    }
+}
+
+fn moreView(ui: *app.Ui) !void {
+    const on = ui.messages(Root);
+    try ui.open("more-menu", .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .init(12, 12, 4, 4) } });
+    defer ui.close();
+    const destinations = .{
+        .{ "more-downloads", "Download queue", lib.Screen.queue },
+        .{ "more-categories", "Categories", lib.Screen.categories },
+        .{ "more-stats", "Statistics", lib.Screen.stats },
+        .{ "more-backup", "Backup and restore", lib.Screen.backup },
+        .{ "more-trackers", "Trackers", lib.Screen.trackers },
+        .{ "more-upcoming", "Upcoming", lib.Screen.upcoming },
+        .{ "more-library-settings", "Library settings", lib.Screen.engine_settings },
+    };
+    inline for (destinations) |destination| try moreRow(ui, destination[0], destination[1], on.bind(.{ .act = @as(lib.Action, .{ .feed = destination[2] }) }));
+    try moreRow(ui, "more-reading-settings", "Reading settings", on.bind(.reading_settings));
+    try moreRow(ui, "more-scan-local", "Scan local manga", on.bind(.{ .online = .scan }));
+    ui.spacer();
+    try moreRow(ui, "more-quit", "Close PocketManga", on.bind(.quit));
+}
+
+fn moreRow(ui: *app.Ui, key: anytype, label: []const u8, action: app.Action) !void {
+    try ui.open(key, .{
+        .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(32) }, .padding = .init(8, 8, 0, 0), .child_alignment = .center_left },
+        .background_color = if (ui.pressed(key)) .gray(218) else .white,
+        .on_click = action,
+        .focusable = true,
+    });
+    defer ui.close();
+    try text(ui, label, 15, 0);
+}
+
 pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
     const session = ui.use(Session);
     const model = session.model;
@@ -251,17 +406,18 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         .focus = .{ .on_key = on.handler(.key), .keys = .{ .typing = false, .escape = true } },
     });
     defer ui.close();
-    // A compact toolbar, with 36-point touch targets on the Verse.
+    const navigation = rootNavigation(model.screen, state.more_root);
+    // Mihon keeps a named destination in the app bar and primary tabs below.
     {
-        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .all(8), .child_gap = 6, .child_alignment = .center_left }, .border = .{ .color = .black, .widths = .{ .bottom = 1 } } });
+        try ui.open("toolbar", .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(48) }, .padding = .init(12, 12, 4, 4), .child_gap = 8, .child_alignment = .center_left }, .border = .{ .color = .gray(220), .widths = .{ .bottom = 1 } } });
         defer ui.close();
-        if (model.screen != .library and session.browser.busy == null) try button(ui, "back", "Back", .back);
+        if (navigation == null and session.browser.busy == null) try button(ui, "back", "Back", .back);
         try text(ui, switch (model.screen) {
-            .library => "PocketManga",
+            .library => "Library",
             .chapters => "Chapters",
             .reader => "Reader",
-            .settings => "Settings",
-            .sources => "Sources",
+            .settings => if (state.more_root) "More" else "Settings",
+            .sources => "Browse",
             .extensions => "Extensions",
             .catalog => "Browse",
             .source_settings => "Source settings",
@@ -284,10 +440,9 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             .duplicate => "Already in library?",
             .title_options => "Chapter options",
             .upcoming => "Upcoming",
-        }, 19, 0);
+        }, 22, 0);
         ui.spacer();
-        if (model.screen == .library and session.browser.busy == null) try button(ui, "browse", "Browse", .help);
-        if (model.screen != .settings and session.browser.busy == null) try button(ui, "settings", "Aa", .settings);
+        if (navigation == null and model.screen != .settings and session.browser.busy == null) try button(ui, "settings", "Aa", .settings);
     }
     if (session.download_error and session.browser.busy == null) {
         try ui.open("download-error", .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .all(10), .child_gap = 5 }, .border = .{ .color = .black, .widths = .outside(2) } });
@@ -333,7 +488,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
     } else switch (model.screen) {
         .library, .chapters => try list(ui, model),
         .reader => try reader(ui, session),
-        .settings => {
+        .settings => if (state.more_root) try moreView(ui) else {
             try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 16 } });
             defer ui.close();
             try text(ui, "Reading direction", 15, 0);
@@ -376,90 +531,109 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         .categories => try categoriesView(ui, model),
     }
     if (session.status.len > 0 and !session.download_error and session.browser.busy == null) try text(ui, session.status, 11, 0);
+    if (navigation) |selected| try navigationBar(ui, selected, session.browser.busy == null);
 }
 fn list(ui: *app.Ui, model: *const lib.Model) !void {
     const is_library = model.screen == .library;
     const count = if (is_library) model.titleCount() else model.chapterCount();
+    const on = ui.messages(Root);
     {
-        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .all(10), .child_gap = 4 } });
+        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .init(12, 12, 4, 6), .child_gap = 5 } });
         defer ui.close();
         if (is_library) {
-            try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 6, .child_alignment = .center_left } });
-            defer ui.close();
-            if (model.library.manga.len > 0) try onlineButton(ui, "update-library", "Update", .update_all);
-            try button(ui, "updates", "Updates", .{ .feed = .updates });
-            try button(ui, "history", "History", .{ .feed = .history });
-        }
-        if (is_library) {
-            try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 6, .child_alignment = .center_left } });
-            defer ui.close();
-            try button(ui, "queue", "Downloads", .{ .feed = .queue });
-            try button(ui, "upcoming", "Upcoming", .{ .feed = .upcoming });
-        }
-        if (is_library) try app.widgets.searchField(ui, "query", .{ .text = model.query_text, .placeholder = "Search title or author", .on_change = ui.messages(Root).handler(.query) });
-        if (is_library and model.categories.len > 1) {
-            try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 8, .child_alignment = .center_left } });
-            defer ui.close();
-            try app.widgets.button(ui, "previous-category", .{ .label = "<", .enabled = model.category > 0, .on_click = ui.messages(Root).bind(.{ .act = @as(lib.Action, .{ .category = -1 }) }) });
-            ui.spacer();
-            try text(ui, model.categories[model.category], 14, 0);
-            ui.spacer();
-            try app.widgets.button(ui, "next-category", .{ .label = ">", .enabled = model.category + 1 < model.categories.len, .on_click = ui.messages(Root).bind(.{ .act = @as(lib.Action, .{ .category = 1 }) }) });
-        }
-        if (!is_library) {
-            try text(ui, model.library.manga[model.manga].title, 17, 0);
-            if (model.library.manga[model.manga].source_id != null) {
-                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 6, .child_alignment = .center_left } });
+            {
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 8, .child_alignment = .center_left } });
                 defer ui.close();
-                try onlineButton(ui, "refresh-chapters", "Refresh chapters", .refresh_book);
-                try onlineButton(ui, "queue-unread", "Queue unread", .queue_unread);
+                try app.widgets.searchField(ui, "query", .{ .text = model.query_text, .placeholder = "Search library", .on_change = on.handler(.query) });
+                if (model.library.manga.len > 0) try onlineButton(ui, "update-library", "Update", .update_all);
+            }
+            if (model.categories.len > 1) {
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 12, .child_alignment = .center_left }, .border = .{ .color = .gray(220), .widths = .{ .bottom = 1 } } });
+                defer ui.close();
+                // Show adjacent categories as tabs while keeping every category reachable.
+                const first = model.category -| 1;
+                if (first > 0) try app.widgets.button(ui, "previous-category", .{ .label = "<", .on_click = on.bind(.{ .act = @as(lib.Action, .{ .category = -1 }) }) });
+                for (first..@min(first + 3, model.categories.len)) |i| {
+                    const selected = i == model.category;
+                    try ui.open(.{ .category_tab = i }, .{
+                        .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .init(2, 2, 5, 5) },
+                        .border = .{ .color = .black, .widths = .{ .bottom = if (selected) 2 else 0 } },
+                        .on_click = on.bind(.{ .act = @as(lib.Action, .{ .category = @as(i32, @intCast(i)) - @as(i32, @intCast(model.category)) }) }),
+                    });
+                    try text(ui, model.categories[i], 13, if (selected) 0 else 90);
+                    ui.close();
+                }
+                ui.spacer();
+                if (first + 3 < model.categories.len) try app.widgets.button(ui, "next-category", .{ .label = ">", .on_click = on.bind(.{ .act = @as(lib.Action, .{ .category = 1 }) }) });
+            } else try ui.print(.{ .font_size = 11, .color = .gray(90) }, "{d} {s}", .{ count, if (count == 1) "title" else "titles" });
+        } else {
+            const manga = model.library.manga[model.manga];
+            try text(ui, manga.title, 19, 0);
+            if (manga.author.len > 0) try text(ui, manga.author, 12, 80);
+            {
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 8, .child_alignment = .center_left } });
+                defer ui.close();
+                try ui.print(.{ .font_size = 12, .color = .gray(70) }, "{d} {s}", .{ count, if (count == 1) "chapter" else "chapters" });
+                ui.spacer();
+                if (manga.source_id != null) {
+                    try onlineButton(ui, "refresh-chapters", "Refresh chapters", .refresh_book);
+                    try onlineButton(ui, "queue-unread", "Queue unread", .queue_unread);
+                }
             }
         }
-        try ui.print(.{ .font_size = 12, .color = .gray(60) }, "{d} {s}  /  Library", .{ count, if (is_library) (if (count == 1) "title" else "titles") else (if (count == 1) "chapter" else "chapters") });
     }
     {
-        try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .x(10), .child_gap = 4 } });
+        try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .x(12), .child_gap = 1 } });
         defer ui.close();
         if (count == 0) {
-            try text(ui, if (model.query_text.len > 0) "No matching titles" else "Your next story starts here", 18, 0);
-            try text(ui, "Tap Browse to install sources and add manga.", 12, 60);
-            try text(ui, "Local folders can be scanned in Settings.", 12, 60);
+            ui.spacer();
+            try text(ui, if (model.query_text.len > 0) "No matching titles" else "Your library is empty", 18, 0);
+            try text(ui, "Find something to read in Browse.", 12, 80);
+            try text(ui, "Local folders can be scanned in More.", 12, 80);
         }
         for (@min(model.offset, count)..@min(model.offset + lib.Model.rows, count)) |row| {
             const i = if (is_library) model.titleIndex(row) else model.chapterIndex(row);
             const title = if (is_library) model.library.manga[i].title else model.library.manga[model.manga].chapters[i].title;
-            const on = ui.messages(Root);
             const key = .{ .row = i };
-            try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_alignment = .center_left }, .border = .{ .color = .gray(130), .widths = .{ .bottom = 1 } } });
+            try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_alignment = .center_left } });
             defer {
                 app.widgets.button(ui, .{ .menu = i }, .{ .label = "...", .on_click = on.bind(.{ .act = @as(lib.Action, .{ .menu = i }) }) }) catch {};
                 ui.close();
             }
             try ui.open(key, .{
-                .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(37) }, .axis = .y, .padding = .init(8, 8, 3, 3), .child_gap = 1 },
+                .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(34) }, .axis = .y, .padding = .init(2, 6, 3, 3), .child_gap = 2 },
                 .background_color = rowFill(ui, key),
                 .on_click = on.bind(.{ .act = if (is_library) @as(lib.Action, .{ .open = i }) else @as(lib.Action, .{ .read = i }) }),
             });
-            try text(ui, title, 14, 0);
             if (is_library) {
-                const n = model.library.manga[i].chapters.len;
-                try ui.print(.{ .font_size = 10, .color = .gray(60) }, "{d} {s}  {s}", .{ n, if (n == 1) "chapter" else "chapters", model.library.manga[i].author });
+                const manga = model.library.manga[i];
+                const counts = manga.counts();
+                try text(ui, title, 14, 0);
+                try ui.print(.{ .font_size = 10, .color = .gray(90) }, "{d} unread  ·  {s}", .{ counts.unread, manga.author });
             } else {
                 const ch = model.library.manga[model.manga].chapters[i];
-                if (ch.pages.len == 0) try text(ui, "Tap to download and read", 10, 60) else try ui.print(.{ .font_size = 10, .color = .gray(60) }, "{d} {s}  /  {s}", .{ ch.pages.len, if (ch.pages.len == 1) "page" else "pages", if (model.readState(ch).read) "Read" else if (model.readState(ch).started) "Reading" else "Unread" });
+                const state = model.readState(ch);
+                const gray: u8 = if (state.read) 120 else 0;
+                try text(ui, title, 14, gray);
+                try ui.print(.{ .font_size = 10, .color = .gray(if (state.read) 130 else 90), .overflow = .ellipsis_end, .wrap_mode = .none }, "{s}{s}{s}{s}", .{
+                    if (ch.bookmark) "Bookmarked · " else "",
+                    if (ch.downloaded()) "Downloaded" else if (state.started and !state.read) "Reading" else if (state.read) "Read" else "Not downloaded",
+                    if (ch.scanlator != null) " · " else "",
+                    ch.scanlator orelse "",
+                });
             }
             ui.close();
         }
         ui.spacer();
     }
     {
-        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .all(8), .child_gap = 8, .child_alignment = .center_left } });
+        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .init(12, 12, 4, 4), .child_gap = 8, .child_alignment = .center_left } });
         defer ui.close();
-        try app.widgets.button(ui, "previous-list", .{ .label = "Previous", .enabled = model.offset > 0, .on_click = ui.messages(Root).bind(.{ .act = @as(lib.Action, .{ .list_page = -1 }) }) });
+        try app.widgets.button(ui, "previous-list", .{ .label = "Previous", .enabled = model.offset > 0, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = -1 }) }) });
         ui.spacer();
-        try ui.print(.{ .font_size = 12 }, "{d}/{d}", .{ if (count == 0) @as(usize, 0) else model.offset / lib.Model.rows + 1, (count + lib.Model.rows - 1) / lib.Model.rows });
+        try ui.print(.{ .font_size = 11, .color = .gray(90) }, "{d}/{d}", .{ if (count == 0) @as(usize, 0) else model.offset / lib.Model.rows + 1, (count + lib.Model.rows - 1) / lib.Model.rows });
         ui.spacer();
-        try app.widgets.button(ui, "next-list", .{ .label = "Next", .enabled = model.offset + lib.Model.rows < count, .on_click = ui.messages(Root).bind(.{ .act = @as(lib.Action, .{ .list_page = 1 }) }) });
+        try app.widgets.button(ui, "next-list", .{ .label = "Next", .enabled = model.offset + lib.Model.rows < count, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = 1 }) }) });
     }
 }
 /// libtachi's settings, one row each: checks for switches, values for the rest.

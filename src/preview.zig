@@ -131,10 +131,12 @@ fn libraryScreens(init: std.process.Init, session: *Session, model: *lib.Model) 
     smoke.fake.advance(250);
     try smoke.writeScreen(init.gpa, io, "preview/library-categories.pgm");
     for ([_][]const u8{ "Updates", "History", "Downloads", "Upcoming" }) |screen| {
-        try smoke.tapText(screen);
+        if (std.mem.eql(u8, screen, "Downloads") or std.mem.eql(u8, screen, "Upcoming")) try smoke.tapText("More");
+        try smoke.tapText(if (std.mem.eql(u8, screen, "Downloads")) "Download queue" else screen);
         var name_buf: [64]u8 = undefined;
         try smoke.writeScreen(init.gpa, io, try std.fmt.bufPrint(&name_buf, "preview/{s}.pgm", .{screen}));
-        try smoke.tapText("Back");
+        if (model.screen == .queue or model.screen == .upcoming) try smoke.tapText("Back");
+        try smoke.tapText("Library");
     }
     try smoke.tapText("The Copper Lantern");
     try smoke.tapText("...");
@@ -147,7 +149,8 @@ fn libraryScreens(init: std.process.Init, session: *Session, model: *lib.Model) 
     try smoke.writeScreen(init.gpa, io, "preview/chapter-options.pgm");
     try smoke.tapText("Back");
     try smoke.tapText("Back");
-    try smoke.tapText("Aa");
+    try smoke.tapText("More");
+    try smoke.writeScreen(init.gpa, io, "preview/more.pgm");
     try smoke.tapText("Library settings");
     try smoke.writeScreen(init.gpa, io, "preview/library-settings.pgm");
     try smoke.tapText("Back");
