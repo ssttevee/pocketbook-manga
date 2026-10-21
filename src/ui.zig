@@ -13,7 +13,7 @@ pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const Navigation = enum { library, updates, history, browse, more };
 pub const State = struct { storage_snapshot: ?storage.Snapshot = null, storage_revision: u32 = 0, storage_clearing: bool = false, more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, pointer_start: ?f.Vec2 = null, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage }, jump_chapter, jump_page, page_target: ?[]const u8, dismiss_error, dismiss_status: u64, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage, series }, jump_chapter, jump_page, page_target: ?[]const u8, dismiss_error, dismiss_status: u64, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
@@ -75,7 +75,8 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                     if (engine.queue.running()) return;
                     state.storage_clearing = true;
                 },
-                .manage => if (session.browser.engine != null) {
+                .manage, .series => if (session.browser.engine != null) {
+                    session.storage_series = action == .series;
                     session.storage_managing = true;
                     // The inventory task owns filtering and filesystem inspection.
                     try session.model.dispatch(.{ .feed = .library });
@@ -584,7 +585,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         if (total > 0) try ui.print(.{ .font_size = 14 }, "{d} / {d} pages", .{ job.pages_done.load(.acquire), total });
         try onlineButton(ui, "cancel-job", "Cancel", .cancel);
     } else switch (model.screen) {
-        .library => if (session.storage_managing) try ui.child(@import("storage_manager.zig"), "storage-manager", .{}) else try list(ui, model),
+        .library => if (session.storage_managing) try ui.child(@import("storage_manager.zig"), "storage-manager", .{ .series = session.storage_series }) else try list(ui, model),
         .chapters => try list(ui, model),
         .reader => try reader(ui, session),
         .settings => if (state.more_root) try moreView(ui) else {
@@ -665,7 +666,7 @@ fn toolbar(ui: *app.Ui, session: *const Session, navigation: ?Navigation) !void 
         defer ui.close();
         if (navigation == null and session.browser.busy == null) try button(ui, "back", "Back", .back);
         try text(ui, switch (model.screen) {
-            .library => if (session.storage_managing) "Downloads" else "Library",
+            .library => if (session.storage_managing) (if (session.storage_series) "Series" else "Downloads") else "Library",
             .chapters => "Chapters",
             .reader => "Reader",
             .settings => if (navigation == .more) "More" else "Settings",
@@ -706,7 +707,7 @@ fn storageView(ui: *app.Ui, session: *const Session, state: *const State) !void 
     };
     try ui.task("storage-inspection", .{ .restart = state.storage_revision }, storage.inspect, .{engine}, on.handler(.storage_loaded));
     if (state.storage_clearing) try ui.task("clear-online-cache", .{}, storage.clearCache, .{engine}, on.handler(.storage_cleared));
-    try ui.open("storage-content", .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 10 } });
+    try ui.open("storage-content", .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 5 } });
     defer ui.close();
     try text(ui, "New downloads", 18, 0);
     const selected_sd = session.settings.downloads.storage == .sd_card;
@@ -719,12 +720,18 @@ fn storageView(ui: *app.Ui, session: *const Session, state: *const State) !void 
             if (!item[1].present) {
                 try ui.print(.{ .font_size = 13 }, "{s}: not inserted or unavailable", .{item[0]});
             } else {
-                try ui.print(.{ .font_size = 13 }, "{s}: {d} MiB of downloads", .{ item[0], item[1].bytes / (1 << 20) });
-                if (item[1].available) |bytes| try ui.print(.{ .font_size = 12 }, "{d} MiB available", .{bytes / (1 << 20)});
+                try ui.print(.{ .font_size = 13 }, "{s}: {d} MiB downloads", .{ item[0], item[1].bytes / (1 << 20) });
+                try ui.print(.{ .font_size = 11 }, "Cache {d} MiB · Covers {d} MiB · App data {d} MiB", .{ item[1].cache / (1 << 20), item[1].covers / (1 << 20), item[1].other / (1 << 20) });
+                if (item[1].disk_total) |bytes| try ui.print(.{ .font_size = 11 }, "Disk {d} MiB · Free {d} MiB · Other {d} MiB", .{ bytes / (1 << 20), (item[1].available orelse 0) / (1 << 20), ((item[1].used orelse 0) -| (item[1].bytes + item[1].cache + item[1].covers + item[1].other)) / (1 << 20) });
             }
         }
     } else try text(ui, "Checking storage...", 13, 0);
-    try app.widgets.button(ui, "storage-manage", .{ .label = "Manage downloaded chapters", .on_click = on.bind(.{ .storage_action = .manage }) });
+    {
+        try ui.open("storage-management", .{ .layout = .{ .child_gap = 6 } });
+        defer ui.close();
+        try app.widgets.button(ui, "storage-series", .{ .label = "Manage series", .on_click = on.bind(.{ .storage_action = .series }) });
+        try app.widgets.button(ui, "storage-manage", .{ .label = "Manage chapters", .on_click = on.bind(.{ .storage_action = .manage }) });
+    }
     try app.widgets.button(ui, "storage-clear-cache", .{ .label = if (state.storage_clearing) "Clearing cache..." else "Clear online reading cache", .enabled = !state.storage_clearing and !engine.queue.running(), .on_click = on.bind(.{ .storage_action = .clear_cache }) });
 }
 

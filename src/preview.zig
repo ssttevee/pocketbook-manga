@@ -171,15 +171,30 @@ fn libraryScreens(init: std.process.Init, session: *Session, model: *lib.Model) 
     try smoke.tapText("Statistics");
     try smoke.writeScreen(init.gpa, io, "preview/statistics.pgm");
     try smoke.tapText("Back");
+    try std.Io.Dir.cwd().createDirPath(io, "preview/demo-card");
+    engine.options.sd_dir = "preview/demo-card";
     try smoke.tapText("Manage storage");
-    smoke.fake.advance(250);
-    try smoke.tapText("Manage downloaded chapters");
+    for (0..100) |_| {
+        smoke.fake.advance(50);
+        if (@import("fabrum").app.testing.findText(smoke.Host.Runtime.Text, smoke.Host.instance.runtime.context(), "Checking storage...") == null) break;
+        try io.sleep(.fromMilliseconds(10), .awake);
+    }
+    try smoke.writeScreen(init.gpa, io, "preview/storage.pgm");
+    try smoke.tapText("Manage chapters");
     for (0..100) |_| {
         smoke.fake.advance(50);
         if (@import("fabrum").app.testing.findText(smoke.Host.Runtime.Text, smoke.Host.instance.runtime.context(), "Loading downloaded chapters...") == null) break;
         try io.sleep(.fromMilliseconds(10), .awake);
     }
     try smoke.writeScreen(init.gpa, io, "preview/download-manager.pgm");
+    try smoke.tapText("Back");
+    try smoke.tapText("Manage series");
+    for (0..100) |_| {
+        smoke.fake.advance(50);
+        if (@import("fabrum").app.testing.findText(smoke.Host.Runtime.Text, smoke.Host.instance.runtime.context(), "Loading downloaded series...") == null) break;
+        try io.sleep(.fromMilliseconds(10), .awake);
+    }
+    try smoke.writeScreen(init.gpa, io, "preview/series-manager.pgm");
 }
 
 fn finish(session: *Session) !void {

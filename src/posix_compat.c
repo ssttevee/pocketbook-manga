@@ -77,3 +77,11 @@ int pm_storage_free(const char *path, uint64_t *available) {
     *available = (uint64_t)st.f_bavail * st.f_frsize;
     return 0;
 }
+
+int pm_storage_capacity(const char *path, uint64_t *total, uint64_t *used) {
+    struct statvfs st;
+    if (statvfs(path, &st)) return errno;
+    *total = (uint64_t)st.f_blocks * st.f_frsize;
+    *used = (uint64_t)(st.f_blocks - st.f_bfree) * st.f_frsize;
+    return 0;
+}

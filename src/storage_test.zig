@@ -48,6 +48,9 @@ test "storage inspection counts both volumes and cache clearing preserves downlo
     defer tmp.cleanup();
     try tmp.dir.createDirPath(std.testing.io, "internal/downloads/chapter");
     try tmp.dir.createDirPath(std.testing.io, "internal/cache/chapters/pages");
+    try tmp.dir.createDirPath(std.testing.io, "internal/covers");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "internal/covers/cover.png", .data = "cover" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "internal/data.txt", .data = "data" });
     try tmp.dir.createDirPath(std.testing.io, "card/pocketmanga/downloads/chapter");
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "internal/downloads/chapter/1.png", .data = "image" });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "internal/cache/chapters/pages/page.png", .data = "cache" });
@@ -66,8 +69,17 @@ test "storage inspection counts both volumes and cache clearing preserves downlo
     try h.runTasks();
     const snapshot = h.state().storage_snapshot.?;
     try std.testing.expectEqual(5, snapshot.internal.bytes);
+    try std.testing.expectEqual(5, snapshot.internal.cache);
+    try std.testing.expectEqual(5, snapshot.internal.covers);
+    try std.testing.expect(snapshot.internal.other >= 4);
     try std.testing.expectEqual(12, snapshot.sd_card.bytes);
     try std.testing.expect(snapshot.internal.present and snapshot.sd_card.present);
+    try std.testing.expect(snapshot.internal.disk_total.? > 0);
+    try std.testing.expect(snapshot.internal.used.? <= snapshot.internal.disk_total.?);
+    try std.testing.expect(snapshot.sd_card.disk_total.? > 0);
+    const clear = h.findText("Clear online reading cache").?;
+    try std.testing.expect(clear.bbox.y + clear.bbox.h <= 464);
+    try h.expectText("Manage series");
     try h.click("[ ] SD card");
     var reopened: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = root, .sd_dir = sd });
     defer reopened.queue.deinit(&reopened);
@@ -103,7 +115,7 @@ test "download management shows compact selectable chapters and returns to stora
     var h: Harness = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
     defer h.deinit();
     try h.frame();
-    try h.click("Manage downloaded chapters");
+    try h.click("Manage chapters");
     try h.runTasks();
     try h.expectText("Downloads");
     try h.expectText("[ ] Saved story");
@@ -128,4 +140,39 @@ test "download management shows compact selectable chapters and returns to stora
     try session.refreshRows();
     try h.frame();
     try h.expectText("Online story");
+}
+
+test "series storage management groups chapters and applies bulk reading state" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = root });
+    defer engine.queue.deinit(&engine);
+    const library: lib.Library = .{ .manga = &.{.{ .id = "series", .title = "Saved series", .source_id = 1, .chapters = &.{
+        .{ .id = "one", .title = "One", .pages = &.{"downloads/one.png"} },
+        .{ .id = "two", .title = "Two", .pages = &.{"downloads/two.png"} },
+        .{ .id = "three", .title = "Not downloaded" },
+    } }} };
+    try engine.store.save(a, library);
+    var model: lib.Model = .{ .gpa = a, .screen = .storage, .library = library };
+    var session: Session = .{ .model = &model, .root = root, .io = std.testing.io };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    var h: Harness = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try h.click("Manage series");
+    try h.runTasks();
+    try h.expectText("1 series · 0 selected");
+    try h.expectText("2 downloaded chapters · 2/2");
+    try h.click("Select all");
+    try h.click("Read");
+    try h.runTasks();
+    const saved = try engine.loadLibrary(a);
+    try std.testing.expect(saved.manga[0].chapters[0].read);
+    try std.testing.expect(saved.manga[0].chapters[1].read);
+    try std.testing.expect(!saved.manga[0].chapters[2].read);
 }

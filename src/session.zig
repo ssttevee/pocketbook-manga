@@ -58,6 +58,7 @@ pub const Session = struct {
     /// Saved pages for resumable downloads, indexed into the current title.
     chapter_downloads: []const ?tachi.downloads.ResumeProgress = &.{},
     storage_managing: bool = false,
+    storage_series: bool = false,
     storage_busy: bool = false,
     /// Owns the model's online chapter and pages.
     online_arena: ?std.heap.ArenaAllocator = null,

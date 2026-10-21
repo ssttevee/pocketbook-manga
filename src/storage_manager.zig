@@ -6,8 +6,8 @@ const app = f.app;
 const Session = @import("session.zig").Session;
 const tachi = @import("tachi");
 const Self = @This();
-pub const Props = struct {};
-pub const Row = struct { id: []const u8, series: []const u8, chapter: []const u8, pages: usize, total: usize };
+pub const Props = struct { series: bool = false };
+pub const Row = struct { id: []const u8, series: []const u8, chapter: []const u8, pages: usize, total: usize, chapter_ids: []const []const u8 = &.{} };
 pub const State = struct {
     arena: ?std.heap.ArenaAllocator = null,
     rows: []const Row = &.{},
@@ -45,6 +45,9 @@ pub const State = struct {
             row.id = try a.dupe(u8, row.id);
             row.series = try a.dupe(u8, row.series);
             row.chapter = try a.dupe(u8, row.chapter);
+            const ids = try a.dupe([]const u8, row.chapter_ids);
+            for (ids) |*id| id.* = try a.dupe(u8, id.*);
+            row.chapter_ids = ids;
         }
         if (self.arena) |*old| old.deinit();
         self.arena = arena;
@@ -57,11 +60,12 @@ pub const Operation = enum { delete, read, unread };
 pub const Page = struct { delta: i32, size: usize };
 pub const Msg = union(enum) { loaded: anyerror![]const Row, toggle: []const u8, all, clear, page: Page, operation: Operation, answer: ?usize, completed: anyerror!usize };
 
-fn inspect(task: *app.Task, engine: *tachi.Engine) anyerror![]const Row {
+fn inspect(task: *app.Task, engine: *tachi.Engine, series: bool) anyerror![]const Row {
     const library = try engine.loadLibrary(task.gpa);
     var rows: std.ArrayList(Row) = .empty;
     for (library.manga) |manga| {
         if (manga.local()) continue;
+        const first = rows.items.len;
         for (manga.chapters) |chapter| {
             try task.checkCancel();
             var done = chapter.pages.len;
@@ -72,6 +76,19 @@ fn inspect(task: *app.Task, engine: *tachi.Engine) anyerror![]const Row {
                 total = partial.total;
             }
             try rows.append(task.gpa, .{ .id = chapter.id, .series = manga.title, .chapter = chapter.title, .pages = done, .total = total });
+        }
+        if (series and rows.items.len > first) {
+            const chapters = rows.items[first..];
+            const ids = try task.gpa.alloc([]const u8, chapters.len);
+            var pages: usize = 0;
+            var total: usize = 0;
+            for (chapters, ids) |row, *id| {
+                id.* = row.id;
+                pages += row.pages;
+                total += row.total;
+            }
+            rows.shrinkRetainingCapacity(first);
+            try rows.append(task.gpa, .{ .id = manga.id, .series = manga.title, .chapter = try std.fmt.allocPrint(task.gpa, "{d} downloaded chapters", .{ids.len}), .pages = pages, .total = total, .chapter_ids = ids });
         }
     }
     return rows.toOwnedSlice(task.gpa);
@@ -87,9 +104,11 @@ fn operate(task: *app.Task, engine: *tachi.Engine, ids: []const []const u8, oper
 }
 
 fn beginOperation(state: *State, session: *Session, ctx: *app.Update(Self), operation: Operation) !void {
-    const ids = try ctx.core.arena.allocator().alloc([]const u8, state.selected.count());
-    var keys = state.selected.keyIterator();
-    for (ids) |*id| id.* = keys.next().?.*;
+    var targets: std.ArrayList([]const u8) = .empty;
+    for (state.rows) |row| if (state.selected.contains(row.id)) {
+        if (row.chapter_ids.len > 0) try targets.appendSlice(ctx.core.arena.allocator(), row.chapter_ids) else try targets.append(ctx.core.arena.allocator(), row.id);
+    };
+    const ids = targets.items;
     state.busy = true;
     session.storage_busy = true;
     state.operation = operation;
@@ -151,13 +170,13 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Self)) !void {
     }
 }
 
-pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
+pub fn view(ui: *app.Ui, state: *const State, props: Props) !void {
     const session = ui.use(Session);
     const on = ui.messages(Self);
-    if (session.browser.engine) |engine| try ui.task("download-inventory", .{ .restart = state.revision }, inspect, .{engine}, on.handler(.loaded));
+    if (session.browser.engine) |engine| try ui.task("download-inventory", .{ .restart = state.revision }, inspect, .{ engine, props.series }, on.handler(.loaded));
     try ui.open("download-manager", .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(8), .child_gap = 6 } });
     defer ui.close();
-    try ui.print(.{ .font_size = 13 }, "{d} {s} · {d} selected", .{ state.rows.len, if (state.rows.len == 1) "chapter" else "chapters", state.selected.count() });
+    try ui.print(.{ .font_size = 13 }, "{d} {s} · {d} selected", .{ state.rows.len, if (props.series) "series" else if (state.rows.len == 1) "chapter" else "chapters", state.selected.count() });
     {
         try ui.open("selection-actions", .{ .layout = .{ .child_gap = 6 } });
         defer ui.close();
@@ -167,7 +186,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
     const size: usize = @max(1, @as(usize, @intFromFloat(@max(0, ui.core.viewport.y - 208))) / 50);
     const start = if (state.loaded) @min(state.offset, state.rows.len) else 0;
     const end = if (state.loaded) @min(start + size, state.rows.len) else 0;
-    if (!state.loaded) try ui.text("Loading downloaded chapters...", .{ .font_size = 15 }) else if (!state.loaded) try ui.text("Loading downloaded chapters...", .{ .font_size = 15 }) else if (state.rows.len == 0) try ui.text("No downloaded chapters", .{ .font_size = 15 });
+    if (!state.loaded) try ui.text(if (props.series) "Loading downloaded series..." else "Loading downloaded chapters...", .{ .font_size = 15 }) else if (state.rows.len == 0) try ui.text("No downloaded chapters", .{ .font_size = 15 });
     for (state.rows[start..end]) |row| {
         try ui.open(row.id, .{
             .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(44) }, .axis = .y, .padding = .all(4) },
@@ -185,7 +204,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         try ui.open("bulk-actions", .{ .layout = .{ .child_gap = 4 } });
         defer ui.close();
         const enabled = !state.busy and state.selected.count() > 0 and !(if (session.browser.engine) |engine| engine.queue.running() else false);
-        inline for (.{ .{ "Delete", Operation.delete }, .{ "Read", Operation.read }, .{ "Unread", Operation.unread } }) |action| try app.widgets.button(ui, action[0], .{ .label = action[0], .enabled = enabled, .on_click = on.bind(.{ .operation = action[1] }) });
+        inline for (.{ .{ "Delete", Operation.delete }, .{ "Read", Operation.read }, .{ "Unread", Operation.unread } }) |action| try app.widgets.button(ui, action[0], .{ .label = if (props.series and action[1] == .delete) "Delete downloads" else action[0], .enabled = enabled, .on_click = on.bind(.{ .operation = action[1] }) });
     }
     if (state.busy) try ui.text(if (state.operation == .delete) "Deleting downloads..." else "Updating reading progress...", .{ .font_size = 13 });
     {
