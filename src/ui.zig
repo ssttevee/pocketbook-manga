@@ -440,7 +440,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
     session.beginCoverFrame();
     const model = session.model;
     const on = ui.messages(Root);
-    if (session.browser.busy != null) try ui.every("network-poll", .fromMilliseconds(200), on.bind(.poll)) else if (model.screen == .queue) try ui.every("queue-poll", .fromMilliseconds(2000), on.bind(.poll));
+    if (session.browser.busy != null) try ui.every("network-poll", .fromMilliseconds(200), on.bind(.poll)) else if (model.screen == .queue or (if (session.browser.engine) |engine| engine.queue.running() else false)) try ui.every("queue-poll", .fromMilliseconds(2000), on.bind(.poll));
     if (!state.focused) try ui.after("initial-focus", .fromMilliseconds(0), on.bind(.focus));
     try ui.open("screen", .{
         .layout = .{ .sizing = .grow(.{}), .axis = .y },
@@ -1240,6 +1240,7 @@ fn setPreference(session: *Session, value: std.json.Value) !void {
     session.start(.{ .set_preference = .{ .source = session.browser.source_id, .key = key, .value = value } });
 }
 fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root)) !void {
+    defer session.updateActivity();
     const b = &session.browser;
     const model = session.model;
     const a = model.gpa;

@@ -16,7 +16,7 @@ pub fn main(init: std.process.Init) !void {
     const testing = env.getPosix("POCKETMANGA_WORKER_TEST") != null;
     mapping_check = .{ .gpa = init.gpa, .io = device_io.io(), .root = root };
     tachi.worker.serve(init.gpa, &runtime, .{
-        .idle_exit_ms = if (env.getPosix("POCKETMANGA_WORKER_IDLE_MS")) |text| try std.fmt.parseInt(u64, text, 10) else 60_000,
+        .idle_exit_ms = if (env.getPosix("POCKETMANGA_WORKER_IDLE_MS")) |text| try std.fmt.parseInt(u64, text, 10) else 0,
         .testing = testing,
         .after_call = if (testing) checkMappings else null,
     });

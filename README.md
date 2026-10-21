@@ -15,7 +15,7 @@ Use `dist/pocketmanga-verse.tar.gz`, or copy the contents of `dist/applications/
 3. On macOS, run `dot_clean /Volumes/READER/applications` to remove `._` files, then eject.
 4. Start **pocketmanga** from Applications. Use **pocketmanga-log** if you need diagnostics in `applications/pocketmanga.log`.
 
-After installation, normal use needs only the reader and Wi-Fi. The UI starts the worker when online work is requested. For a native chapter, the worker exits as soon as it has resolved the page requests. It otherwise exits after 60 seconds idle; opening a downloaded chapter shuts down an idle worker immediately. Backgrounding or closing the app stops and reaps it. A crashed worker reports an error; the next request can start a fresh one. The launcher retains the executable-stack loader setting needed by some firmware 6.11 releases. A full runtime is included rather than downloaded at first launch.
+After installation, normal use needs only the reader and Wi-Fi. The UI starts the worker when online work is requested. After a task starts the worker, it stays ready for later tasks until reading begins. Reading releases it once background downloads no longer need it. Backgrounding or closing the app stops and reaps it. A crashed worker reports an error; the next request can start a fresh one. The launcher retains the executable-stack loader setting needed by some firmware 6.11 releases. A full runtime is included rather than downloaded at first launch.
 
 ## Use
 

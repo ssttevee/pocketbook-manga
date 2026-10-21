@@ -260,7 +260,8 @@ pub const Session = struct {
         return std.fmt.allocPrint(self.model.gpa, "{d}/{d} pages saved. {s}", .{ done, total, failure });
     }
     pub fn updateActivity(self: *Session) void {
-        if (self.activity) |activity| activity(if (self.browser.busy) |job| !job.done.load(.acquire) else if (self.cover_job) |job| !job.done.load(.acquire) else false);
+        const queue_running = if (self.browser.engine) |engine| engine.queue.running() else false;
+        if (self.activity) |activity| activity(queue_running or (if (self.browser.busy) |job| !job.done.load(.acquire) else if (self.cover_job) |job| !job.done.load(.acquire) else false));
     }
     pub fn start(self: *Session, request: tachi.engine.Request) void {
         self.cancelCoverJob();
@@ -281,6 +282,10 @@ pub const Session = struct {
     pub fn poll(self: *Session) !void {
         defer self.updateActivity();
         self.pollCover();
+        // Background downloads may have kept the worker alive when reading began.
+        if (self.model.screen == .reader and self.browser.busy == null) if (self.browser.engine) |engine| {
+            if (!engine.queue.running() and engine.backend.warm()) engine.backend.release();
+        };
         if (self.model.screen == .queue and self.browser.busy == null) try self.refreshFeed();
         const job = self.browser.busy orelse return;
         if (!job.done.load(.acquire)) return;
@@ -1000,7 +1005,9 @@ pub const Session = struct {
             self.download_error = false;
             self.clearDownloadIdentity();
             // Reading needs no extensions: let a worker give its memory back.
-            if (self.browser.busy == null) if (self.browser.engine) |engine| engine.backend.release();
+            if (self.browser.busy == null) if (self.browser.engine) |engine| {
+                if (!engine.queue.running()) engine.backend.release();
+            };
             if (self.load_image) |load| {
                 const path = self.model.current().?.pages[self.model.page];
                 load(self, path) catch |err| {

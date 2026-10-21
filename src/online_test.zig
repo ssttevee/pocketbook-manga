@@ -587,3 +587,40 @@ test "restored blocked queue entries become actionable rows" {
     try std.testing.expect(!@import("session.zig").browserVerificationRequired("ExtensionError: HTTP error 403"));
     try std.testing.expect(!@import("session.zig").browserVerificationRequired("BrowserVerificationRequiredButDifferent"));
 }
+
+test "entering reading releases a retained worker after background downloads finish" {
+    const Backend = tachi.backend.Backend;
+    const Fake = struct {
+        warm: bool = true,
+        releases: usize = 0,
+        fn run(_: *anyopaque, _: std.mem.Allocator, _: tachi.backend.Call, _: ?tachi.backend.Status) anyerror!tachi.backend.Reply {
+            return error.NoBackend;
+        }
+        fn ready(ptr: *anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            return self.warm;
+        }
+        fn release(ptr: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.releases += 1;
+            self.warm = false;
+        }
+        fn quiet(_: *anyopaque) void {}
+    };
+    var fake: Fake = .{};
+    const backend: Backend = .{ .ptr = &fake, .vtable = &.{ .run = Fake.run, .warm = Fake.ready, .cancel = Fake.quiet, .release = Fake.release, .idle = Fake.quiet } };
+    var engine: tachi.Engine = .init(std.testing.allocator, std.testing.io, backend, .{ .dir = "." });
+    var model: lib.Model = .{ .gpa = std.testing.allocator, .library = smoke.fixture, .screen = .reader };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = "." };
+    session.browser.engine = &engine;
+    // A runner is active until its completion flag is published; no actual task is awaited.
+    engine.queue.runner = .{ .any_future = null, .result = {} };
+    engine.queue.paused = false;
+    try session.poll();
+    try std.testing.expectEqual(0, fake.releases);
+    engine.queue.runner = null;
+    try session.poll();
+    try std.testing.expectEqual(1, fake.releases);
+    try session.poll();
+    try std.testing.expectEqual(1, fake.releases);
+}
