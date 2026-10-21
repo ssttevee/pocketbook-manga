@@ -822,10 +822,7 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
             const header_height = @max(72, title_height + 30);
             // Keep pagination in step with the space the expanded title consumes.
             const current_session = ui.use(Session);
-            const banner_height: f32 = if (current_session.download_error and current_session.browser.busy == null) blk: {
-                const status_lines = if (current_session.download_blocked) (try ui.core.make_lines(ui.core, current_session.status, .{ .font_size = 13, .wrap_mode = .words }, @max(1, ui.core.viewport.x - 20))).len else 1;
-                break :blk 75 + @as(f32, @floatFromInt(status_lines)) * 15.6 + @as(f32, if (current_session.download_identity != null) 22 else 0);
-            } else 0;
+            const banner_height = try downloadBannerHeight(ui, current_session);
             const available_rows = @max(1, @min(lib.Model.rows, @as(usize, @intFromFloat(@max(34, ui.core.viewport.y - 190 - header_height - banner_height) / 34))));
             @constCast(model).chapter_page_rows = available_rows;
             {
@@ -1331,6 +1328,12 @@ fn menuView(ui: *app.Ui, model: *const lib.Model) !void {
     }
 }
 
+fn downloadBannerHeight(ui: *app.Ui, session: *const Session) !f32 {
+    if (!session.download_error or session.browser.busy != null) return 0;
+    const lines = if (session.download_blocked) (try ui.core.make_lines(ui.core, session.status, .{ .font_size = 13, .wrap_mode = .words }, @max(1, ui.core.viewport.x - 20))).len else 1;
+    return 75 + @as(f32, @floatFromInt(lines)) * 15.6 + @as(f32, if (session.download_identity != null) 22 else 0);
+}
+
 /// Updates, history and the download queue: chapters across titles.
 fn feedView(ui: *app.Ui, session: *const Session) !void {
     const model = session.model;
@@ -1347,7 +1350,9 @@ fn feedView(ui: *app.Ui, session: *const Session) !void {
             break :blk 40 + @as(f32, @floatFromInt(explanation.len + guidance.len)) * 15;
         } else 0;
         // Toolbar (48), queue controls (42), list padding (8) and pager (38).
-        const available = @max(41, ui.core.viewport.y - 136 - warning_height);
+        const feedback_height = try downloadBannerHeight(ui, session);
+        const status_height: f32 = if (session.status.len > 0 and !session.status_transient and !session.download_error) 16 else 0;
+        const available = @max(41, ui.core.viewport.y - 136 - warning_height - feedback_height - status_height);
         const rows: usize = @intFromFloat(@floor(available / 41));
         if (model.queue_page_rows != rows) {
             model.queue_page_rows = rows;

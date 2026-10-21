@@ -71,4 +71,13 @@ test "download queue uses available viewport rows and reserves warning space" {
     try std.testing.expect(model.pageRows() < roomy);
     const next = h.findElement(h.root().element("next-feed")).?;
     try std.testing.expect(next.bbox.y + next.bbox.h <= 700);
+    const warning_rows = model.pageRows();
+    session.setStatus("The chapter could not be downloaded.");
+    session.download_error = true;
+    try h.frame();
+    try std.testing.expect(model.pageRows() < warning_rows);
+    const error_pager = h.findElement(h.root().element("next-feed")).?;
+    try std.testing.expect(error_pager.bbox.y + error_pager.bbox.h <= 700);
+    try h.clickElement(h.root().element("dismiss-download-error"));
+    try std.testing.expectEqual(warning_rows, model.pageRows());
 }
