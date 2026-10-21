@@ -86,9 +86,14 @@ pub const Model = struct {
     online_chapter: ?[]const u8 = null,
     online_pages: []const []const u8 = &.{},
     pub const rows = 7;
-    /// Comfortable covers use two portrait cards per page on the Verse.
+    /// Rows that fit the current screen, including its controls and guidance.
     pub fn pageRows(self: *const Model) usize {
-        return if (self.screen == .library and self.prefs.library_grid) 2 else rows;
+        return switch (self.screen) {
+            .library => if (self.prefs.library_grid) 2 else rows,
+            // Leave room to explain blocked sources above the queue.
+            .queue => 4,
+            else => rows,
+        };
     }
     pub const ReadState = struct { page: u32, read: bool, started: bool };
 

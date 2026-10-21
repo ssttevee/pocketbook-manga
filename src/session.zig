@@ -7,7 +7,15 @@ const Covers = @import("covers.zig");
 const Regions = @import("region_service.zig");
 const Viewport = @import("reader_viewport.zig");
 /// A row of the updates, history or download queue screens.
-pub const FeedRow = struct { pick: lib.Pick, title: []const u8, detail: []const u8 };
+pub const FeedRow = struct { pick: lib.Pick, title: []const u8, detail: []const u8, blocked: bool = false };
+
+pub const verification_explanation = "This source requires browser verification that PocketManga cannot complete.";
+pub const verification_alternative = "Find another version or use a different source.";
+
+pub fn browserVerificationRequired(failure: []const u8) bool {
+    return std.mem.eql(u8, failure, "BrowserVerificationRequired") or
+        std.mem.startsWith(u8, failure, "BrowserVerificationRequired:");
+}
 
 pub const Session = struct {
     model: *lib.Model,
@@ -36,6 +44,7 @@ pub const Session = struct {
     activity: ?*const fn (bool) void = null,
     download_error: bool = false,
     download_canceled: bool = false,
+    download_blocked: bool = false,
     download_identity: ?struct { series: []const u8, chapter: []const u8 } = null,
     browser: Browser = .{},
     /// Owns `model.library` once loaded through the engine.
@@ -247,6 +256,7 @@ pub const Session = struct {
         const done = job.pages_done.load(.acquire);
         const total = job.pages_total.load(.acquire);
         if (self.download_canceled) return std.fmt.allocPrint(self.model.gpa, "{d}/{d} pages saved", .{ done, total });
+        if (self.download_blocked) return std.fmt.allocPrint(self.model.gpa, "{d}/{d} pages saved. {s} {s}", .{ done, total, verification_explanation, verification_alternative });
         return std.fmt.allocPrint(self.model.gpa, "{d}/{d} pages saved. {s}", .{ done, total, failure });
     }
     pub fn updateActivity(self: *Session) void {
@@ -255,6 +265,7 @@ pub const Session = struct {
     pub fn start(self: *Session, request: tachi.engine.Request) void {
         self.cancelCoverJob();
         defer self.updateActivity();
+        if (request == .download) self.download_blocked = false;
         if (request == .download and self.browser.busy == null) self.rememberDownload(request.download) catch {
             self.setStatus("Cannot start download: out of memory");
             self.download_error = true;
@@ -286,6 +297,7 @@ pub const Session = struct {
         if (self.model.screen == .backup) try self.refreshBackups();
         self.download_error = job.failure != null and job.request == .download;
         self.download_canceled = self.download_error and std.mem.eql(u8, job.failure.?, "Canceled");
+        self.download_blocked = self.download_error and browserVerificationRequired(job.failure.?);
         if (self.download_error) try self.rememberDownload(job.request.download);
         self.ownStatus(if (job.failure) |failure|
             if (job.request == .download) try self.downloadDetail(job, failure) else try self.model.gpa.dupe(u8, failure)
@@ -545,12 +557,13 @@ pub const Session = struct {
                 for (try engine.queue.snapshot(engine, a)) |entry| {
                     const pick = picks.get(entry.chapter_id) orelse continue;
                     const m = model.library.manga[pick.manga];
+                    const blocked = entry.status == .failed and browserVerificationRequired(entry.failure orelse "");
                     const detail = switch (entry.status) {
                         .queued => "Queued",
                         .downloading => try std.fmt.allocPrint(a, "Downloading {d}/{d}", .{ entry.pages_done, entry.pages_total }),
-                        .failed => try std.fmt.allocPrint(a, "Failed: {s}", .{entry.failure orelse "error"}),
+                        .failed => if (blocked) "Cannot download: browser verification" else try std.fmt.allocPrint(a, "Failed: {s}", .{entry.failure orelse "error"}),
                     };
-                    try rows.append(a, .{ .pick = pick, .title = m.title, .detail = try std.fmt.allocPrint(a, "{s}  /  {s}", .{ m.chapters[pick.chapter].title, detail }) });
+                    try rows.append(a, .{ .pick = pick, .title = m.title, .blocked = blocked, .detail = if (blocked) try std.fmt.allocPrint(a, "{s} / {s}", .{ detail, m.chapters[pick.chapter].title }) else try std.fmt.allocPrint(a, "{s}  /  {s}", .{ m.chapters[pick.chapter].title, detail }) });
                 }
             },
             else => {},

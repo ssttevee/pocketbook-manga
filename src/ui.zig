@@ -7,7 +7,7 @@ const Root = @This();
 const tachi = @import("tachi");
 const models = tachi.models;
 const regions = @import("region_service.zig");
-pub const OnlineCommand = union(enum) { stores, refresh_stores, remove_store: usize, toggle_pin, toggle_hidden, show_hidden, languages, toggle_language: usize, sources, extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear, pick_global: usize };
+pub const OnlineCommand = union(enum) { stores, refresh_stores, remove_store: usize, toggle_pin, toggle_hidden, show_hidden, languages, toggle_language: usize, sources, extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear, find_alternative: usize, pick_global: usize };
 pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const Navigation = enum { library, updates, history, browse, more };
 pub const State = struct { more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, pointer_start: ?f.Vec2 = null, reader_updates: u8 = 0 };
@@ -488,9 +488,9 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
     }
     if (session.download_error and session.browser.busy == null) {
         try ui.open("download-error", .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .all(10), .child_gap = 5 }, .border = .{ .color = .black, .widths = .outside(2) } });
-        try text(ui, if (session.download_canceled) "Download canceled - tap chapter to resume" else "Download failed - tap chapter to resume", 15, 0);
+        try text(ui, if (session.download_blocked) "Cannot download from this source" else if (session.download_canceled) "Download canceled - tap chapter to resume" else "Download failed - tap chapter to resume", 15, 0);
         if (session.download_identity) |identity| try text(ui, identity.chapter, 14, 0);
-        try text(ui, session.status, 13, 0);
+        if (session.download_blocked) try ui.text(session.status, .{ .font_size = 13, .wrap_mode = .words }) else try text(ui, session.status, 13, 0);
         ui.close();
     }
     if (session.browser.busy) |job| {
@@ -1073,6 +1073,7 @@ fn feedView(ui: *app.Ui, session: *const Session) !void {
     const model = session.model;
     const artwork = @constCast(session);
     const count = session.feed.len;
+    const page_rows = model.pageRows();
     const on = ui.messages(Root);
     if (model.screen == .queue) {
         try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .all(10), .child_gap = 6, .child_alignment = .center_left } });
@@ -1081,6 +1082,18 @@ fn feedView(ui: *app.Ui, session: *const Session) !void {
         try onlineButton(ui, "queue-pause", "Pause", .queue_pause);
         try onlineButton(ui, "queue-clear", "Clear", .queue_clear);
         if (session.browser.engine) |engine| if (engine.queue.waitingForWifi()) try text(ui, "Waiting for Wi-Fi", 12, 40);
+    }
+    if (model.screen == .queue) {
+        const blocked = for (session.feed) |item| {
+            if (item.blocked) break true;
+        } else false;
+        if (blocked) {
+            try ui.open("blocked-downloads", .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .all(8), .child_gap = 3 }, .border = .{ .color = .black, .widths = .outside(1) } });
+            try text(ui, "Some chapters cannot be downloaded", 14, 0);
+            try ui.text(@import("session.zig").verification_explanation, .{ .font_size = 12, .wrap_mode = .words });
+            try ui.text("Tap a blocked title to find another version or source.", .{ .font_size = 12, .wrap_mode = .words });
+            ui.close();
+        }
     }
     {
         try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .init(10, 10, 8, 0), .child_gap = 1 } });
@@ -1100,13 +1113,13 @@ fn feedView(ui: *app.Ui, session: *const Session) !void {
                 else => "Queue chapters from a title to download them.",
             }, 12, 90);
         }
-        for (@min(model.offset, count)..@min(model.offset + lib.Model.rows, count)) |row| {
+        for (@min(model.offset, count)..@min(model.offset + page_rows, count)) |row| {
             const item = session.feed[row];
             const key = .{ .feed = row };
             try ui.open(key, .{
                 .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(40) }, .padding = .init(2, 2, 3, 3), .child_gap = 10, .child_alignment = .center_left },
                 .background_color = rowFill(ui, key),
-                .on_click = if (model.screen == .queue) null else on.bind(.{ .act = @as(lib.Action, .{ .open_chapter = item.pick }) }),
+                .on_click = if (model.screen == .queue) (if (item.blocked) on.bind(.{ .online = @as(OnlineCommand, .{ .find_alternative = item.pick.manga }) }) else null) else on.bind(.{ .act = @as(lib.Action, .{ .open_chapter = item.pick }) }),
             });
             {
                 try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(23), .height = .fixed(34) }, .child_alignment = .center }, .background_color = .gray(235), .corner_radius = .uniform(2) });
@@ -1129,9 +1142,9 @@ fn feedView(ui: *app.Ui, session: *const Session) !void {
         defer ui.close();
         try app.widgets.button(ui, "previous-feed", .{ .label = "Previous", .enabled = model.offset > 0, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = -1 }) }) });
         ui.spacer();
-        try ui.print(.{ .font_size = 12 }, "{d}/{d}", .{ if (count == 0) @as(usize, 0) else model.offset / lib.Model.rows + 1, (count + lib.Model.rows - 1) / lib.Model.rows });
+        try ui.print(.{ .font_size = 12 }, "{d}/{d}", .{ if (count == 0) @as(usize, 0) else model.offset / page_rows + 1, (count + page_rows - 1) / page_rows });
         ui.spacer();
-        try app.widgets.button(ui, "next-feed", .{ .label = "Next", .enabled = model.offset + lib.Model.rows < count, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = 1 }) }) });
+        try app.widgets.button(ui, "next-feed", .{ .label = "Next", .enabled = model.offset + page_rows < count, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = 1 }) }) });
     }
 }
 /// Convert a completed physical drag to reading-order progress. Comparing
@@ -1337,6 +1350,13 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
         .scan => session.start(.scan_local),
         .cancel => {},
         .queue_unread => try session.queueUnread(),
+        .find_alternative => |index| {
+            if (index >= model.library.manga.len) return;
+            if (b.migrate_from) |old| model.gpa.free(old);
+            b.migrate_from = null;
+            session.download_error = false;
+            try session.globalSearch(model.library.manga[index].title);
+        },
         .toggle_pin, .toggle_hidden => if (b.engine) |engine| {
             if (command == .toggle_pin) {
                 b.source_pinned = !b.source_pinned;

@@ -478,3 +478,112 @@ test "device UI logs in to a tracker and tracks a title" {
     try std.testing.expectEqual(lib.Screen.tracking, model.screen);
     try std.testing.expectEqual(9, model.library.manga[0].tracks[0].remote_id);
 }
+
+fn blockedDownload(_: *tachi.Engine, job: *tachi.Job) !void {
+    job.pages_done.store(1, .release);
+    job.pages_total.store(3, .release);
+    return error.BrowserVerificationRequired;
+}
+
+test "unsupported browser verification explains alternatives instead of offering resume" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = "." });
+    engine.execute_fn = blockedDownload;
+    var model: lib.Model = .{ .gpa = a, .library = smoke.fixture, .screen = .chapters };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = "." };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    session.start(.{ .download = smoke.fixture.manga[0].chapters[0].id });
+    session.browser.busy.?.join();
+    try session.poll();
+    try std.testing.expect(session.download_blocked);
+    try std.testing.expect(std.mem.indexOf(u8, session.status, "1/3 pages saved") != null);
+    try std.testing.expect(std.mem.indexOf(u8, session.status, @import("session.zig").verification_alternative) != null);
+    var h: @import("fabrum").app.testing.Harness(.{}, @import("ui.zig")) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{@import("fabrum").app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try h.expectText("Cannot download from this source");
+    try h.expectNoText("Download failed - tap chapter to resume");
+    const detail = h.findText(session.status).?;
+    try std.testing.expect(detail.bbox.h > 30);
+    try std.testing.expect(detail.bbox.y + detail.bbox.h < 464);
+    // A subsequent temporary failure must regain the ordinary resume path.
+    engine.execute_fn = failedDownload;
+    session.start(.{ .download = smoke.fixture.manga[0].chapters[0].id });
+    session.browser.busy.?.join();
+    try session.poll();
+    try std.testing.expect(!session.download_blocked);
+}
+
+test "blocked queue guidance fits and its title searches alternatives without migrating" {
+    const f = @import("fabrum");
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = root });
+    engine.execute_fn = fixtureExecutor;
+    var book = smoke.fixture.manga[0];
+    book.title = "Fixture Story";
+    var model: lib.Model = .{ .gpa = a, .library = .{ .manga = &.{book} }, .screen = .queue, .feed_count = 5 };
+    var feed: [5]@import("session.zig").FeedRow = undefined;
+    for (&feed, 0..) |*row, i| row.* = .{ .pick = .{ .manga = 0, .chapter = 0 }, .title = try std.fmt.allocPrint(a, "Blocked title {d}", .{i}), .detail = "Cannot download: browser verification", .blocked = true };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = root, .feed = &feed };
+    session.browser.engine = &engine;
+    session.browser.migrate_from = try a.dupe(u8, book.id);
+    defer session.deinit();
+    var h: f.app.testing.Harness(.{}, @import("ui.zig")) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try h.expectText("Some chapters cannot be downloaded");
+    try h.expectText(@import("session.zig").verification_explanation);
+    const last = h.findText("Blocked title 3").?;
+    const pager = h.findText("Next").?;
+    try std.testing.expect(last.bbox.y + last.bbox.h <= pager.bbox.y);
+    try std.testing.expect(pager.bbox.y + pager.bbox.h <= 464);
+    // The model and view must advance by the same number of rows.
+    try model.dispatch(.{ .list_page = 1 });
+    try std.testing.expectEqual(4, model.offset);
+    model.offset = 0;
+    try h.click("Blocked title 0");
+    try std.testing.expectEqual(lib.Screen.global_search, model.screen);
+    try std.testing.expect(session.browser.migrate_from == null);
+    const job = session.browser.busy.?;
+    try std.testing.expectEqualStrings("Fixture Story", job.request.global_search.query);
+    job.join();
+    try session.poll();
+}
+
+test "restored blocked queue entries become actionable rows" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = root });
+    defer engine.queue.deinit(&engine);
+    const book: lib.Manga = .{ .id = "42:/story", .title = "Fixture Story", .source_id = 42, .chapters = &.{.{ .id = "42:/chapter", .title = "Chapter 1" }} };
+    const library: lib.Library = .{ .manga = &.{book} };
+    try engine.store.save(a, library);
+    try tmp.dir.createDirPath(std.testing.io, "downloads");
+    try tachi.library.writeJsonAtomic(a, std.testing.io, try std.fs.path.join(a, &.{ root, "downloads/queue.json" }), .{
+        .chapters = &.{"42:/chapter"},
+        .browser_verification_required = &.{.{ .chapter_id = "42:/chapter", .failure = "BrowserVerificationRequired: Cloudflare challenge on images.example" }},
+    });
+    var model: lib.Model = .{ .gpa = a, .library = library, .screen = .queue };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = root };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    try session.refreshFeed();
+    try std.testing.expectEqual(1, session.feed.len);
+    try std.testing.expect(session.feed[0].blocked);
+    try std.testing.expect(std.mem.startsWith(u8, session.feed[0].detail, "Cannot download: browser verification"));
+    try std.testing.expectEqualStrings("Fixture Story", session.feed[0].title);
+    try std.testing.expect(!@import("session.zig").browserVerificationRequired("ExtensionError: HTTP error 403"));
+    try std.testing.expect(!@import("session.zig").browserVerificationRequired("BrowserVerificationRequiredButDifferent"));
+}
