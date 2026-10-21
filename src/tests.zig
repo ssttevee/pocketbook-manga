@@ -508,7 +508,8 @@ test "library cover grid fixes cover widths and limits captions to two lines" {
         const caption = if (i == 0) first_caption.? else h.findText(title.title).?;
         const caption_box = h.runtime.context().units.items[caption.parent];
         const card = h.runtime.context().units.items[caption_box.parent];
-        try std.testing.expectEqual(148, card.bbox.w);
+        try std.testing.expectEqual(158, card.bbox.w);
+        try std.testing.expectEqual(148, caption_box.bbox.w);
         try std.testing.expect(caption.bbox.x >= 0);
         try std.testing.expect(caption.bbox.x + caption.bbox.w <= 343);
         try std.testing.expect(caption.bbox.y + caption.bbox.h <= pager.bbox.y);

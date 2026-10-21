@@ -26,8 +26,10 @@ test "library sort menu selects arbitrary modes and persists both directions" {
     try h.frame();
     const modes: []const tachi.views.SortMode = &.{ .alphabetical, .last_read, .date_added, .unread_count, .total_chapters, .latest_chapter };
     const sort_button = h.findElement(h.root().element("library-sort")).?.bbox;
-    try std.testing.expect(sort_button.h >= 34);
-    try std.testing.expect(h.findElement(h.root().element("library-sort-direction")).?.bbox.w >= 52);
+    const normal_button = h.findElement(h.root().element("next-list")).?.bbox;
+    try std.testing.expectEqual(normal_button.h, sort_button.h);
+    try std.testing.expectEqual(normal_button.h, h.findElement(h.root().element("library-sort-direction")).?.bbox.h);
+    try std.testing.expectEqual(normal_button.h, h.findElement(h.root().element("library-layout")).?.bbox.h);
     for ([_]usize{ 5, 2, 4, 1, 3, 0 }) |i| {
         const before = session.currentSort().mode;
         const ascending = session.currentSort().ascending;
@@ -57,7 +59,14 @@ test "library list titles use one line and grid menu is a visible touch button" 
     var h: Harness = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
     defer h.deinit();
     try h.frame();
-    try std.testing.expect(h.findText(title).?.bbox.h <= 15);
+    const title_element = h.findText(title).?;
+    try std.testing.expect(title_element.bbox.h <= 15);
+    const units = h.runtime.context().units.items;
+    const list_row = units[units[title_element.parent].parent].bbox;
+    const subtitle = h.findText("0 unread  ·  ").?.bbox;
+    try std.testing.expectApproxEqAbs(title_element.bbox.y - list_row.y, list_row.y + list_row.h - subtitle.y - subtitle.h, 0.1);
+    const controls = h.findElement(h.root().element("library-sort")).?.bbox;
+    try std.testing.expect(list_row.y >= controls.y + controls.h + 8);
     try h.clickElement(h.root().element("library-layout"));
     const dots = h.findText("...").?;
     const menu_unit = h.runtime.context().units.items[dots.parent];
@@ -67,7 +76,7 @@ test "library list titles use one line and grid menu is a visible touch button" 
     const nav = h.findElement(h.root().element("bottom-navigation")).?.bbox;
     try std.testing.expect(menu.y + menu.h <= nav.y);
     const card_footer = h.runtime.context().units.items[menu_unit.parent].bbox;
-    try std.testing.expectEqual(@as(f32, 148), card_footer.w);
+    try std.testing.expectEqual(@as(f32, 158), card_footer.w);
     try std.testing.expectEqual(@as(u8, 245), h.findElement(menu_id).?.data.container.background_color.r);
     const point: f.Vec2 = .init(menu.x + menu.w / 2, menu.y + menu.h / 2);
     var buttons: f.app.MouseEvent.Buttons = .empty;
@@ -76,4 +85,37 @@ test "library list titles use one line and grid menu is a visible touch button" 
     try std.testing.expectEqual(@as(u8, 190), h.findElement(menu_id).?.data.container.background_color.r);
     _ = try h.mouse(.{ .position = point });
     try std.testing.expectEqual(.title_menu, model.screen);
+}
+
+test "library grid gutter belongs to padded highlighted series targets" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var model: lib.Model = .{ .gpa = arena.allocator(), .library = .{ .manga = &.{
+        .{ .id = "a", .title = "First" },
+        .{ .id = "b", .title = "Second" },
+    } } };
+    var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io };
+    defer session.deinit();
+    var h: Harness = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    const first = h.findText("First").?;
+    const second = h.findText("Second").?;
+    const units = h.runtime.context().units.items;
+    const first_card = units[units[first.parent].parent];
+    const second_card = units[units[second.parent].parent];
+    try std.testing.expectEqual(first_card.bbox.x + first_card.bbox.w, second_card.bbox.x);
+    try std.testing.expectEqual(@as(f32, 5), first.bbox.x - first_card.bbox.x);
+    const controls = h.findElement(h.root().element("library-sort")).?.bbox;
+    try std.testing.expect(first_card.bbox.y >= controls.y + controls.h + 8);
+    // The inner gutter beside the cover is highlighted and opens the series.
+    const point: f.Vec2 = .init(first_card.bbox.x + first_card.bbox.w - 2, first_card.bbox.y + 2);
+    var buttons: f.app.MouseEvent.Buttons = .empty;
+    buttons.set(f.app.MouseEvent.primary);
+    _ = try h.mouse(.{ .position = point, .pressed = buttons });
+    const id: f.layout.Unit.Id = .fromInt(first_card.id);
+    try std.testing.expectEqual(@as(u8, 216), h.findElement(id).?.data.container.background_color.r);
+    _ = try h.mouse(.{ .position = point });
+    try std.testing.expectEqual(.chapters, model.screen);
+    try std.testing.expectEqual(@as(usize, 0), model.manga);
 }

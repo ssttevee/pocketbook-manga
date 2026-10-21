@@ -789,10 +789,10 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
                 try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 8, .child_alignment = .center_left } });
                 defer ui.close();
                 const sort = ui.use(Session).currentSort();
-                try app.widgets.button(ui, "library-sort", .{ .label = try ui.fmt("Sort: {s}", .{sortLabel(sort.mode)}), .sizing = .{ .height = .fixed(34) }, .on_click = on.bind(.library_sort) });
-                try app.widgets.button(ui, "library-sort-direction", .{ .label = if (sort.ascending) "Asc" else "Desc", .sizing = .{ .width = .fixed(52), .height = .fixed(34) }, .on_click = on.bind(.{ .setting = .sort_ascending }) });
+                try app.widgets.button(ui, "library-sort", .{ .label = try ui.fmt("Sort: {s}", .{sortLabel(sort.mode)}), .on_click = on.bind(.library_sort) });
+                try app.widgets.button(ui, "library-sort-direction", .{ .label = if (sort.ascending) "Asc" else "Desc", .on_click = on.bind(.{ .setting = .sort_ascending }) });
                 ui.spacer();
-                try app.widgets.button(ui, "library-layout", .{ .label = if (model.prefs.library_grid) "List" else "Grid", .sizing = .{ .height = .fixed(34) }, .on_click = on.bind(.library_grid) });
+                try app.widgets.button(ui, "library-layout", .{ .label = if (model.prefs.library_grid) "List" else "Grid", .on_click = on.bind(.library_grid) });
             }
             if (model.categories.len > 1) {
                 try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 12, .child_alignment = .center_left }, .border = .{ .color = .gray(220), .widths = .{ .bottom = 1 } } });
@@ -867,7 +867,7 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
     }
     const page_rows = model.pageRows();
     {
-        try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .x(12), .child_gap = 1 } });
+        try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = if (is_library) .init(12, 12, 8, 0) else .x(12), .child_gap = 1 } });
         defer ui.close();
         if (count == 0) {
             ui.spacer();
@@ -885,7 +885,7 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
                 ui.close();
             }
             try ui.open(key, .{
-                .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(if (is_library) 48 else 34) }, .axis = .y, .padding = .init(2, 6, 3, 3), .child_gap = 2 },
+                .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(if (is_library) 48 else 34) }, .axis = .y, .padding = if (is_library) .all(6) else .init(2, 6, 3, 3), .child_alignment = if (is_library) .center_left else .top_left, .child_gap = 2 },
                 .background_color = rowFill(ui, key),
                 .on_click = on.bind(.{ .act = if (is_library) @as(lib.Action, .{ .open = i }) else @as(lib.Action, .{ .read = i }) }),
             });
@@ -957,10 +957,10 @@ fn libraryGrid(ui: *app.Ui, model: *const lib.Model) !void {
     defer ui.close();
     // A single row keeps portrait covers large; paging replaces Android scrolling.
     {
-        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(250) }, .child_gap = 12 } });
+        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(260) }, .child_gap = 0 } });
         defer ui.close();
         for (0..2) |_| {
-            try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(148) }, .axis = .y, .child_gap = 3 } });
+            try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(158) }, .axis = .y, .child_gap = 3 } });
             defer ui.close();
             if (row >= end) continue;
             const i = model.titleIndex(row);
@@ -970,7 +970,7 @@ fn libraryGrid(ui: *app.Ui, model: *const lib.Model) !void {
             const key = .{ .row = i };
             {
                 try ui.open(key, .{
-                    .layout = .{ .sizing = .grow(.{}), .axis = .y, .child_gap = 4 },
+                    .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(5), .child_gap = 4 },
                     .background_color = rowFill(ui, key),
                     .on_click = on.bind(.{ .act = @as(lib.Action, .{ .open = i }) }),
                 });
@@ -996,7 +996,7 @@ fn libraryGrid(ui: *app.Ui, model: *const lib.Model) !void {
                 ui.close();
             }
             {
-                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_alignment = .center_left, .child_gap = 4 } });
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .x(5), .child_alignment = .center_left, .child_gap = 4 } });
                 defer ui.close();
                 if (counts.unread > 0) try ui.print(.{ .font_size = 10, .color = .black }, "{d} unread", .{counts.unread});
                 if (counts.downloaded > 0) try ui.print(.{ .font_size = 10, .color = .gray(80) }, "{d} saved", .{counts.downloaded});
