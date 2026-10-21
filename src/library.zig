@@ -2,13 +2,16 @@
 const std = @import("std");
 const Io = std.Io;
 const tachi = @import("tachi");
+pub const viewport = @import("reader_viewport.zig");
 pub const Library = tachi.library.Library;
 pub const Manga = tachi.library.Manga;
 pub const Chapter = tachi.library.Chapter;
 pub const safePath = tachi.library.safePath;
 /// Display preferences. `progress` is the pre-libtachi reading progress,
 /// read once to migrate it into libtachi's reading state.
-pub const Preferences = struct { rtl: bool = true, full_refresh: bool = true, library_grid: bool = true, progress: []const LegacyProgress = &.{} };
+pub const Preferences = struct { rtl: bool = true, full_refresh: bool = true, library_grid: bool = true, progress: []const LegacyProgress = &.{}, reader_positions: [32]?ReaderAnchor = @splat(null), reader_position_next: u8 = 0 };
+/// Bounded display-only positions; libtachi still owns chapter/page progress.
+pub const ReaderAnchor = struct { chapter_key: [16]u8, page: usize, progress: u32 };
 pub const LegacyProgress = struct { id: []const u8, page: usize = 0, completed: bool = false };
 
 pub fn readJson(comptime T: type, gpa: std.mem.Allocator, io: Io, path: []const u8) !std.json.Parsed(T) {
@@ -35,7 +38,7 @@ pub const Screen = enum { library, chapters, reader, settings, sources, extensio
 /// libtachi settings the settings screen changes.
 pub const Setting = enum { skip_completed, skip_unread, skip_not_started, skip_not_due, update_details, download_new, delete_marked_read, delete_bookmarked, delete_after_reading, download_ahead, skip_read, skip_filtered, skip_duplicates, incognito, downloaded_only, sort_mode, sort_ascending };
 pub const Pick = struct { manga: usize, chapter: usize };
-pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, open_chapter: Pick, turn: i32, next_chapter, list_page: i32, category: i32, feed: Screen, menu: usize, settings, help, rtl, refresh, library_grid };
+pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, open_chapter: Pick, turn: i32, pan: f64, next_chapter, list_page: i32, category: i32, feed: Screen, menu: usize, settings, help, rtl, refresh, library_grid };
 pub const Model = struct {
     gpa: std.mem.Allocator,
     library: Library = .{},
@@ -44,6 +47,12 @@ pub const Model = struct {
     manga: usize = 0,
     chapter: usize = 0,
     page: usize = 0,
+    /// Enabled by the region-capable image provider. Until dimensions arrive,
+    /// opening the last image must not mark a long chapter complete.
+    region_reader: bool = false,
+    reader_geometry: ?viewport.Geometry = null,
+    reader_position: f64 = 0,
+    reader_pending_end: bool = false,
     offset: usize = 0,
     /// Display preferences changed and should be saved.
     dirty: bool = false,
@@ -123,13 +132,72 @@ pub const Model = struct {
         };
         return copy;
     }
-    /// Marks the page now shown; the session records it with libtachi. A
-    /// chapter becomes read on its last page.
+    pub fn readerAtEnd(self: *const Model) bool {
+        if (!self.region_reader) return true;
+        const geometry = self.reader_geometry orelse return false;
+        return geometry.atEnd(self.reader_position);
+    }
+
+    /// Called after the source dimensions are known, and again after a resize.
+    pub fn configureReader(self: *Model, source: viewport.Size, view: viewport.Size) !void {
+        self.reader_geometry = viewport.Geometry.init(source, view, self.prefs.rtl);
+        if (self.reader_pending_end) {
+            self.reader_position = 1;
+            self.reader_pending_end = false;
+        }
+        try self.remember();
+        try self.rememberRegion();
+    }
+
+    fn restoreRegion(self: *Model, chapter_id: []const u8) void {
+        self.reader_geometry = null;
+        self.reader_pending_end = false;
+        self.reader_position = 0;
+        const key = chapterKey(chapter_id);
+        for (self.prefs.reader_positions) |maybe_anchor| {
+            const anchor = maybe_anchor orelse continue;
+            if (anchor.page == self.page and std.mem.eql(u8, &anchor.chapter_key, &key)) {
+                self.reader_position = @as(f64, @floatFromInt(anchor.progress)) / @as(f64, @floatFromInt(std.math.maxInt(u32)));
+                break;
+            }
+        }
+    }
+
+    fn chapterKey(id: []const u8) [16]u8 {
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(id, &digest, .{});
+        return digest[0..16].*;
+    }
+
+    fn rememberRegion(self: *Model) !void {
+        if (!self.region_reader) return;
+        const geometry = self.reader_geometry orelse return;
+        if (geometry.axis == .page) return;
+        const ch = self.current() orelse return;
+        const key = chapterKey(ch.id);
+        const progress: u32 = @intFromFloat(@round(viewport.clamp(self.reader_position) * @as(f64, @floatFromInt(std.math.maxInt(u32)))));
+        const replacement: ReaderAnchor = .{ .chapter_key = key, .page = self.page, .progress = progress };
+        for (&self.prefs.reader_positions) |*entry| {
+            const anchor = entry.* orelse continue;
+            if (std.mem.eql(u8, &anchor.chapter_key, &key)) {
+                if (anchor.page == self.page and anchor.progress == progress) return;
+                entry.* = replacement;
+                self.dirty = true;
+                return;
+            }
+        }
+        const index = self.prefs.reader_position_next % self.prefs.reader_positions.len;
+        self.prefs.reader_positions[index] = replacement;
+        self.prefs.reader_position_next = @intCast((index + 1) % self.prefs.reader_positions.len);
+        self.dirty = true;
+    }
+
+    /// Marks the page now shown, completing the chapter only at the final edge.
     fn remember(self: *Model) !void {
         const ch = self.current() orelse return;
         if (ch.pages.len == 0) return;
         const old = self.readState(ch);
-        const state: ReadState = .{ .page = @intCast(self.page), .read = old.read or self.page + 1 == ch.pages.len, .started = true };
+        const state: ReadState = .{ .page = @intCast(self.page), .read = old.read or (self.page + 1 == ch.pages.len and self.readerAtEnd()), .started = true };
         if (old.page == state.page and old.read == state.read and old.started) return;
         try self.reading.put(self.gpa, ch.id, state);
         self.progress_changed = true;
@@ -160,6 +228,7 @@ pub const Model = struct {
                 self.chapter = i;
                 self.page = @min(self.readState(ch).page, ch.pages.len - 1);
                 self.screen = .reader;
+                self.restoreRegion(ch.id);
                 try self.remember();
             },
             .open_chapter => |pick| if (pick.manga < self.library.manga.len) {
@@ -185,9 +254,30 @@ pub const Model = struct {
                 if (self.screen != .reader) return;
                 const ch = self.current() orelse return;
                 if (ch.pages.len == 0) return;
+                if (self.region_reader) {
+                    const geometry = self.reader_geometry orelse return;
+                    if (geometry.step(self.reader_position, delta)) |position| {
+                        self.reader_position = position;
+                        try self.remember();
+                        try self.rememberRegion();
+                        return;
+                    }
+                }
                 const p: i64 = @as(i64, @intCast(self.page)) + delta;
-                self.page = @intCast(std.math.clamp(p, 0, @as(i64, @intCast(ch.pages.len - 1))));
+                const next: usize = @intCast(std.math.clamp(p, 0, @as(i64, @intCast(ch.pages.len - 1))));
+                if (next != self.page) {
+                    self.page = next;
+                    self.reader_geometry = null;
+                    self.reader_position = 0;
+                    self.reader_pending_end = delta < 0;
+                }
                 try self.remember();
+            },
+            .pan => |delta| {
+                if (self.screen != .reader or !self.region_reader or self.reader_geometry == null) return;
+                self.reader_position = viewport.clamp(self.reader_position + delta);
+                try self.remember();
+                try self.rememberRegion();
             },
             // libtachi picks the next chapter; the UI turns this into `read`.
             .next_chapter => {},
@@ -261,6 +351,7 @@ pub const Model = struct {
             },
             .rtl => {
                 self.prefs.rtl = !self.prefs.rtl;
+                if (self.reader_geometry) |*geometry| geometry.rtl = self.prefs.rtl;
                 self.dirty = true;
             },
             .refresh => {
