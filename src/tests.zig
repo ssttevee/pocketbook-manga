@@ -619,3 +619,88 @@ test "history cover rows and pagination fit above the root navigation" {
     try h.click("History title 6");
     try std.testing.expectEqual(lib.Screen.reader, model.screen);
 }
+
+test "chapter order normalizes source direction and keeps fractional chapters and stable ties" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(std.testing.allocator, std.testing.io, tachi.backend.none, .{ .dir = dir });
+    defer engine.queue.deinit(&engine);
+    const chapters = [_]lib.Chapter{
+        .{ .id = "one", .title = "Chapter 1", .number = 1, .source_order = 0 },
+        .{ .id = "half-a", .title = "Chapter 1.5 A", .number = 1.5, .source_order = 1 },
+        .{ .id = "half-b", .title = "Chapter 1.5 B", .number = 1.5, .source_order = 2 },
+        .{ .id = "two", .title = "Chapter 2", .number = 2, .source_order = 3 },
+    };
+    var reversed = chapters;
+    std.mem.reverse(lib.Chapter, &reversed);
+    for (&reversed, 0..) |*chapter, i| {
+        chapter.source_order = @intCast(i);
+        chapter.id = try std.fmt.allocPrint(a, "second-{s}", .{chapter.id});
+    }
+    try engine.store.save(a, .{ .manga = &.{
+        .{ .id = "oldest-first", .title = "Oldest first source", .source_id = 1, .chapters = &chapters },
+        .{ .id = "newest-first", .title = "Newest first source", .source_id = 1, .chapters = &reversed },
+    } });
+    var model: lib.Model = .{ .gpa = a };
+    var session: Session = .{ .model = &model, .root = dir, .io = std.testing.io };
+    defer session.deinit();
+    session.browser.engine = &engine;
+    try session.reloadLibrary();
+    for (0..2) |manga_index| {
+        model.manga = manga_index;
+        try session.refreshRows();
+        const manga = model.library.manga[manga_index];
+        try std.testing.expectEqual(tachi.views.ChapterSort.number, tachi.views.ChapterFlags.decode(manga.chapter_flags).sort);
+        try std.testing.expectEqual(@as(f64, 2), manga.chapters[model.chapterIndex(0)].number);
+        try std.testing.expectEqual(@as(f64, 1), manga.chapters[model.chapterIndex(3)].number);
+        const reader = try engine.readerChapters(a, if (manga_index == 0) "one" else "second-one");
+        try std.testing.expectEqual(@as(f64, 1.5), reader.next().?.number);
+    }
+    model.manga = 0;
+    try session.refreshRows();
+    try std.testing.expectEqualStrings("half-a", model.library.manga[0].chapters[model.chapterIndex(1)].id);
+    try std.testing.expectEqualStrings("half-b", model.library.manga[0].chapters[model.chapterIndex(2)].id);
+    model.screen = .chapters;
+    try session.edit(.chapter_direction);
+    try std.testing.expectEqualStrings("one", model.library.manga[0].chapters[model.chapterIndex(0)].id);
+    try std.testing.expectEqualStrings("two", model.library.manga[0].chapters[model.chapterIndex(3)].id);
+    const saved = try engine.loadLibrary(a);
+    try std.testing.expect(tachi.views.ChapterFlags.decode(saved.manga[0].chapter_flags).ascending);
+}
+
+test "chapter queue snapshots reflect paused queue additions and removals" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(std.testing.allocator, std.testing.io, tachi.backend.none, .{ .dir = dir });
+    defer engine.queue.deinit(&engine);
+    try engine.store.save(a, .{ .manga = &.{.{ .id = "m", .title = "M", .source_id = 1, .chapters = &.{.{ .id = "c", .title = "Chapter 1" }} }} });
+    var model: lib.Model = .{ .gpa = a };
+    var session: Session = .{ .model = &model, .root = dir, .io = std.testing.io };
+    defer session.deinit();
+    session.browser.engine = &engine;
+    try std.testing.expectEqual(0, (try session.queuedChapters(a)).len);
+    try std.testing.expectEqual(1, try engine.queue.enqueue(&engine, &.{"c"}, false));
+    const queued = try session.queuedChapters(a);
+    try std.testing.expectEqual(1, queued.len);
+    try std.testing.expectEqualStrings("c", queued[0].chapter_id);
+    try std.testing.expectEqual(tachi.queue.Status.queued, queued[0].status);
+    try session.reloadLibrary();
+    model.screen = .chapters;
+    var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try h.expectText("Queued");
+    try h.expectNoText("Not downloaded");
+    try engine.queue.remove(&engine, "c");
+    try std.testing.expectEqual(0, (try session.queuedChapters(a)).len);
+    try h.frame();
+    try h.expectText("Not downloaded");
+}

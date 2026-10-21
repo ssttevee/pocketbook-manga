@@ -682,6 +682,7 @@ fn storageView(ui: *app.Ui, session: *const Session, state: *const State) !void 
 fn list(ui: *app.Ui, model: *const lib.Model) !void {
     const is_library = model.screen == .library;
     const count = if (is_library) model.titleCount() else model.chapterCount();
+    const queued = if (is_library) &.{} else try @constCast(ui.use(Session)).queuedChapters(ui.arena());
     const on = ui.messages(Root);
     {
         try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .init(12, 12, 4, 6), .child_gap = 5 } });
@@ -813,8 +814,16 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
                 const saved = if (i < session.chapter_downloads.len) session.chapter_downloads[i] else null;
                 const total = if (ch.pages.len > 0) ch.pages.len else if (saved) |p| p.total else if (model.online_chapter != null and std.mem.eql(u8, model.online_chapter.?, ch.id)) model.online_pages.len else @as(usize, ch.page_count);
                 const reading = if (state.started and !state.read) (if (total > 0) try ui.fmt("Reading {d}/{d}", .{ @min(@as(usize, state.page) + 1, total), total }) else try ui.fmt("Reading {d}/?", .{@as(usize, state.page) + 1})) else if (state.read) "Read" else "";
-                const downloaded = if (saved) |p| try ui.fmt("Resume {d}/{d}", .{ p.done, p.total }) else if (ch.downloaded()) "Downloaded" else "Not downloaded";
-                const progress = if (reading.len > 0) (if (saved != null) try ui.fmt("{s} · {s}", .{ reading, downloaded }) else reading) else downloaded;
+                const queued_entry: ?tachi.queue.Entry = for (queued) |entry| {
+                    if (std.mem.eql(u8, entry.chapter_id, ch.id)) break entry;
+                } else null;
+                const downloaded = if (queued_entry) |entry| blk: {
+                    const label = if (entry.status == .failed) "Queued · failed" else if (entry.status == .downloading) "Downloading" else "Queued";
+                    const done = if (entry.pages_total > 0) entry.pages_done else if (saved) |p| p.done else 0;
+                    const queued_total = if (entry.pages_total > 0) entry.pages_total else if (saved) |p| p.total else 0;
+                    break :blk if (queued_total > 0) try ui.fmt("{s} {d}/{d}", .{ label, done, queued_total }) else label;
+                } else if (saved) |p| try ui.fmt("Resume {d}/{d}", .{ p.done, p.total }) else if (ch.downloaded()) "Downloaded" else "Not downloaded";
+                const progress = if (reading.len > 0) (if (saved != null or queued_entry != null) try ui.fmt("{s} · {s}", .{ reading, downloaded }) else reading) else downloaded;
                 try text(ui, title, 14, gray);
                 try ui.print(.{ .font_size = 10, .color = .gray(if (state.read) 130 else 90), .overflow = .ellipsis_end, .wrap_mode = .none }, "{s}{s}{s}{s}", .{
                     if (ch.bookmark) "Bookmarked · " else "",

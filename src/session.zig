@@ -373,6 +373,17 @@ pub const Session = struct {
             var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
             errdefer arena.deinit();
             const library = try engine.loadLibrary(arena.allocator());
+            // Extensions disagree about their source order. Persist number
+            // sorting so the list, reader navigation and mark-previous action
+            // all use the same normalized order, including after a restart.
+            for (@constCast(library.manga)) |*manga| {
+                var flags: tachi.views.ChapterFlags = .decode(manga.chapter_flags);
+                if (flags.sort != .source) continue;
+                flags.sort = .number;
+                const normalized = flags.encode(manga.chapter_flags);
+                try engine.setChapterFlags(manga.id, normalized);
+                manga.chapter_flags = normalized;
+            }
             self.covers.deinit(self.model.gpa);
             self.model.clearReading();
             if (self.library_arena) |*old| old.deinit();
@@ -673,8 +684,8 @@ pub const Session = struct {
                 };
                 switch (choice) {
                     .chapter_sort => {
-                        const sorts = std.enums.values(tachi.views.ChapterSort);
-                        const at = std.mem.indexOfScalar(tachi.views.ChapterSort, sorts, flags.sort) orelse 0;
+                        const sorts = [_]tachi.views.ChapterSort{ .number, .upload, .alphabetical };
+                        const at = std.mem.indexOfScalar(tachi.views.ChapterSort, &sorts, flags.sort) orelse 0;
                         flags.sort = sorts[(at + 1) % sorts.len];
                     },
                     .chapter_direction => flags.ascending = !flags.ascending,
@@ -898,6 +909,13 @@ pub const Session = struct {
         if (self.rows_arena) |*old| old.deinit();
         self.rows_arena = arena;
     }
+    /// Live queue state, allocated in the caller's frame arena. Membership
+    /// changes without replacing the library or rebuilding its chapter rows.
+    pub fn queuedChapters(self: *Session, arena: std.mem.Allocator) ![]const tachi.queue.Entry {
+        const engine = self.browser.engine orelse return &.{};
+        return engine.queue.snapshot(engine, arena);
+    }
+
     /// Moves reading progress from the pre-libtachi preferences file into
     /// libtachi's reading state, once.
     pub fn migrateProgress(self: *Session) !void {
