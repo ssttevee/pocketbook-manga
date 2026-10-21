@@ -728,13 +728,25 @@ fn storageView(ui: *app.Ui, session: *const Session, state: *const State) !void 
     try app.widgets.button(ui, "storage-clear-cache", .{ .label = if (state.storage_clearing) "Clearing cache..." else "Clear online reading cache", .enabled = !state.storage_clearing and !engine.queue.running(), .on_click = on.bind(.{ .storage_action = .clear_cache }) });
 }
 
+fn sortLabel(mode: tachi.views.SortMode) []const u8 {
+    return switch (mode) {
+        .alphabetical => "Alphabetical",
+        .last_read => "Recently read",
+        .date_added => "Recently added",
+        .unread_count => "Unread chapters",
+        .total_chapters => "Chapter count",
+        .latest_chapter => "Latest released",
+        else => @tagName(mode),
+    };
+}
+
 fn list(ui: *app.Ui, model: *const lib.Model) !void {
     const is_library = model.screen == .library;
     const count = if (is_library) model.titleCount() else model.chapterCount();
     const queued = if (is_library) &.{} else try @constCast(ui.use(Session)).queuedChapters(ui.arena());
     const on = ui.messages(Root);
     {
-        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .init(12, 12, 4, 6), .child_gap = 5 } });
+        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = if (is_library) .init(12, 12, 0, 0) else .init(12, 12, 4, 6), .child_gap = if (is_library) 3 else 5 } });
         defer ui.close();
         if (is_library) {
             {
@@ -753,7 +765,7 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
                 for (first..@min(first + 3, model.categories.len)) |i| {
                     const selected = i == model.category;
                     try ui.open(.{ .category_tab = i }, .{
-                        .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .init(2, 2, 5, 5) },
+                        .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .init(2, 2, 3, 3) },
                         .border = .{ .color = .black, .widths = .{ .bottom = if (selected) 2 else 0 } },
                         .on_click = on.bind(.{ .act = @as(lib.Action, .{ .category = @as(i32, @intCast(i)) - @as(i32, @intCast(model.category)) }) }),
                     });
@@ -762,7 +774,20 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
                 }
                 ui.spacer();
                 if (first + 3 < model.categories.len) try app.widgets.button(ui, "next-category", .{ .label = ">", .on_click = on.bind(.{ .act = @as(lib.Action, .{ .category = 1 }) }) });
-            } else try ui.print(.{ .font_size = 11, .color = .gray(90) }, "{d} {s}", .{ count, if (count == 1) "title" else "titles" });
+            }
+            {
+                const sort = ui.use(Session).currentSort();
+                try ui.open("library-sort-controls", .{ .layout = .{ .child_gap = 10, .child_alignment = .center_left } });
+                defer ui.close();
+                try ui.open("library-sort", .{ .on_click = on.bind(.{ .setting = .sort_mode }) });
+                try ui.print(.{ .font_size = 12 }, "Sort: {s}", .{sortLabel(sort.mode)});
+                ui.close();
+                try ui.open("library-sort-direction", .{ .on_click = on.bind(.{ .setting = .sort_ascending }) });
+                try ui.text(if (sort.ascending) "Asc" else "Desc", .{ .font_size = 12 });
+                ui.close();
+                ui.spacer();
+                try ui.print(.{ .font_size = 11, .color = .gray(90) }, "{d} titles", .{count});
+            }
         } else {
             const manga = model.library.manga[model.manga];
             const title_style: f.layout.text.Style = .{ .font_size = 17, .font_weight = .bold, .wrap_mode = .words, .overflow = .ellipsis_end };
@@ -995,7 +1020,7 @@ fn settingsView(ui: *app.Ui, session: *const Session) !void {
                 .skip_duplicates => try ui.fmt("{s} Reader: skip duplicate chapters", .{check(s.reader.skip_duplicates)}),
                 .incognito => try ui.fmt("{s} Incognito (no progress or history)", .{check(s.reader.incognito)}),
                 .downloaded_only => try ui.fmt("{s} Downloaded only", .{check(s.library.downloaded_only)}),
-                .sort_mode => try ui.fmt("Sort: {s}", .{@tagName(sort.mode)}),
+                .sort_mode => try ui.fmt("Sort: {s}", .{sortLabel(sort.mode)}),
                 .sort_ascending => if (sort.ascending) "Order: ascending" else "Order: descending",
             };
             try app.widgets.button(ui, .{ .setting = which }, .{ .label = label, .on_click = on.bind(.{ .setting = which }) });

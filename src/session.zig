@@ -1017,11 +1017,12 @@ pub const Session = struct {
                 // Sorting goes through libtachi's rules for categories.
                 var sort = self.currentSort();
                 if (which == .sort_ascending) sort.ascending = !sort.ascending else {
-                    const modes = std.enums.values(tachi.views.SortMode);
+                    const modes: []const tachi.views.SortMode = &.{ .alphabetical, .last_read, .date_added, .unread_count, .total_chapters, .latest_chapter };
                     const at = std.mem.indexOfScalar(tachi.views.SortMode, modes, sort.mode) orelse 0;
                     sort.mode = modes[(at + 1) % modes.len];
                 }
                 try engine.setLibrarySort(self.category_id, sort);
+                self.model.offset = 0;
                 try self.reloadLibrary();
                 try self.loadSettings();
                 return;

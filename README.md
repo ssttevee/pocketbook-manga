@@ -19,7 +19,7 @@ After installation, normal use needs only the reader and Wi-Fi. The UI starts th
 
 ## Use
 
-- **Library** uses two portrait cover cards per page, with unread and downloaded counts. Tap **List** for five rows with titles limited to two lines; the layout choice is saved. Category tabs and search filter either layout.
+- **Library** uses two portrait cover cards per page, with unread and downloaded counts. Tap **List** for five rows with titles limited to two lines; the layout choice is saved. Category tabs and search filter either layout. Tap **Sort** to cycle alphabetical, recently read, recently added, unread chapter count, total chapter count and latest release; **Asc / Desc** reverses the order. Sorting is saved for each category.
 - Successful actions show a nonblocking confirmation for two seconds; tap it to dismiss sooner. Errors stay visible until **Dismiss** is tapped.
 - The bottom tabs follow Mihon: **Library, Updates, History, Browse, More**. **More** holds downloads, categories, statistics, backups, trackers and settings.
 - Local, custom and cached covers work offline. Missing online covers load quietly in the background, starting the retained worker when needed; opening a downloaded chapter never starts the JVM just for artwork. Unsupported or failed covers keep a placeholder.

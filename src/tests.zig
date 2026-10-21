@@ -168,6 +168,7 @@ test {
     _ = @import("reader_navigation_test.zig");
     _ = @import("series_controls_test.zig");
     _ = @import("storage_test.zig");
+    _ = @import("library_sort_test.zig");
     _ = @import("storage_manager_test.zig");
     _ = @import("reader_page_jump_test.zig");
     _ = @import("region_cache_test.zig");
