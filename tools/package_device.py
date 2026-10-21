@@ -33,11 +33,16 @@ def main():
     parser.add_argument('--output', type=pathlib.Path, default=ROOT / 'dist')
     parser.add_argument('--host-jar', type=pathlib.Path, default=ROOT.parent / 'zig-tachi/zig-out/lib/tachi-host.jar')
     parser.add_argument('--zstd-library', type=pathlib.Path, help='Source-built JNI decoder (default: zig-out/lib from zig build device)')
+    parser.add_argument('--images', type=pathlib.Path, default=ROOT / '.runtime-cache/image/pocketmanga-image.tar', help='Decoder runtime from tools/build_images.py')
     parser.add_argument('--jre', type=pathlib.Path, default=ROOT / '.runtime-cache/jre/pocketmanga-jre.tar', help='Java runtime from tools/build_jre.py')
     args=parser.parse_args()
     args.cache.mkdir(parents=True, exist_ok=True)
     if not args.host_jar.is_file(): raise SystemExit('Build the host jar first: zig build host in ../zig-tachi')
     if not args.jre.is_file(): raise SystemExit('Build the Java runtime first: tools/build_jre.py')
+    if not args.images.is_file(): raise SystemExit('Build the image runtime first: tools/build_images.py')
+    image_lock = json.loads((ROOT / 'tools/image/sources.json').read_text())
+    if hashlib.sha256(args.images.read_bytes()).hexdigest() != LOCK['images']['SHA256']:
+        raise SystemExit('Image runtime differs from pinned build; rerun tools/build_images.py')
     if hashlib.sha256(args.jre.read_bytes()).hexdigest() != LOCK['jre']['SHA256']:
         raise SystemExit(f'{args.jre} is not the pinned runtime build; rerun tools/build_jre.py')
     zstd = args.zstd_library or ROOT / 'zig-out/lib/libpocketmanga-zstd.so'
@@ -56,6 +61,11 @@ def main():
         # The base CDS archive built with it; the VM rejects it if it does not match.
         shutil.copy2(args.jre.parent / 'classes.jsa', runtime / 'jre/lib/client/classes.jsa')
         (runtime / 'lib').mkdir()
+        image_runtime = runtime / 'image'
+        image_runtime.mkdir()
+        with tarfile.open(args.images) as tar:
+            tar.extractall(image_runtime, filter='tar')
+        (image_runtime / 'sources.json').write_text(json.dumps(image_lock, indent=2) + '\n')
         certs=extracted / 'usr/share/ca-certificates'
         (runtime / 'ca.pem').write_bytes(b'\n'.join(p.read_bytes() for p in sorted(certs.rglob('*.crt'))))
         cacerts=runtime / 'jre/lib/security/cacerts'

@@ -13,5 +13,11 @@
   "Source": "https://github.com/openjdk/jdk17u/commit/c35a8d5a87559ad2734f1023bb321176c13c7ba0 (jdk-17.0.20.1-ga)",
   "Build": "tools/jre/Dockerfile via tools/build_jre.py",
   "SHA256": "5e846fdaa79d725aeb42c81131c1c99a150618b52e19f8ae63f4402384987830"
+ },
+ "images": {
+  "Version": "libvips-8.18.7-mihon17",
+  "Source": "tools/image/sources.json (SHA-256-pinned upstream sources)",
+  "Build": "tools/image/Dockerfile via tools/build_images.py",
+  "SHA256": "35998367aea9386b88e5612ea25727a7f042088a5c91b239b23c8271d36d6afa"
  }
 }

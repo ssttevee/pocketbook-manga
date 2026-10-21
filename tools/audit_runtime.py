@@ -26,15 +26,18 @@ def main():
             link = pathlib.Path(path.readlink())
             path = firmware/str(link).lstrip('/') if link.is_absolute() else path.parent/link
         raise RuntimeError('Symlink loop: '+str(path))
-    def locate(name):
-        for directory in search:
+    def locate(name, parent=None):
+        # Image libraries carry $ORIGIN RUNPATHs and use an isolated private
+        # C++ runtime. Firmware libc is always supplied by the reader.
+        local = [parent.parent] if parent and parent.is_relative_to(runtime/'image') else []
+        for directory in local + search:
             path = resolve(directory/name)
             if path.is_file(): return path.resolve()
         raise RuntimeError('Missing NEEDED: '+name)
     def readelf(*options):
         return subprocess.check_output([args.readelf, *map(str, options)], text=True)
     if args.process == 'ui':
-        queue = [app/'bin/pocketmanga', locate('libinkview.so')]
+        queue = [app/'bin/pocketmanga', locate('libinkview.so'), runtime/'image/lib/libpocketmanga-image.so']
     else:
         queue = [app/'bin/pocketmanga-worker'] + sorted((runtime/'jre/lib').rglob('*.so')) + sorted((runtime/'lib').iterdir())
     entries = {}
@@ -61,15 +64,18 @@ def main():
         versions = re.findall(r'@GLIBC_([0-9.]+)', ' '.join(required))
         maximum = max(versions,key=lambda v:tuple(map(int,v.split('.')))) if versions else None
         entries[str(path)] = {'needed':needed,'max_glibc':maximum,'origin':'bundle' if path.is_relative_to(app) else 'firmware'}
-        queue += [locate(name) for name in needed]
+        queue += [locate(name, path) for name in needed]
     for path, required in imports.items():
         missing = required-exports
         if missing: raise RuntimeError(f'{path}: missing versioned symbols: {sorted(missing)}')
-    # The worker runs on the firmware's own glibc and GCC runtime; none is bundled.
+    # Both processes use firmware glibc. The decoder-only image runtime may
+    # carry GCC's backward-compatible C++ support libraries for HEIF/JXL.
     gnu = re.compile(r'^(ld-linux|ld-2\.|libc[.-]|libm[.-]|libpthread|libdl[.-]|librt[.-]|libresolv|libnss_|libstdc\+\+|libgcc_s|libatomic)')
     for path, entry in entries.items():
-        if entry['origin'] == 'bundle' and gnu.match(pathlib.Path(path).name): raise RuntimeError('Bundled GNU runtime: '+path)
-    if args.process == 'ui' and any(entry['origin'] == 'bundle' and '/runtime/' in path for path, entry in entries.items()): raise RuntimeError('Private runtime in UI')
+        if entry['origin'] == 'bundle' and gnu.match(pathlib.Path(path).name):
+            image_cpp = pathlib.Path(path).is_relative_to(runtime/'image/lib') and pathlib.Path(path).name.startswith(('libstdc++.', 'libgcc_s.', 'libatomic.'))
+            if not image_cpp: raise RuntimeError('Bundled GNU runtime: '+path)
+    if args.process == 'ui' and any(entry['origin'] == 'bundle' and '/runtime/' in path and not pathlib.Path(path).is_relative_to(runtime/'image') for path, entry in entries.items()): raise RuntimeError('Private runtime in UI')
     if args.process == 'worker' and any('libinkview' in path for path in entries): raise RuntimeError('InkView in worker')
     report = {'process':args.process,'rootfs':str(firmware),'versioned_imports':sum(map(len,imports.values())),'libraries':entries}
     text = json.dumps(report,indent=2)+'\n'
