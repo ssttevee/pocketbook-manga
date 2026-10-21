@@ -899,10 +899,21 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
                     if (std.mem.eql(u8, entry.chapter_id, ch.id)) break entry;
                 } else null;
                 const downloaded = if (queued_entry) |entry| blk: {
-                    const label = if (entry.status == .failed) "Queued · failed" else if (entry.status == .downloading) "Downloading" else "Queued";
                     const done = if (entry.pages_total > 0) entry.pages_done else if (saved) |p| p.done else 0;
                     const queued_total = if (entry.pages_total > 0) entry.pages_total else if (saved) |p| p.total else 0;
-                    break :blk if (queued_total > 0) try ui.fmt("{s} {d}/{d}", .{ label, done, queued_total }) else label;
+                    const paused = entry.status == .queued and queued_total > 0 and (done > 0 or saved != null) and (if (session.browser.engine) |engine| !engine.queue.running() else true);
+                    if (paused) break :blk try ui.fmt("Download paused {d}/{d} · Tap to resume", .{ done, queued_total });
+                    const label = if (entry.status == .failed) "Queued · failed" else switch (entry.stage) {
+                        .listing_pages => switch (entry.phase) {
+                            .starting => "Loading worker",
+                            .extension_loading => "Loading extension",
+                            .operation => "Listing pages",
+                        },
+                        .downloading => "Downloading",
+                        .pages_ready => "Queued · Pages ready",
+                        .queued => "Queued",
+                    };
+                    break :blk if (queued_total > 0 and entry.stage != .listing_pages) try ui.fmt("{s} {d}/{d}", .{ label, done, queued_total }) else label;
                 } else if (saved) |p| try ui.fmt("Download paused {d}/{d} · Tap to resume", .{ p.done, p.total }) else if (ch.downloaded()) "Downloaded" else "Not downloaded";
                 const progress = if (reading.len > 0) (if (saved != null or queued_entry != null or !state.started or state.page == 0) try ui.fmt("{s} · {s}", .{ reading, downloaded }) else reading) else downloaded;
                 try text(ui, title, 14, gray);

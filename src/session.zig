@@ -613,8 +613,12 @@ pub const Session = struct {
                     const m = model.library.manga[pick.manga];
                     const blocked = entry.status == .failed and browserVerificationRequired(entry.failure orelse "");
                     const detail = switch (entry.status) {
-                        .queued => "Queued",
-                        .downloading => if (entry.pages_total > 0) try std.fmt.allocPrint(a, "Downloading {d}/{d}", .{ entry.pages_done, entry.pages_total }) else switch (entry.phase) {
+                        .queued => if (entry.stage == .pages_ready) "Pages ready" else "Queued",
+                        .downloading => if (entry.stage == .listing_pages) switch (entry.phase) {
+                            .starting => "Loading worker",
+                            .extension_loading => "Loading extension",
+                            .operation => "Listing pages",
+                        } else if (entry.pages_total > 0) try std.fmt.allocPrint(a, "Downloading {d}/{d}", .{ entry.pages_done, entry.pages_total }) else switch (entry.phase) {
                             .starting => "Loading worker",
                             .extension_loading => "Loading extension",
                             .operation => "Listing pages",
