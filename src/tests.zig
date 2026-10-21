@@ -464,7 +464,7 @@ test "library category tabs reach categories outside the visible window" {
     try std.testing.expectEqual(0, model.category);
 }
 
-test "library cover grid pages two titles and switches to seven row list" {
+test "library cover grid fixes cover widths and limits captions to two lines" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -489,8 +489,20 @@ test "library cover grid pages two titles and switches to seven row list" {
     try std.testing.expect(layout_toggle.bbox.x + layout_toggle.bbox.w <= 343);
     const nav = h.findText("More").?;
     try std.testing.expect(nav.bbox.y + nav.bbox.h <= 464);
-    for (manga[0..2]) |title| {
-        const caption = h.findText(title.title).?;
+    var captions = f.app.testing.TextIterator(@TypeOf(h.runtime).Text).init(h.runtime.context());
+    var first_caption: ?*const f.layout.Unit = null;
+    var title_lines: usize = 0;
+    while (captions.next()) |found| {
+        if (found.content.text.len == 0 or std.mem.indexOf(u8, manga[0].title, found.content.text) == null) continue;
+        if (first_caption == null) first_caption = found.unit;
+        title_lines += 1;
+    }
+    try std.testing.expectEqual(2, title_lines);
+    for (manga[0..2], 0..) |title, i| {
+        const caption = if (i == 0) first_caption.? else h.findText(title.title).?;
+        const caption_box = h.runtime.context().units.items[caption.parent];
+        const card = h.runtime.context().units.items[caption_box.parent];
+        try std.testing.expectEqual(148, card.bbox.w);
         try std.testing.expect(caption.bbox.x >= 0);
         try std.testing.expect(caption.bbox.x + caption.bbox.w <= 343);
         try std.testing.expect(caption.bbox.y + caption.bbox.h <= pager.bbox.y);
@@ -508,8 +520,8 @@ test "library cover grid pages two titles and switches to seven row list" {
     try h.click("List");
     try std.testing.expect(!model.prefs.library_grid);
     try std.testing.expectEqual(0, model.offset);
-    try h.expectText("Story 7");
-    try std.testing.expect(h.findText("Story 8") == null);
+    try h.expectText("Story 5");
+    try std.testing.expect(h.findText("Story 6") == null);
     try h.click("Grid");
     try std.testing.expect(model.prefs.library_grid);
     try h.click("...");
@@ -539,7 +551,7 @@ test "library pagination clamps both layouts and preserves filters when switchin
     try std.testing.expectEqual(2, model.category);
     try std.testing.expectEqualStrings("Story", model.query_text);
     try model.dispatch(.{ .list_page = std.math.maxInt(i32) });
-    try std.testing.expectEqual(7, model.offset);
+    try std.testing.expectEqual(5, model.offset);
     try model.dispatch(.{ .list_page = std.math.minInt(i32) });
     try std.testing.expectEqual(0, model.offset);
     try model.dispatch(.library_grid);

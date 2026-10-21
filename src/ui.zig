@@ -788,14 +788,22 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
                 ui.close();
             }
             try ui.open(key, .{
-                .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(34) }, .axis = .y, .padding = .init(2, 6, 3, 3), .child_gap = 2 },
+                .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(if (is_library) 48 else 34) }, .axis = .y, .padding = .init(2, 6, 3, 3), .child_gap = 2 },
                 .background_color = rowFill(ui, key),
                 .on_click = on.bind(.{ .act = if (is_library) @as(lib.Action, .{ .open = i }) else @as(lib.Action, .{ .read = i }) }),
             });
             if (is_library) {
                 const manga = model.library.manga[i];
                 const counts = manga.counts();
-                try text(ui, title, 14, 0);
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(30) }, .axis = .y } });
+                const style: f.layout.text.Style = .{ .font_size = 12, .font_weight = .bold, .wrap_mode = .words, .overflow = .ellipsis_end };
+                const lines = try ui.core.make_lines(ui.core, title, style, @max(1, ui.core.viewport.x - 68));
+                if (lines.len > 2) {
+                    const single = style.with(.{ .wrap_mode = .none });
+                    try ui.text(title[0..lines[0].end], single);
+                    try ui.text(title[lines[1].start..], single);
+                } else try ui.text(title, style);
+                ui.close();
                 try ui.print(.{ .font_size = 10, .color = .gray(90) }, "{d} unread  ·  {s}", .{ counts.unread, manga.author });
             } else {
                 const ch = model.library.manga[model.manga].chapters[i];
@@ -839,10 +847,10 @@ fn libraryGrid(ui: *app.Ui, model: *const lib.Model) !void {
     defer ui.close();
     // A single row keeps portrait covers large; paging replaces Android scrolling.
     {
-        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(244) }, .child_gap = 12 } });
+        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(250) }, .child_gap = 12 } });
         defer ui.close();
         for (0..2) |_| {
-            try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .child_gap = 3 } });
+            try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(148) }, .axis = .y, .child_gap = 3 } });
             defer ui.close();
             if (row >= end) continue;
             const i = model.titleIndex(row);
@@ -858,7 +866,7 @@ fn libraryGrid(ui: *app.Ui, model: *const lib.Model) !void {
                 });
                 defer ui.close();
                 {
-                    try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(190) }, .child_alignment = .center }, .background_color = .gray(238), .corner_radius = .uniform(4) });
+                    try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(148), .height = .fixed(190) }, .child_alignment = .center }, .background_color = .gray(238), .corner_radius = .uniform(4) });
                     defer ui.close();
                     if (session.coverImage(manga)) |image| ui.content(&image.content) else {
                         try ui.open(null, .{ .layout = .{ .axis = .y, .child_alignment = .center, .child_gap = 4 } });
@@ -867,8 +875,14 @@ fn libraryGrid(ui: *app.Ui, model: *const lib.Model) !void {
                         try text(ui, if (manga.local()) "Local manga" else "Manga", 11, 90);
                     }
                 }
-                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(26) } } });
-                try ui.text(manga.title, .{ .font_size = 12, .font_weight = .bold, .wrap_mode = .words, .overflow = .ellipsis_end });
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(148), .height = .fixed(30) }, .axis = .y } });
+                const style: f.layout.text.Style = .{ .font_size = 12, .font_weight = .bold, .wrap_mode = .words, .overflow = .ellipsis_end };
+                const lines = try ui.core.make_lines(ui.core, manga.title, style, 148);
+                if (lines.len > 2) {
+                    const single = style.with(.{ .wrap_mode = .none });
+                    try ui.text(manga.title[0..lines[0].end], single);
+                    try ui.text(manga.title[lines[1].start..], single);
+                } else try ui.text(manga.title, style);
                 ui.close();
             }
             {
@@ -1659,11 +1673,19 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
             };
             const key = .{ .online_row = i };
             try ui.open(key, .{
-                .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(33) }, .axis = if (root) .x else .y, .padding = .init(4, 4, 3, 3), .child_gap = if (root) 8 else 0, .child_alignment = .center_left },
+                .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(33) }, .axis = if (root or screen == .catalog or screen == .global_search) .x else .y, .padding = .init(4, 4, 3, 3), .child_gap = if (root or screen == .catalog or screen == .global_search) 8 else 0, .child_alignment = .center_left },
                 .background_color = if (ui.pressed(key)) .gray(218) else .white,
                 .on_click = ui.messages(Root).bind(.{ .online = command }),
             });
             if (root) try sourceInitial(ui, label);
+            if (screen == .catalog or screen == .global_search) {
+                const hit = if (screen == .global_search) b.globalHit(i) else null;
+                const remote = if (hit) |value| value.manga else b.titles.?.result.page.?.mangas[i];
+                const source = if (hit) |value| value.source else b.source_id;
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(20), .height = .fixed(30) }, .child_alignment = .center }, .background_color = .gray(238) });
+                if (@constCast(session).coverImage(.{ .id = remote.url, .title = remote.title, .source_id = source, .remote = remote })) |image| ui.content(&image.content);
+                ui.close();
+            }
             try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y } });
             try text(ui, label, 14, 0);
             switch (screen) {
@@ -1711,4 +1733,26 @@ test "reader drag maps both axes and display scales into reading order" {
         try std.testing.expect(if (rtl) delta < 0 else delta > 0);
     }
     try std.testing.expectEqual(@as(f64, 0), readerDrag(tall, .init(-100, 0), .zero));
+}
+
+fn operationTitle(request: @import("tachi").engine.Request) []const u8 {
+    return switch (request) {
+        .download => "Downloading chapter",
+        .read => "Opening chapter",
+        .global_search => "Searching sources",
+        .browse => "Loading manga",
+        .sources => "Loading sources",
+        .extensions, .refresh_stores => "Loading extensions",
+        .install => "Installing extension",
+        .uninstall => "Removing extension",
+        .update_library => "Checking for new chapters",
+        .scan_local => "Scanning local manga",
+        .export_backup => "Creating backup",
+        .import_backup => "Restoring backup",
+        .export_downloads => "Exporting downloads",
+        .import_downloads => "Importing downloads",
+        .preferences, .set_preference => "Loading source settings",
+        .migrate => "Migrating manga",
+        else => "Updating manga",
+    };
 }

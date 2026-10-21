@@ -41,14 +41,6 @@ fn loadPage(session: *Session, _: []const u8) !void {
     session.display_scale = ink.App(Root).instance.screen.scale;
 }
 
-fn canFetchCover(_: *Session) bool {
-    const worker = lifecycle_worker orelse return false;
-    // Cold library screens keep placeholders. Once browsing has warmed the
-    // worker, optional artwork can load without competing with JVM startup
-    // or waiting for a released worker to finish saving its startup cache.
-    return worker.alive() and worker.workerReady();
-}
-
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     var device_io = @import("device_io.zig").DeviceIo.init(init.io);
@@ -66,7 +58,7 @@ pub fn main(init: std.process.Init) !void {
         else => return err,
     };
     if (prefs) |p| model.prefs = p.value;
-    var session: Session = .{ .model = &model, .root = root, .io = io, .save_path = prefs_path, .load_image = loadPage, .load_cover = decodeImage, .can_fetch_cover = canFetchCover };
+    var session: Session = .{ .model = &model, .root = root, .io = io, .save_path = prefs_path, .load_image = loadPage, .load_cover = decodeImage };
     defer session.covers.deinit(gpa);
     // Extensions run in the worker process; the library, downloads and the
     // local source stay here. Test emulators wrap the worker.

@@ -100,7 +100,8 @@ fn expectSmallPartial(since: usize, row_y: c_int) !void {
     try std.testing.expect(updates.len > 0);
     for (updates) |update| {
         try std.testing.expectEqual(fake.Update.Kind.partial, update.kind);
-        try std.testing.expect(update.h > 0 and update.h <= 100);
+        // Include the damage tracker's two-point margins and pixel rounding.
+        try std.testing.expect(update.h > 0 and update.h <= @as(c_int, @intFromFloat(@ceil(52 * Host.instance.screen.scale))) + 4);
         try std.testing.expect(update.y <= row_y and update.y + update.h >= row_y);
         try std.testing.expect(update.w < fake.state.width);
     }

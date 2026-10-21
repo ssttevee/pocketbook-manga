@@ -182,3 +182,76 @@ test "optional artwork waits for a ready worker without suppressing a later fetc
     try std.testing.expect(session.coverImage(remote_manga) != null);
     try std.testing.expectEqual(1, requests.load(.monotonic));
 }
+
+test "missing artwork loads on series and feed screens without a warm worker" {
+    const gpa = std.testing.allocator;
+    for ([_]lib.Screen{ .chapters, .history, .updates, .queue, .catalog, .global_search }) |screen| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", gpa);
+        defer gpa.free(root);
+        var engine: tachi.Engine = .init(gpa, std.testing.io, tachi.backend.none, .{ .dir = root });
+        defer engine.deinit();
+        engine.execute_fn = cacheCover;
+        var model: lib.Model = .{ .gpa = gpa, .screen = screen };
+        var session: Session = .{ .model = &model, .io = std.testing.io, .root = root, .load_cover = thumbnail };
+        session.browser.engine = &engine;
+        defer session.deinit();
+        try std.testing.expect(session.coverImage(remote_manga) == null);
+        try std.testing.expect(session.cover_job != null);
+        session.cover_job.?.join();
+        try session.poll();
+        try std.testing.expect(session.coverImage(remote_manga) != null);
+        try std.testing.expect(session.browser.busy == null);
+    }
+}
+
+test "reader never starts optional artwork work" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const gpa = std.testing.allocator;
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", gpa);
+    defer gpa.free(root);
+    var engine: tachi.Engine = .init(gpa, std.testing.io, tachi.backend.none, .{ .dir = root });
+    defer engine.deinit();
+    var model: lib.Model = .{ .gpa = gpa, .screen = .reader };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = root, .load_cover = thumbnail };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    try std.testing.expect(session.coverImage(remote_manga) == null);
+    try std.testing.expect(session.cover_job == null);
+}
+
+test "a foreground operation allows previously failed artwork to retry" {
+    requests.store(0, .monotonic);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const gpa = std.testing.allocator;
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", gpa);
+    defer gpa.free(root);
+    var engine: tachi.Engine = .init(gpa, std.testing.io, tachi.backend.none, .{ .dir = root });
+    defer engine.deinit();
+    engine.execute_fn = failCover;
+    var model: lib.Model = .{ .gpa = gpa };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = root, .load_cover = thumbnail };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    try std.testing.expect(session.coverImage(remote_manga) == null);
+    session.cover_job.?.join();
+    try session.poll();
+    try std.testing.expect(session.coverImage(remote_manga) == null);
+    try std.testing.expect(session.cover_job == null);
+    engine.execute_fn = struct {
+        fn execute(e: *tachi.Engine, job: *tachi.Job) !void {
+            if (job.request == .cover) try cacheCover(e, job);
+        }
+    }.execute;
+    session.start(.sources);
+    session.browser.busy.?.join();
+    try session.poll();
+    try std.testing.expect(session.coverImage(remote_manga) == null);
+    try std.testing.expect(session.cover_job != null);
+    session.cover_job.?.join();
+    try session.poll();
+    try std.testing.expect(session.coverImage(remote_manga) != null);
+}

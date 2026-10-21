@@ -92,7 +92,7 @@ pub const Model = struct {
     /// Rows that fit the current screen, including its controls and guidance.
     pub fn pageRows(self: *const Model) usize {
         return switch (self.screen) {
-            .library => if (self.prefs.library_grid) 2 else rows,
+            .library => if (self.prefs.library_grid) 2 else 5,
             .chapters => self.chapter_page_rows,
             // Leave room to explain blocked sources above the queue.
             .queue => 4,

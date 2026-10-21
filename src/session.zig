@@ -35,7 +35,7 @@ pub const Session = struct {
     covers: Covers = .{},
     /// Optional artwork never owns the foreground busy/status presentation.
     cover_job: ?*tachi.Job = null,
-    /// Device artwork uses an already-ready worker rather than starting a JVM.
+    /// Optional platform gate for background artwork requests.
     can_fetch_cover: ?*const fn (*Session) bool = null,
     cover_attempts: [64]?u64 = @splat(null),
     cover_attempt_next: usize = 0,
@@ -157,7 +157,10 @@ pub const Session = struct {
     }
 
     fn requestCover(self: *Session, manga: lib.Manga) void {
-        if (self.cover_job != null or self.browser.busy != null or self.model.screen != .library) return;
+        if (self.cover_job != null or self.browser.busy != null) return;
+        // Artwork may start the extension worker on a cold library screen,
+        // but must never compete with page decoding while reading.
+        if (self.model.screen == .reader) return;
         const engine = self.browser.engine orelse return;
         if (self.can_fetch_cover) |ready| if (!ready(self)) return;
         const source = manga.source_id orelse return;
@@ -169,7 +172,8 @@ pub const Session = struct {
         self.cover_attempts[self.cover_attempt_next] = hash;
         self.cover_attempt_next = (self.cover_attempt_next + 1) % self.cover_attempts.len;
         // Job.start clones source/URL before the library snapshot can change.
-        // Optional artwork uses an existing connection, without a Wi-Fi dialog.
+        // The retained worker handles source headers and authenticated images.
+        // Optional artwork never opens a Wi-Fi dialog.
         self.cover_job = tachi.Job.start(engine, .{ .cover = .{ .source = source, .url = url } }) catch |err| {
             std.log.warn("Cannot fetch cover: {s}", .{@errorName(err)});
             return;
@@ -269,6 +273,9 @@ pub const Session = struct {
     }
     pub fn start(self: *Session, request: tachi.engine.Request) void {
         self.cancelCoverJob();
+        // A new foreground operation can restore connectivity or source
+        // credentials. Retry failed artwork after that explicit user action.
+        self.cover_attempts = @splat(null);
         defer self.updateActivity();
         if (request == .download) self.download_blocked = false;
         if (request == .download and self.browser.busy == null) self.rememberDownload(request.download) catch {

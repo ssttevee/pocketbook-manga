@@ -19,9 +19,9 @@ After installation, normal use needs only the reader and Wi-Fi. The UI starts th
 
 ## Use
 
-- **Library** uses two portrait cover cards per page, with unread and downloaded counts. Tap **List** for seven compact rows per page; the layout choice is saved. Category tabs and search filter either layout.
+- **Library** uses two portrait cover cards per page, with unread and downloaded counts. Tap **List** for five rows with titles limited to two lines; the layout choice is saved. Category tabs and search filter either layout.
 - The bottom tabs follow Mihon: **Library, Updates, History, Browse, More**. **More** holds downloads, categories, statistics, backups, trackers and settings.
-- Local, custom and cached covers work offline. Missing online covers load quietly while the libtachi worker is already ready; opening a downloaded chapter never starts the JVM just for artwork. Unsupported or failed covers keep a placeholder.
+- Local, custom and cached covers work offline. Missing online covers load quietly in the background, starting the retained worker when needed; opening a downloaded chapter never starts the JVM just for artwork. Unsupported or failed covers keep a placeholder.
 - Downloads that require unsupported browser verification show why they cannot download and suggest another version or source. Tap a blocked title in the download queue to search for alternatives. These failures stay blocked across queue starts and app restarts; temporary network failures remain retryable.
 - **Browse → Extensions:** filter the repository by name or language, then tap an extension to install or update it. libtachi checks the repository's signing key. Unsupported extension API versions are labelled.
 - Tap an installed **source** to view popular titles. Use the reader's system keyboard and **Search**, or switch to **Latest**. **Previous / Next** browse results and source pages.
