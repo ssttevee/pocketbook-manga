@@ -5,8 +5,13 @@ const tachi = @import("tachi");
 const vips = @import("vips.zig");
 const cache = @import("region_cache.zig");
 const vp = @import("reader_viewport.zig");
+pub const Continuous = @import("continuous_reader.zig");
 
 pub const Request = struct {
+    mode: @import("library.zig").ReaderMode = .paged,
+    delta: f64 = 0,
+    pages: []const []const u8 = &.{},
+    revision: usize = 0,
     root: []const u8,
     relative: []const u8,
     chapter: []const u8,
@@ -23,7 +28,7 @@ pub const Request = struct {
 pub const Result = struct {
     request: Request,
     ready_at: ?std.Io.Timestamp = null,
-    value: union(enum) { frame: cache.Frame, failure: []const u8, prefetched },
+    value: union(enum) { frame: cache.Frame, continuous: Continuous.Output, failure: []const u8, prefetched },
 };
 const Adapter = struct {
     library: *const vips.Library,
@@ -66,9 +71,43 @@ fn checkpoint(context: ?*anyopaque) !void {
     try task.checkCancel();
 }
 
+pub fn continuousContext(service: *Service, io: std.Io, request: *const Request) Continuous.Context {
+    return .{ .gpa = service.tiles.gpa, .io = io, .tiles = &service.tiles, .resolver = .{ .context = @ptrCast(@constCast(request)), .path = continuousPath } };
+}
+
+fn continuousPath(context: *anyopaque, arena: std.mem.Allocator, relative: []const u8) ![:0]const u8 {
+    const request: *const Request = @ptrCast(@alignCast(context));
+    if (!tachi.library.safePath(relative)) return error.UnsafePagePath;
+    const path = if (request.engine) |engine| try engine.pagePath(arena, relative) else try std.fs.path.join(arena, &.{ request.root, relative });
+    return arena.dupeSentinel(u8, path, 0);
+}
+
+pub fn continuousRequest(request: Request) Continuous.Request {
+    return .{ .pages = request.pages, .anchor = .{ .page = request.page, .position = request.position }, .delta = request.delta, .viewport = request.viewport };
+}
+
 pub fn render(task: *app.Task, service: *Service, request: Request, on_frame: app.Handler(anyerror!Result)) anyerror!Result {
     try task.checkCancel();
     const started = std.Io.Clock.boot.now(task.io);
+    if (request.mode == .vertical) {
+        const context = continuousContext(service, task.io, &request);
+        const output = try Continuous.render(context, task.gpa, continuousRequest(request), .{ .context = task, .check = checkpoint });
+        try task.checkCancel();
+        try task.post(on_frame, @as(anyerror!Result, .{ .request = request, .ready_at = std.Io.Clock.boot.now(task.io), .value = .{ .continuous = output } }));
+        if (!output.at_end and !output.waiting) {
+            var arena: std.heap.ArenaAllocator = .init(task.gpa);
+            defer arena.deinit();
+            var next = continuousRequest(request);
+            next.anchor = output.anchor;
+            next.delta = @as(f64, @floatFromInt(request.viewport.height)) * 0.9;
+            _ = Continuous.render(context, arena.allocator(), next, .{ .context = task, .check = checkpoint }) catch |err| {
+                if (err == error.Canceled) return err;
+                std.log.debug("Continuous preparation: {s}", .{@errorName(err)});
+                return .{ .request = request, .value = .prefetched };
+            };
+        }
+        return .{ .request = request, .value = .prefetched };
+    }
     if (!tachi.library.safePath(request.relative)) return error.UnsafePagePath;
     const path = if (request.engine) |engine|
         try engine.pagePath(task.gpa, request.relative)

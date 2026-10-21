@@ -14,7 +14,7 @@ pub const Backend = struct {
 pub const Checkpoint = struct {
     context: ?*anyopaque = null,
     check: ?*const fn (?*anyopaque) anyerror!void = null,
-    fn run(self: Checkpoint, io: std.Io) !void {
+    pub fn run(self: Checkpoint, io: std.Io) !void {
         if (self.check) |check| try check(self.context) else try io.checkCancel();
     }
 };
@@ -65,15 +65,27 @@ pub const Service = struct {
 
     /// Output is allocated in the caller's result arena, independent of tiles.
     pub fn frame(self: *Service, arena: std.mem.Allocator, io: std.Io, path: [:0]const u8, view: Size, progress: f64, backward: bool, rtl: bool, checkpoint: Checkpoint) !Frame {
+        return self.frameInternal(arena, io, path, view, progress, backward, rtl, null, checkpoint);
+    }
+
+    pub const Slice = struct { top: u32, height: u32 };
+
+    /// Width fitting is unconditional here: adjacent source images share an edge.
+    pub fn verticalSlice(self: *Service, arena: std.mem.Allocator, io: std.Io, path: [:0]const u8, view: Size, slice: Slice, checkpoint: Checkpoint) !Frame {
+        return self.frameInternal(arena, io, path, view, 0, false, false, slice, checkpoint);
+    }
+
+    fn frameInternal(self: *Service, arena: std.mem.Allocator, io: std.Io, path: [:0]const u8, view: Size, progress: f64, backward: bool, rtl: bool, slice: ?Slice, checkpoint: Checkpoint) !Frame {
         try checkpoint.run(io);
         if (view.width == 0 or view.height == 0 or view.width > 8192 or view.height > 8192) return error.InvalidViewport;
-        const key = try imageKey(io, path, view);
+        const key = try modeKey(io, path, view, slice != null);
         if (self.key != key) {
             self.clear();
             const source = try self.backend.probe(self.backend.context, path);
             if (source.width == 0 or source.height == 0) return error.InvalidImageDimensions;
             try checkpoint.run(io);
             var geometry = vp.Geometry.init(source, view, rtl);
+            if (slice != null) geometry.axis = .vertical;
             const scale = switch (geometry.axis) {
                 .vertical => @as(f64, @floatFromInt(view.width)) / @as(f64, @floatFromInt(source.width)),
                 .horizontal => @as(f64, @floatFromInt(view.height)) / @as(f64, @floatFromInt(source.height)),
@@ -103,7 +115,7 @@ pub const Service = struct {
         var geometry = self.geometry.?;
         geometry.rtl = rtl;
         const position = if (backward) @as(f64, 1) else vp.clamp(progress);
-        const rect = geometry.region(position);
+        const rect = if (slice) |part| sliceRect(geometry, part) else geometry.region(position);
         const pixels = try arena.alloc(u8, @as(usize, rect.width) * rect.height);
         errdefer arena.free(pixels);
         if (!self.disk_scanned) {
@@ -156,8 +168,39 @@ pub const Service = struct {
     /// snapshotted under tryLock; only complete, validated disk tiles are used.
     /// The caller owns the resulting pixels, just as with frame().
     pub fn cachedFrame(self: *Service, arena: std.mem.Allocator, io: std.Io, path: [:0]const u8, view: Size, progress: f64, backward: bool, rtl: bool) !?Frame {
+        return self.cachedInternal(arena, io, path, view, progress, backward, rtl, null);
+    }
+
+    pub fn cachedVerticalSlice(self: *Service, arena: std.mem.Allocator, io: std.Io, path: [:0]const u8, view: Size, slice: Slice) !?Frame {
+        return self.cachedInternal(arena, io, path, view, 0, false, false, slice);
+    }
+
+    pub fn cachedVerticalGeometry(self: *Service, io: std.Io, path: [:0]const u8, view: Size) !?vp.Geometry {
+        const key = modeKey(io, path, view, true) catch |err| switch (err) {
+            error.Canceled => return err,
+            else => return null,
+        };
+        if (!self.prepared_mutex.tryLock()) return null;
+        defer self.prepared_mutex.unlock(io);
+        for (self.prepared) |entry| if (entry) |value| {
+            if (value.key == key) return value.geometry;
+        };
+        return null;
+    }
+
+    fn sliceRect(geometry: vp.Geometry, slice: Slice) Rect {
+        const top = @min(slice.top, geometry.output.height - 1);
+        return .{ .x = 0, .y = top, .width = @min(geometry.output.width, geometry.viewport.width), .height = @min(slice.height, geometry.output.height - top) };
+    }
+
+    fn modeKey(io: std.Io, path: [:0]const u8, view: Size, vertical: bool) !u64 {
+        const base = try imageKey(io, path, view);
+        return if (vertical) std.hash.Wyhash.hash(base, "continuous-width-fit-v1") else base;
+    }
+
+    fn cachedInternal(self: *Service, arena: std.mem.Allocator, io: std.Io, path: [:0]const u8, view: Size, progress: f64, backward: bool, rtl: bool, slice: ?Slice) !?Frame {
         if (view.width == 0 or view.height == 0 or view.width > 8192 or view.height > 8192) return null;
-        const key = imageKey(io, path, view) catch |err| switch (err) {
+        const key = modeKey(io, path, view, slice != null) catch |err| switch (err) {
             error.Canceled => return err,
             else => return null,
         };
@@ -172,7 +215,7 @@ pub const Service = struct {
         var geometry = known;
         geometry.rtl = rtl;
         const position = if (backward) @as(f64, 1) else vp.clamp(progress);
-        const rect = geometry.region(position);
+        const rect = if (slice) |part| sliceRect(geometry, part) else geometry.region(position);
         const pixels = try arena.alloc(u8, @as(usize, rect.width) * rect.height);
         var success = false;
         defer if (!success) arena.free(pixels);
@@ -193,7 +236,7 @@ pub const Service = struct {
         }
         // A download/storage replacement during composition must not publish
         // pixels from the old source, even if all its old tiles still exist.
-        const current_key = imageKey(io, path, view) catch |err| switch (err) {
+        const current_key = modeKey(io, path, view, slice != null) catch |err| switch (err) {
             error.Canceled => return err,
             else => return null,
         };

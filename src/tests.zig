@@ -160,6 +160,8 @@ test "page bounds and stale progress are clamped" {
     try std.testing.expect(model.readState(library.manga[0].chapters[0]).read);
 }
 test {
+    _ = @import("continuous_reader_test.zig");
+    _ = @import("continuous_mode_test.zig");
     _ = @import("smoke.zig");
     _ = @import("online_test.zig");
     _ = @import("navigation_test.zig");

@@ -9,9 +9,11 @@ pub const Chapter = tachi.library.Chapter;
 pub const safePath = tachi.library.safePath;
 /// Display preferences. `progress` is the pre-libtachi reading progress,
 /// read once to migrate it into libtachi's reading state.
-pub const Preferences = struct { rtl: bool = true, full_refresh: bool = true, library_grid: bool = true, progress: []const LegacyProgress = &.{}, reader_positions: [32]?ReaderAnchor = @splat(null), reader_position_next: u8 = 0 };
+pub const ReaderMode = enum { paged, vertical };
+pub const ReaderModeOverride = struct { series_key: [16]u8, mode: ReaderMode };
+pub const Preferences = struct { reader_modes: [128]?ReaderModeOverride = @splat(null), reader_mode_next: u8 = 0, rtl: bool = true, full_refresh: bool = true, library_grid: bool = true, progress: []const LegacyProgress = &.{}, reader_positions: [32]?ReaderAnchor = @splat(null), reader_position_next: u8 = 0 };
 /// Bounded display-only positions; libtachi still owns chapter/page progress.
-pub const ReaderAnchor = struct { chapter_key: [16]u8, page: usize, progress: u32 };
+pub const ReaderAnchor = struct { mode: ReaderMode = .paged, chapter_key: [16]u8, page: usize, progress: u32 };
 pub const LegacyProgress = struct { id: []const u8, page: usize = 0, completed: bool = false };
 
 pub fn readJson(comptime T: type, gpa: std.mem.Allocator, io: Io, path: []const u8) !std.json.Parsed(T) {
@@ -38,7 +40,7 @@ pub const Screen = enum { library, chapters, reader, settings, sources, extensio
 /// libtachi settings the settings screen changes.
 pub const Setting = enum { skip_completed, skip_unread, skip_not_started, skip_not_due, update_details, download_new, delete_marked_read, delete_bookmarked, delete_after_reading, download_ahead, skip_read, skip_filtered, skip_duplicates, incognito, downloaded_only, sort_mode, sort_ascending };
 pub const Pick = struct { manga: usize, chapter: usize };
-pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, open_chapter: Pick, turn: i32, jump_page: usize, pan: f64, next_chapter, list_page: i32, category: i32, feed: Screen, menu: usize, settings, help, rtl, refresh, library_grid, toggle_title, jump_chapter: []const u8 };
+pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, open_chapter: Pick, turn: i32, jump_page: usize, pan: f64, next_chapter, list_page: i32, category: i32, feed: Screen, menu: usize, settings, help, reader_mode: ReaderMode, rtl, refresh, library_grid, toggle_title, jump_chapter: []const u8 };
 pub const Model = struct {
     gpa: std.mem.Allocator,
     library: Library = .{},
@@ -58,6 +60,10 @@ pub const Model = struct {
     reader_geometry: ?viewport.Geometry = null,
     reader_position: f64 = 0,
     reader_pending_end: bool = false,
+    /// Continuous mode anchors the top of the viewport within one source image.
+    reader_scroll_delta: f64 = 0,
+    reader_continuous_end: bool = false,
+    reader_waiting: bool = false,
     offset: usize = 0,
     title_expanded: bool = false,
     chapter_page_rows: usize = rows,
@@ -145,8 +151,31 @@ pub const Model = struct {
         };
         return copy;
     }
+    pub fn readingMode(self: *const Model) ReaderMode {
+        if (self.manga >= self.library.manga.len) return .paged;
+        const key = chapterKey(self.library.manga[self.manga].id);
+        for (self.prefs.reader_modes) |entry| if (entry) |value| {
+            if (std.mem.eql(u8, &value.series_key, &key)) return value.mode;
+        };
+        return .paged;
+    }
+
+    pub fn presentContinuous(self: *Model, page: usize, position: f64, geometry: viewport.Geometry, at_end: bool, waiting: bool) !void {
+        self.page = page;
+        self.reader_position = position;
+        self.reader_scroll_delta = 0;
+        self.reader_pending_end = false;
+        self.reader_geometry = geometry;
+        self.reader_continuous_end = at_end;
+        self.reader_waiting = waiting;
+        self.reader_presented = true;
+        try self.remember();
+        try self.rememberRegion();
+    }
+
     pub fn readerAtEnd(self: *const Model) bool {
         if (!self.region_reader) return true;
+        if (self.readingMode() == .vertical) return self.reader_presented and self.reader_continuous_end;
         const geometry = self.reader_geometry orelse return false;
         return geometry.atEnd(self.reader_position);
     }
@@ -168,10 +197,13 @@ pub const Model = struct {
         self.reader_presented = false;
         self.reader_pending_end = false;
         self.reader_position = 0;
+        self.reader_scroll_delta = 0;
+        self.reader_continuous_end = false;
+        self.reader_waiting = false;
         const key = chapterKey(chapter_id);
         for (self.prefs.reader_positions) |maybe_anchor| {
             const anchor = maybe_anchor orelse continue;
-            if (anchor.page == self.page and std.mem.eql(u8, &anchor.chapter_key, &key)) {
+            if (anchor.mode == self.readingMode() and anchor.page == self.page and std.mem.eql(u8, &anchor.chapter_key, &key)) {
                 self.reader_position = @as(f64, @floatFromInt(anchor.progress)) / @as(f64, @floatFromInt(std.math.maxInt(u32)));
                 break;
             }
@@ -188,15 +220,15 @@ pub const Model = struct {
         if (self.reader_requires_presentation and !self.reader_presented) return;
         if (!self.region_reader or !self.reader_record_positions) return;
         const geometry = self.reader_geometry orelse return;
-        if (geometry.axis == .page) return;
+        if (geometry.axis == .page and self.readingMode() == .paged) return;
         const ch = self.current() orelse return;
         const key = chapterKey(ch.id);
         const progress: u32 = @intFromFloat(@round(viewport.clamp(self.reader_position) * @as(f64, @floatFromInt(std.math.maxInt(u32)))));
-        const replacement: ReaderAnchor = .{ .chapter_key = key, .page = self.page, .progress = progress };
+        const replacement: ReaderAnchor = .{ .mode = self.readingMode(), .chapter_key = key, .page = self.page, .progress = progress };
         for (&self.prefs.reader_positions) |*entry| {
             const anchor = entry.* orelse continue;
             if (std.mem.eql(u8, &anchor.chapter_key, &key)) {
-                if (anchor.page == self.page and anchor.progress == progress) return;
+                if (anchor.mode == self.readingMode() and anchor.page == self.page and anchor.progress == progress) return;
                 entry.* = replacement;
                 self.dirty = true;
                 return;
@@ -213,7 +245,7 @@ pub const Model = struct {
         const ch = self.current() orelse return;
         if (ch.pages.len == 0 or ch.pages[self.page].len == 0) return;
         const old = self.readState(ch);
-        const state: ReadState = .{ .page = @intCast(self.page), .read = old.read or (self.page + 1 == ch.pages.len and self.readerAtEnd() and (!self.reader_requires_presentation or self.reader_presented)), .started = true };
+        const state: ReadState = .{ .page = @intCast(self.page), .read = old.read or ((self.readingMode() == .vertical or self.page + 1 == ch.pages.len) and self.readerAtEnd() and (!self.reader_requires_presentation or self.reader_presented)), .started = true };
         if (old.page == state.page and old.read == state.read and old.started) return;
         try self.reading.put(self.gpa, ch.id, state);
         self.progress_changed = true;
@@ -291,6 +323,12 @@ pub const Model = struct {
                 if (self.screen != .reader) return;
                 const ch = self.current() orelse return;
                 if (ch.pages.len == 0) return;
+                if (self.region_reader and self.readingMode() == .vertical) {
+                    const geometry = self.reader_geometry orelse return;
+                    self.reader_scroll_delta += @as(f64, @floatFromInt(delta)) * @as(f64, @floatFromInt(geometry.viewport.height)) * 0.9;
+                    self.reader_presented = false;
+                    return;
+                }
                 if (self.region_reader and ch.pages[self.page].len > 0) {
                     const geometry = self.reader_geometry orelse return;
                     if (geometry.step(self.reader_position, delta)) |position| {
@@ -321,11 +359,20 @@ pub const Model = struct {
                 self.reader_geometry = null;
                 self.reader_position = 0;
                 self.reader_pending_end = false;
+                self.reader_scroll_delta = 0;
+                self.reader_continuous_end = false;
+                self.reader_waiting = false;
                 try self.remember();
                 try self.rememberRegion();
             },
             .pan => |delta| {
                 if (self.screen != .reader or !self.region_reader or self.reader_geometry == null) return;
+                if (self.readingMode() == .vertical) {
+                    if (!std.math.isFinite(delta)) return;
+                    self.reader_scroll_delta += delta;
+                    self.reader_presented = false;
+                    return;
+                }
                 const position = viewport.clamp(self.reader_position + delta);
                 if (position != self.reader_position) self.reader_presented = false;
                 self.reader_position = position;
@@ -400,6 +447,27 @@ pub const Model = struct {
             .library_grid => {
                 self.prefs.library_grid = !self.prefs.library_grid;
                 self.offset = 0;
+                self.dirty = true;
+            },
+            .reader_mode => |mode| {
+                if (self.manga >= self.library.manga.len or self.readingMode() == mode) return;
+                const key = chapterKey(self.library.manga[self.manga].id);
+                const index = blk: {
+                    for (self.prefs.reader_modes, 0..) |entry, i| if (entry) |value| {
+                        if (std.mem.eql(u8, &value.series_key, &key)) break :blk i;
+                    };
+                    const next = self.prefs.reader_mode_next % self.prefs.reader_modes.len;
+                    self.prefs.reader_mode_next = @intCast((@as(usize, next) + 1) % self.prefs.reader_modes.len);
+                    break :blk next;
+                };
+                self.prefs.reader_modes[index] = .{ .series_key = key, .mode = mode };
+                self.reader_position = 0;
+                self.reader_scroll_delta = 0;
+                self.reader_pending_end = false;
+                self.reader_geometry = null;
+                self.reader_presented = false;
+                self.reader_continuous_end = false;
+                self.reader_waiting = false;
                 self.dirty = true;
             },
             .rtl => {

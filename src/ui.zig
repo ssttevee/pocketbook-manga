@@ -13,7 +13,7 @@ pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const Navigation = enum { library, updates, history, browse, more };
 pub const State = struct { storage_snapshot: ?storage.Snapshot = null, storage_revision: u32 = 0, storage_clearing: bool = false, more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, pointer_start: ?f.Vec2 = null, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage, series }, jump_chapter, jump_page, page_target: ?[]const u8, dismiss_error, dismiss_status: u64, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, library_sort, library_sort_choice: ?usize, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { reader_mode_menu, reader_mode_choice: ?usize, storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage, series }, jump_chapter, jump_page, page_target: ?[]const u8, dismiss_error, dismiss_status: u64, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, library_sort, library_sort_choice: ?usize, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
@@ -84,9 +84,18 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                 },
             }
         },
+        .reader_mode_menu => {
+            const items = [_]app.platform.MenuItem{ .{ .title = "Paged", .id = 0 }, .{ .title = "Continuous vertical", .id = 1 } };
+            try ctx.menu(.{ .items = &items, .at = .init(12, 90) }, ctx.handler(.reader_mode_choice));
+        },
+        .reader_mode_choice => |choice| if (choice) |value| {
+            if (value < 2) try session.act(.{ .reader_mode = if (value == 0) .paged else .vertical });
+        },
         .region_frame => |outcome| {
             const result = outcome catch |err| {
-                if (err != error.Canceled) try session.formatStatus("Cannot render page: {s}", .{@errorName(err)});
+                if (err == error.TooManyContinuousImages) {
+                    session.setStatus("Too many image fragments in one screen. Switch to Paged mode to continue.");
+                } else if (err != error.Canceled) try session.formatStatus("Cannot render page: {s}", .{@errorName(err)});
                 return;
             };
             if (try session.acceptRegion(result)) refreshReader(state, session, ctx);
@@ -311,7 +320,10 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                     const drag = event.local.sub(start);
                     if (@abs(drag.x) >= 12 or @abs(drag.y) >= 12) {
                         const geometry = session.model.reader_geometry orelse return;
-                        const delta = readerDrag(geometry, drag, event.size);
+                        const delta = if (session.model.readingMode() == .vertical and event.size.y > 0)
+                            -@as(f64, drag.y / event.size.y) * @as(f64, @floatFromInt(geometry.viewport.height))
+                        else
+                            readerDrag(geometry, drag, event.size);
                         if (delta == 0) return;
                         try session.act(.{ .pan = delta });
                     } else {
@@ -612,31 +624,38 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         .chapters => try list(ui, model),
         .reader => try reader(ui, session),
         .settings => if (state.more_root) try moreView(ui) else {
-            try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 16 } });
+            try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 10 } });
             defer ui.close();
+            if (model.return_screen == .reader) {
+                try text(ui, "Viewing mode", 15, 0);
+                try app.widgets.button(ui, "reader-mode", .{ .label = if (model.readingMode() == .vertical) "Continuous vertical" else "Paged", .on_click = on.bind(.reader_mode_menu) });
+                try text(ui, "Saved for this series", 12, 60);
+            }
             try text(ui, "Reading direction", 15, 0);
             try button(ui, "direction", if (model.prefs.rtl) "Right to left (manga)" else "Left to right", .rtl);
             try text(ui, "Page refresh", 15, 0);
             try button(ui, "refresh", if (model.prefs.full_refresh) "Full refresh on each page" else "Partial (periodic cleaning)", .refresh);
-            try text(ui, "Physical Next always advances a page.", 12, 60);
+            try text(ui, if (model.readingMode() == .vertical) "Next moves down with overlapping screenfuls." else "Physical Next always advances a page.", 12, 60);
             try text(ui, "Direction changes the left / right tap zones.", 12, 60);
-            {
-                try ui.open(null, .{ .layout = .{ .child_gap = 8 } });
-                defer ui.close();
-                try onlineButton(ui, "scan-local", "Scan local manga", .scan);
-                try button(ui, "stats", "Statistics", .{ .feed = .stats });
-            }
-            {
-                try ui.open(null, .{ .layout = .{ .child_gap = 8 } });
-                defer ui.close();
-                try button(ui, "engine-settings", "Library settings", .{ .feed = .engine_settings });
-                try button(ui, "categories", "Categories", .{ .feed = .categories });
-            }
-            {
-                try ui.open(null, .{ .layout = .{ .child_gap = 8 } });
-                defer ui.close();
-                try button(ui, "backup", "Backup and restore", .{ .feed = .backup });
-                try button(ui, "trackers", "Trackers", .{ .feed = .trackers });
+            if (model.return_screen != .reader) {
+                {
+                    try ui.open(null, .{ .layout = .{ .child_gap = 8 } });
+                    defer ui.close();
+                    try onlineButton(ui, "scan-local", "Scan local manga", .scan);
+                    try button(ui, "stats", "Statistics", .{ .feed = .stats });
+                }
+                {
+                    try ui.open(null, .{ .layout = .{ .child_gap = 8 } });
+                    defer ui.close();
+                    try button(ui, "engine-settings", "Library settings", .{ .feed = .engine_settings });
+                    try button(ui, "categories", "Categories", .{ .feed = .categories });
+                }
+                {
+                    try ui.open(null, .{ .layout = .{ .child_gap = 8 } });
+                    defer ui.close();
+                    try button(ui, "backup", "Backup and restore", .{ .feed = .backup });
+                    try button(ui, "trackers", "Trackers", .{ .feed = .trackers });
+                }
             }
             ui.spacer();
             try app.widgets.button(ui, "quit", .{ .label = "Close PocketManga", .on_click = on.bind(.quit) });
@@ -1468,6 +1487,10 @@ fn reader(ui: *app.Ui, session: *const Session) !void {
             mutable.region_viewport = viewport;
         }
         var request: regions.Request = .{
+            .mode = model.readingMode(),
+            .pages = if (model.readingMode() == .vertical) ch.pages else &.{},
+            .delta = model.reader_scroll_delta,
+            .revision = session.reader_download_done,
             .root = session.root,
             .relative = ch.pages[model.page],
             .chapter = ch.id,
@@ -1481,9 +1504,12 @@ fn reader(ui: *app.Ui, session: *const Session) !void {
             .next_pages = ch.pages[model.page + 1 .. @min(ch.pages.len, model.page + 3)],
         };
         if (!mutable.regionCurrent()) _ = try mutable.acceptCachedRegion(request);
+        request.page = model.page;
+        request.relative = ch.pages[model.page];
+        request.delta = model.reader_scroll_delta;
         request.position = model.reader_position;
         request.backward = model.reader_pending_end;
-        try ui.task("reader-region", .{ .restart = .{ request.relative, request.chapter, request.page, request.epoch, viewport, @as(u64, @bitCast(request.position)), request.backward, request.rtl } }, regions.render, .{ service, request, on.handler(.region_frame) }, on.handler(.region_frame));
+        try ui.task("reader-region", .{ .restart = .{ request.relative, request.chapter, request.page, request.epoch, viewport, @as(u64, @bitCast(request.position)), request.backward, request.rtl, request.mode, @as(u64, @bitCast(request.delta)), request.revision } }, regions.render, .{ service, request, on.handler(.region_frame) }, on.handler(.region_frame));
     };
     {
         try ui.open("page", .{ .layout = .{ .sizing = .grow(.{}), .child_alignment = .center }, .background_color = .white, .on_pointer = on.handler(.pointer) });
@@ -1495,6 +1521,17 @@ fn reader(ui: *app.Ui, session: *const Session) !void {
             try text(ui, if (session.status.len > 0) session.status else if (session.region_service != null) "Loading page…" else if (session.load_image == null) "Page preview" else "Page unavailable", 14, 0);
         }
     }
+    if (model.readingMode() == .vertical and model.reader_waiting and !model.reader_controls) {
+        try ui.open("reader-waiting", .{ .floating = .{ .mode = .root, .parent_point = .left_bottom, .unit_point = .left_bottom }, .background_color = .white, .layout = .{ .padding = .all(6) } });
+        try text(ui, "Waiting for next page…", 12, 60);
+        ui.close();
+    }
+    if (model.readingMode() == .vertical and session.image != null and session.status.len > 0 and !session.status_transient and !session.download_error) {
+        try ui.open("reader-error", .{ .floating = .{ .mode = .root, .parent_point = .left_bottom, .unit_point = .left_bottom, .offset = .init(12, -40) }, .background_color = .white, .border = .{ .color = .black, .widths = .outside(1) }, .layout = .{ .sizing = .{ .width = .fixed(@max(1, ui.core.viewport.x - 24)) }, .axis = .y, .padding = .all(8), .child_gap = 4 } });
+        try ui.text(session.status, .{ .font_size = 12, .wrap_mode = .words });
+        try app.widgets.button(ui, "dismiss-reader-error", .{ .label = "Dismiss", .on_click = on.bind(.dismiss_error) });
+        ui.close();
+    }
     if (model.reader_controls) {
         try ui.open("reader-footer", .{ .floating = .{ .mode = .root, .parent_point = .left_bottom, .unit_point = .left_bottom }, .background_color = .white, .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(36) }, .padding = .init(6, 6, 0, 0), .child_gap = 6, .child_alignment = .center_left }, .border = .{ .color = .black, .widths = .{ .top = 1 } } });
         defer ui.close();
@@ -1503,7 +1540,9 @@ fn reader(ui: *app.Ui, session: *const Session) !void {
         {
             try ui.open("reader-progress", .{ .layout = .{ .sizing = .{ .height = .grow(.{}) }, .child_alignment = .center }, .on_click = on.bind(.jump_page) });
             defer ui.close();
-            if (model.reader_geometry) |geometry| {
+            if (model.readingMode() == .vertical) {
+                try ui.print(.{ .font_size = 12 }, "{d}/{d} vertical", .{ model.page + 1, ch.pages.len });
+            } else if (model.reader_geometry) |geometry| {
                 if (geometry.axis != .page) {
                     const percent: u8 = @intFromFloat(@round(lib.viewport.clamp(model.reader_position) * 100));
                     try ui.print(.{ .font_size = 12 }, "{d}/{d} {d}% {s}", .{ model.page + 1, ch.pages.len, percent, switch (geometry.axis) {
@@ -1518,7 +1557,7 @@ fn reader(ui: *app.Ui, session: *const Session) !void {
             try ui.print(.{ .font_size = 10 }, "{s} {d}/{d}", .{ if (session.reader_download_failed) "Paused" else "DL", session.reader_download_done, session.reader_download_total });
         ui.spacer();
         try button(ui, "right-page", if (model.prefs.rtl) "Prev" else "Next", .{ .turn = if (model.prefs.rtl) -1 else 1 });
-        if (model.page + 1 == ch.pages.len and model.readerAtEnd() and (session.region_service == null or session.regionCurrent()) and session.next_chapter != null)
+        if ((model.readingMode() == .vertical or model.page + 1 == ch.pages.len) and model.readerAtEnd() and (session.region_service == null or session.regionCurrent()) and session.next_chapter != null)
             try app.widgets.button(ui, "next-chapter", .{ .label = "Chapter >", .on_click = on.bind(.{ .act = .next_chapter }) });
     }
 }

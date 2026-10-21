@@ -28,7 +28,7 @@ pub const Session = struct {
     region_viewport: Viewport.Size = .{ .width = 0, .height = 0 },
     region_epoch: u64 = 0,
     region_pixels: ?[]u8 = null,
-    region_drawn: ?struct { chapter: u64, page: usize, epoch: u64, position: f64, rtl: bool, viewport: Viewport.Size } = null,
+    region_drawn: ?struct { chapter: u64, page: usize, epoch: u64, position: f64, rtl: bool, viewport: Viewport.Size, mode: lib.ReaderMode = .paged } = null,
     load_image: ?*const fn (*Session, []const u8) anyerror!void = null,
     /// Decodes an owned, bounded thumbnail independently of the reader page.
     load_cover: ?*const fn (*Session, []const u8, usize, usize) anyerror!Image = null,
@@ -101,7 +101,7 @@ pub const Session = struct {
         const chapter = self.model.current() orelse return false;
         return self.image != null and self.model.reader_presented and drawn.epoch == self.region_epoch and
             drawn.chapter == std.hash.Wyhash.hash(0, chapter.id) and drawn.page == self.model.page and
-            drawn.position == self.model.reader_position and drawn.rtl == self.model.prefs.rtl and
+            drawn.mode == self.model.readingMode() and self.model.reader_scroll_delta == 0 and drawn.position == self.model.reader_position and drawn.rtl == self.model.prefs.rtl and
             std.meta.eql(drawn.viewport, self.region_viewport);
     }
     pub fn clearRegionImage(self: *Session) void {
@@ -114,6 +114,12 @@ pub const Session = struct {
     /// exclusively on the task thread; a cache miss follows the normal task.
     pub fn acceptCachedRegion(self: *Session, request: Regions.Request) !bool {
         const service = self.region_service orelse return false;
+        if (request.mode == .vertical) {
+            var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+            defer arena.deinit();
+            const output = try Regions.Continuous.cached(Regions.continuousContext(service, self.io, &request), arena.allocator(), Regions.continuousRequest(request)) orelse return false;
+            return self.acceptRegion(.{ .request = request, .value = .{ .continuous = output } });
+        }
         if (!tachi.library.safePath(request.relative)) return false;
         var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
         defer arena.deinit();
@@ -131,6 +137,8 @@ pub const Session = struct {
         const chapter = model.current() orelse return false;
         if (model.screen != .reader or model.page != request.page or self.region_epoch != request.epoch or
             !std.mem.eql(u8, chapter.id, request.chapter) or model.reader_position != request.position or
+            model.readingMode() != request.mode or model.reader_scroll_delta != request.delta or
+            (request.mode == .vertical and request.revision != self.reader_download_done) or
             model.reader_pending_end != request.backward or model.prefs.rtl != request.rtl or
             !std.meta.eql(self.region_viewport, request.viewport)) return false;
         switch (result.value) {
@@ -140,19 +148,27 @@ pub const Session = struct {
                 try self.formatStatus("Cannot open page: {s}", .{failure});
                 return false;
             },
-            .frame => |frame| {
+            .frame, .continuous => {
+                const frame = switch (result.value) {
+                    .frame => |frame| frame,
+                    .continuous => |output| output.frame,
+                    else => unreachable,
+                };
                 const accepted_at = std.Io.Clock.boot.now(self.io);
                 const pixels = blk: {
                     const owned = try model.gpa.dupe(u8, frame.pixels);
                     errdefer model.gpa.free(owned);
-                    try model.configureReader(frame.source, request.viewport);
+                    switch (result.value) {
+                        .continuous => |output| try model.presentContinuous(output.anchor.page, output.anchor.position, frame.geometry, output.at_end, output.waiting),
+                        else => try model.configureReader(frame.source, request.viewport),
+                    }
                     break :blk owned;
                 };
                 model.reader_geometry = frame.geometry;
                 self.clearRegionImage();
                 self.region_pixels = pixels;
                 self.image = .{ .width = frame.rect.width, .height = frame.rect.height, .pixels = pixels, .revision = frame.revision, .native_scale = self.display_scale };
-                self.region_drawn = .{ .chapter = std.hash.Wyhash.hash(0, chapter.id), .page = model.page, .epoch = self.region_epoch, .position = model.reader_position, .rtl = model.prefs.rtl, .viewport = request.viewport };
+                self.region_drawn = .{ .chapter = std.hash.Wyhash.hash(0, chapter.id), .page = model.page, .epoch = self.region_epoch, .position = model.reader_position, .rtl = model.prefs.rtl, .viewport = request.viewport, .mode = request.mode };
                 self.setStatus("");
                 self.recordProgress();
                 try self.saveDisplayPreferences();
@@ -1333,6 +1349,10 @@ pub const Session = struct {
             }
         }
         try self.model.dispatch(action);
+        if (action == .reader_mode) {
+            self.region_epoch +%= 1;
+            self.clearRegionImage();
+        }
         if (self.model.screen == .reader) self.cancelCoverJob();
         const lists = self.model.screen == .library or self.model.screen == .chapters;
         if (lists and (action == .search or action == .category or old_screen != self.model.screen or old_manga != self.model.manga or self.model.title_rows == null)) try self.refreshRows();
@@ -1389,7 +1409,7 @@ pub const Session = struct {
         const now: u64 = @intCast(std.Io.Clock.awake.now(self.io).toMilliseconds());
         const read_ms: i64 = if (self.last_progress_ms) |last| @intCast(@min(now - last, 5 * 60 * 1000)) else 0;
         self.last_progress_ms = now;
-        engine.pageShown(.{ .chapter_id = ch.id, .page = state.page, .pages = @intCast(ch.pages.len), .read_ms = read_ms, .completed = if (self.model.region_reader) self.model.page + 1 == ch.pages.len and self.model.readerAtEnd() else null }) catch |err| {
+        engine.pageShown(.{ .chapter_id = ch.id, .page = state.page, .pages = @intCast(ch.pages.len), .read_ms = read_ms, .completed = if (self.model.region_reader) (self.model.readingMode() == .vertical or self.model.page + 1 == ch.pages.len) and self.model.readerAtEnd() else null }) catch |err| {
             self.formatStatus("Progress not saved: {s}", .{@errorName(err)}) catch self.setStatus("Progress not saved");
         };
     }
