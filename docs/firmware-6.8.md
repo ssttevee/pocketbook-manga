@@ -6,7 +6,7 @@ The final design uses two processes. The UI's firmware libraries remain paired w
 
 ## Processes and lifecycle
 
-`bin/pocketmanga` is the fabrum/InkView UI, built for Cortex-A7 ARM soft-float and **glibc 2.23**. Its only NEEDED entries are `libc.so.6`, `ld-linux.so.3`, `libpthread.so.0`, `libdl.so.2`; its highest version requirement is **GLIBC_2.17**. It has no libtachi module dependency or JVM loading code. Source DTOs are a local wire schema. It reads images, library/progress JSON and local manga directly. Local scanning has a regression test with no runtime bundle present.
+`bin/pocketmanga` is the fabrum/InkView UI, built for Cortex-A7 ARM soft-float and **glibc 2.23**. Its only NEEDED entries are `libc.so.6`, `ld-linux.so.3`, `libpthread.so.0`, `libdl.so.2`; its highest version requirement is **GLIBC_2.17**. It links libtachi and SQLite statically, with JVM work delegated to the worker. It reads images and local manga directly; library and reading state live in the internal `tachi.sqlite3` database, while display preferences remain JSON. Local scanning has a regression test with no runtime bundle present.
 
 `bin/pocketmanga-worker` is built for the same CPU/ABI and **glibc 2.39**. It alone imports libtachi and loads OpenJDK 17 Zero via JNI. The executable's highest GLIBC requirement is 2.36; libjvm requires 2.34. Both are satisfied by the pinned 2.39 runtime. No InkView module or library is loaded in this process.
 
@@ -124,7 +124,7 @@ Hardware still needs to settle actual UI refresh/decoding, Wi-Fi dialogs and the
 
 1. Build/package as documented in README, or use `dist/pocketmanga-verse.tar.gz` and its `.sha256` file.
 2. Connect the reader by USB in PC link mode. Extract the archive at the **storage root**, merging its `applications/` folder. Equivalently copy the contents of `dist/applications/` into the reader's `applications/`.
-3. The resulting layout must include `applications/pocketmanga.app`, `applications/pocketmanga-log.app`, `applications/pocketmanga/bin/pocketmanga`, `applications/pocketmanga/bin/pocketmanga-worker`, and the entire `applications/pocketmanga/runtime/` (lib, jre, host jar, CA stores, provenance/licenses). Preserve existing `library.json`, `progress.json`, `extensions/`, `downloads/` and local title folders. The worker is not an Applications-menu entry.
+3. The resulting layout must include `applications/pocketmanga.app`, `applications/pocketmanga-log.app`, `applications/pocketmanga/bin/pocketmanga`, `applications/pocketmanga/bin/pocketmanga-worker`, and the entire `applications/pocketmanga/runtime/` (lib, jre, host jar, CA stores, provenance/licenses). Preserve the existing data folder, especially `tachi.sqlite3`, display preferences in `progress.json`, legacy JSON migration backups, `extensions/`, `downloads/`, and local title folders. The worker is not an Applications-menu entry.
 4. On macOS remove AppleDouble files with `dot_clean` on the reader's applications folder, then eject. Start **pocketmanga-log** first; read `applications/pocketmanga.log` after a launch/browse/download/read/background/close cycle. No system libraries or firmware files are replaced.
 
 No deployment, push, commit, stash, sudo, physical-device or disk write was performed by this implementation.

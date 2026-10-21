@@ -12,3 +12,7 @@ licenses/gcc-runtime.
 
 runtime/jre/lib/client/classes.jsa is a class-data-sharing archive generated
 from the runtime itself.
+
+PocketManga statically links SQLite 3.54.1, built from the official
+amalgamation pinned in zig-tachi/build.zig.zon. SQLite is in the public domain:
+https://www.sqlite.org/copyright.html

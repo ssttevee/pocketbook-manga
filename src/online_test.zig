@@ -156,7 +156,10 @@ test "device UI installs a source, searches, adds and downloads a chapter, reads
 test "background failures are reported and leave library and progress intact" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    var engine: tachi.Engine = .init(arena.allocator(), std.testing.io, tachi.backend.none, .{ .dir = "." });
+    var engine_dir = std.testing.tmpDir(.{});
+    defer engine_dir.cleanup();
+    const engine_root = try engine_dir.dir.realPathFileAlloc(std.testing.io, ".", arena.allocator());
+    var engine: tachi.Engine = .init(arena.allocator(), std.testing.io, tachi.backend.none, .{ .dir = engine_root });
     engine.execute_fn = fixtureExecutor;
     var model: lib.Model = .{ .gpa = arena.allocator(), .library = smoke.fixture };
     var session: Session = .{ .model = &model, .io = std.testing.io, .root = "." };
@@ -178,7 +181,10 @@ pub fn failedDownload(_: *tachi.Engine, job: *tachi.Job) !void {
 test "download failure stays visible with saved progress and no resume promise" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    var engine: tachi.Engine = .init(arena.allocator(), std.testing.io, tachi.backend.none, .{ .dir = "." });
+    var engine_dir = std.testing.tmpDir(.{});
+    defer engine_dir.cleanup();
+    const engine_root = try engine_dir.dir.realPathFileAlloc(std.testing.io, ".", arena.allocator());
+    var engine: tachi.Engine = .init(arena.allocator(), std.testing.io, tachi.backend.none, .{ .dir = engine_root });
     engine.execute_fn = failedDownload;
     var model: lib.Model = .{ .gpa = arena.allocator(), .library = smoke.fixture, .screen = .chapters };
     var session: Session = .{ .model = &model, .io = std.testing.io, .root = "." };
@@ -258,7 +264,10 @@ test "downloading and cancellation keep the selected series and chapter" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = "." });
+    var engine_dir = std.testing.tmpDir(.{});
+    defer engine_dir.cleanup();
+    const engine_root = try engine_dir.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = engine_root });
     engine.execute_fn = stalledDownload;
     var model: lib.Model = .{ .gpa = a, .library = smoke.fixture };
     var session: Session = .{ .model = &model, .io = std.testing.io, .root = "." };
@@ -293,7 +302,10 @@ test "worker startup is shown for downloads and browse and remains immediately c
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = "." });
+    var engine_dir = std.testing.tmpDir(.{});
+    defer engine_dir.cleanup();
+    const engine_root = try engine_dir.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = engine_root });
     engine.execute_fn = startingWorker;
     var book = smoke.fixture.manga[0];
     book.title = long_title;
@@ -498,7 +510,10 @@ test "unsupported browser verification explains alternatives instead of offering
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = "." });
+    var engine_dir = std.testing.tmpDir(.{});
+    defer engine_dir.cleanup();
+    const engine_root = try engine_dir.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = engine_root });
     engine.execute_fn = blockedDownload;
     var model: lib.Model = .{ .gpa = a, .library = smoke.fixture, .screen = .chapters };
     var session: Session = .{ .model = &model, .io = std.testing.io, .root = "." };
@@ -637,7 +652,11 @@ test "entering reading releases a retained worker after background downloads fin
     };
     var fake: Fake = .{};
     const backend: Backend = .{ .ptr = &fake, .vtable = &.{ .run = Fake.run, .warm = Fake.ready, .cancel = Fake.quiet, .release = Fake.release, .idle = Fake.quiet } };
-    var engine: tachi.Engine = .init(std.testing.allocator, std.testing.io, backend, .{ .dir = "." });
+    var engine_dir = std.testing.tmpDir(.{});
+    defer engine_dir.cleanup();
+    const engine_root = try engine_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(engine_root);
+    var engine: tachi.Engine = .init(std.testing.allocator, std.testing.io, backend, .{ .dir = engine_root });
     var model: lib.Model = .{ .gpa = std.testing.allocator, .library = smoke.fixture, .screen = .reader };
     var session: Session = .{ .model = &model, .io = std.testing.io, .root = "." };
     session.browser.engine = &engine;

@@ -11,7 +11,7 @@ Use `dist/pocketmanga-verse.tar.gz`, or copy the contents of `dist/applications/
 **Verse firmware 6.8 or later is supported.** Both executables target Cortex-A7 and ARM EABI soft-float. Both target glibc 2.23 and run on the reader's own loader and C library; the bundle contains no C library. Do not replace the reader's system libraries.
 
 1. Connect the Verse by USB and select **PC link**.
-2. Extract the archive onto the reader's storage, merging its `applications/` folder. Preserve any existing `pocketmanga/library.json`, `progress.json`, `extensions/` and `downloads/` when upgrading.
+2. Extract the archive onto the reader's storage, merging its `applications/` folder. Preserve the existing `pocketmanga/` data folder when upgrading, including `tachi.sqlite3`, `progress.json`, `extensions/`, and `downloads/`. Never replace the database with a file from another installation.
 3. On macOS, run `dot_clean /Volumes/READER/applications` to remove `._` files, then eject.
 4. Start **pocketmanga** from Applications. Use **pocketmanga-log** if you need diagnostics in `applications/pocketmanga.log`.
 
@@ -41,6 +41,8 @@ After installation, normal use needs only the reader and Wi-Fi. The UI starts th
 
 For local manga, place extracted JPEG/PNG files in `applications/pocketmanga/local/Title/Chapter/001.jpg`, as in Mihon's local source, then tap **More → Scan local manga**. Numeric filename runs sort naturally. Scanning merges titles into the existing library and preserves progress; it does not remove entries for deleted folders. No Java startup or network is needed for local scanning or reading.
 
+Library metadata, reading progress, settings, and the download queue are stored by libtachi in `tachi.sqlite3` on internal storage. On first use, existing `library.json`, `reading.json`, settings, and queue JSON are validated and imported transactionally; the original files remain as migration backups and are not imported again. Keep the database when upgrading. Close the app before copying its data folder for a backup; do not remove an active SQLite journal. Images and their resumable-download manifests remain ordinary files, and source-extension preferences remain in the worker's existing format. `progress.json` contains PocketManga display preferences only.
+
 Library data lives in `/mnt/ext1/applications/pocketmanga/`; SD chapter images live in `/mnt/ext2/pocketmanga/downloads/`. Download records retain their storage location when the destination changes. The app accepts another absolute data folder as its first argument when invoked from a shell. `INKVIEW_LIBRARY` can override the InkView library path.
 
 ## Build
@@ -60,7 +62,7 @@ libtachi's bundled-CA option (`ca_file`, recorded in `patches/libtachi-ca-file.p
 
 The region reader requires fabrum commit `4ff5f21` or later, which schedules frames when task cleanup can unblock a pending page, and libtachi commit `06d670c` or later for explicit region completion. Use fabrum-platform-inkview commit `ff23232` or later for the pending-task hard timer and activity callback. The app combines decoder and online activity to prevent sleep until background work finishes. PB629 tests verified prompt completion delivery with that protection and no periodic polling, so PocketManga disables the fallback timer when paired sleep preventors are available; see [the measured results](docs/reader-wake.md).
 
-`build.zig.zon` points at `../zig-tachi`. Build its `tachi-host.jar` first with `zig build host` in that repository; the tools read it from `../zig-tachi/zig-out/lib`. On this workspace, use `/Users/steve/Programs/Zig/v0.17.0/zig`; the `zig` on PATH is 0.16.
+SQLite persistence requires libtachi commit `c70d52f` or later. `build.zig.zon` points at `../zig-tachi`. Build its `tachi-host.jar` first with `zig build host` in that repository; the tools read it from `../zig-tachi/zig-out/lib`. On this workspace, use `/Users/steve/Programs/Zig/v0.17.0/zig`; the `zig` on PATH is 0.16.
 
 The worker's Java runtime is built from source in Docker; see [the Java runtime](docs/java-runtime.md). The first build compiles a GCC cross toolchain and OpenJDK, which takes about an hour; later builds reuse Docker's cache:
 
@@ -137,7 +139,7 @@ To exercise the production codec path in the UI tests, build the host bridge as 
 
 Zero interprets Java bytecode. Startup and extension loading can be slow on the Verse, especially with large multi-source extensions. The worker starts with a 16 MiB heap, capped at 128 MiB, with 96 MiB for class metadata and 512 KiB Java thread stacks (Serial GC, two active processors); installing many large extensions can exhaust that budget. Network responses have the source client's normal timeouts. Downloads publish their manifest only after every page succeeds; completed pages survive failure or cancellation for retry.
 
-The ARM runtime, JNI bridge, repository connection and UI flows are tested in emulation. **Physical Verse verification is still needed** for real panel refresh, Wi-Fi dialogs, suspend behavior, startup time and peak RAM. Failed startup or corrupt JSON is reported in the log rather than silently resetting user data. Keep the runtime directory and launch through the provided `.app` script.
+The ARM runtime, JNI bridge, repository connection and UI flows are tested in emulation. **Physical Verse verification is still needed** for real panel refresh, Wi-Fi dialogs, suspend behavior, startup time and peak RAM. Failed startup or corrupt persistent data is reported in the log rather than silently resetting user data. Keep the runtime directory and launch through the provided `.app` script.
 
 The Go font and its license are in `src/fonts/`. See zig-tachi's NOTICE for the upstream Mihon and Android compatibility code.
 

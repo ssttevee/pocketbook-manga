@@ -27,6 +27,16 @@ def extract(deb, directory):
             # Packages are hash-pinned upstream archives, not user-supplied files.
             tar.extractall(directory, filter='tar')
 
+def write_archive(output, archive):
+    # Ship application files only. A reused staging folder may contain user
+    # data; including it could overwrite another reader's database on upgrade.
+    with tarfile.open(archive, 'w:gz') as tar:
+        for relative in ('pocketmanga.app', 'pocketmanga-log.app',
+                         'pocketmanga/bin', 'pocketmanga/runtime'):
+            tar.add(output / 'applications' / relative,
+                    arcname='applications/' + relative)
+
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--cache', type=pathlib.Path, default=ROOT / '.runtime-cache')
@@ -85,7 +95,7 @@ def main():
     shutil.copy2(ROOT/'tools/pocketmanga-log.app',args.output/'applications/pocketmanga-log.app')
     (runtime/'packages.json').write_text(json.dumps(LOCK,indent=2)+'\n')
     archive=args.output/'pocketmanga-verse.tar.gz'
-    with tarfile.open(archive,'w:gz') as tar: tar.add(args.output/'applications',arcname='applications')
+    write_archive(args.output, archive)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     (args.output/(archive.name+'.sha256')).write_text(f'{digest}  {archive.name}\n')
     print('Bundle bytes:', sum(p.stat().st_size for p in (args.output/'applications').rglob('*') if p.is_file()), flush=True)

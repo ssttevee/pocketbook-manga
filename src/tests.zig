@@ -713,3 +713,56 @@ test "chapter queue snapshots reflect paused queue additions and removals" {
     try h.frame();
     try h.expectText("Unread · Not downloaded");
 }
+
+test "legacy reader data migrates to SQLite while SD paths and display preferences survive" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try tmp.dir.realPathFileAlloc(t.io, ".", a);
+    const original_library =
+        \\{"version":2,"manga":[{"id":"1:/story","title":"Legacy story","source_id":1,"chapters":[{"id":"1:/chapter","title":"Chapter 1","pages":["sdcard/downloads/story/001.webp","sdcard/downloads/story/002.webp"]}]}]}
+    ;
+    const original_reading =
+        \\{"version":1,"chapters":[{"id":"1:/chapter","page":1,"bookmark":true,"read_ms":42}]}
+    ;
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "library.json", .data = original_library });
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "reading.json", .data = original_reading });
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "settings.json", .data = "{\"library\":{\"sort\":64}}" });
+    var engine: tachi.Engine = .init(t.allocator, t.io, tachi.backend.none, .{ .dir = root });
+    defer engine.queue.deinit(&engine);
+    var model: lib.Model = .{ .gpa = a };
+    var session: Session = .{ .model = &model, .root = root, .io = t.io };
+    defer session.deinit();
+    session.browser.engine = &engine;
+    try session.reloadLibrary();
+    try t.expectEqualStrings("Legacy story", model.library.manga[0].title);
+    const chapter = model.library.manga[0].chapters[0];
+    try t.expectEqual(1, chapter.last_page_read);
+    try t.expect(chapter.bookmark);
+    try t.expectEqual(42, chapter.read_ms);
+    try t.expectEqualStrings("sdcard/downloads/story/001.webp", chapter.pages[0]);
+    try model.dispatch(.{ .open = 0 });
+    try model.dispatch(.{ .reader_mode = .vertical });
+    const prefs_path = try std.fs.path.join(a, &.{ root, "progress.json" });
+    try lib.writeJson(a, t.io, prefs_path, model.prefs);
+    _ = try engine.markRead(&.{chapter.id}, true);
+    // A fresh engine uses SQL state even if the retained migration backup is stale.
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "reading.json", .data = "{}" });
+    var reopened: tachi.Engine = .init(t.allocator, t.io, tachi.backend.none, .{ .dir = root });
+    defer reopened.queue.deinit(&reopened);
+    const saved = try reopened.loadLibrary(a);
+    try t.expectEqual(@as(u32, 64), (try reopened.loadSettings(a)).library.sort);
+    try t.expect(saved.manga[0].chapters[0].read);
+    try t.expect(saved.manga[0].chapters[0].bookmark);
+    var prefs = try lib.readJson(lib.Preferences, t.allocator, t.io, prefs_path);
+    defer prefs.deinit();
+    var resumed: lib.Model = .{ .gpa = a, .library = saved, .prefs = prefs.value };
+    defer resumed.deinit();
+    try t.expectEqual(.vertical, resumed.readingMode());
+    try t.expectEqualStrings(original_library, try tmp.dir.readFileAlloc(t.io, "library.json", a, .unlimited));
+    const database = try tmp.dir.readFileAlloc(t.io, "tachi.sqlite3", a, .limited(1 << 20));
+    try t.expect(std.mem.startsWith(u8, database, "SQLite format 3\x00"));
+}
