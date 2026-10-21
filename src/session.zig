@@ -55,6 +55,7 @@ pub const Session = struct {
     rows_arena: ?std.heap.ArenaAllocator = null,
     /// Saved pages for resumable downloads, indexed into the current title.
     chapter_downloads: []const ?tachi.downloads.ResumeProgress = &.{},
+    storage_managing: bool = false,
     /// Owns the model's online chapter and pages.
     online_arena: ?std.heap.ArenaAllocator = null,
     /// libtachi's trackers: who is logged in, and score formats.
@@ -257,6 +258,7 @@ pub const Session = struct {
     fn downloadDetail(self: *Session, job: *tachi.Job, failure: []const u8) ![]u8 {
         const done = job.pages_done.load(.acquire);
         const total = job.pages_total.load(.acquire);
+        if (std.mem.eql(u8, failure, "StorageUnavailable")) return self.model.gpa.dupe(u8, "The SD card is unavailable. Insert the original card to resume, or select internal storage for new downloads in More > Manage storage.");
         if (self.download_canceled) return std.fmt.allocPrint(self.model.gpa, "{d}/{d} pages saved", .{ done, total });
         if (self.download_blocked) return std.fmt.allocPrint(self.model.gpa, "{d}/{d} pages saved. {s} {s}", .{ done, total, verification_explanation, verification_alternative });
         return std.fmt.allocPrint(self.model.gpa, "{d}/{d} pages saved. {s}", .{ done, total, failure });
@@ -849,7 +851,8 @@ pub const Session = struct {
         var arena: std.heap.ArenaAllocator = .init(model.gpa);
         errdefer arena.deinit();
         const a = arena.allocator();
-        const settings: tachi.settings.Settings = if (self.browser.engine) |engine| try engine.loadSettings(a) else .{};
+        var settings: tachi.settings.Settings = if (self.browser.engine) |engine| try engine.loadSettings(a) else .{};
+        if (self.storage_managing) settings.library.downloaded_only = true;
         const groups = try tachi.views.libraryView(a, model.library, try tachi.views.libraryOptions(a, model.library, settings, model.query_text, 0));
         const names = try a.alloc([]const u8, groups.len);
         for (groups, names) |group, *name| name.* = if (group.category.id == 0) "Default" else group.category.name;
@@ -978,6 +981,17 @@ pub const Session = struct {
         try self.refreshRows();
     }
 
+    pub fn setDownloadStorage(self: *Session, sd_card: bool) !void {
+        const engine = self.browser.engine orelse return error.RuntimeNotConfigured;
+        if (sd_card and !engine.sdAvailable()) return error.StorageUnavailable;
+        try self.loadSettings();
+        var settings = self.settings;
+        settings.downloads.storage = if (sd_card) .sd_card else .internal;
+        try engine.saveSettings(settings);
+        try self.loadSettings();
+        self.setStatus("New downloads will use the selected storage. Existing downloads stay where they are.");
+    }
+
     /// The sort of the category the library shows.
     pub fn currentSort(self: *const Session) tachi.views.LibrarySort {
         for (self.model.library.categories) |c| if (c.id == self.category_id) return .decode(c.flags);
@@ -1011,7 +1025,7 @@ pub const Session = struct {
         if (lists and (action == .search or action == .category or old_screen != self.model.screen or old_manga != self.model.manga or self.model.title_rows == null)) try self.refreshRows();
         const feed = self.model.screen == .updates or self.model.screen == .history or self.model.screen == .queue or self.model.screen == .upcoming;
         if (feed and old_screen != self.model.screen) try self.refreshFeed();
-        if (self.model.screen == .engine_settings and old_screen != .engine_settings) try self.loadSettings();
+        if ((self.model.screen == .engine_settings or self.model.screen == .storage) and old_screen != self.model.screen) try self.loadSettings();
         if ((self.model.screen == .trackers or self.model.screen == .tracking) and old_screen != self.model.screen) try self.loadTrackers();
         if (self.model.screen == .backup and old_screen != .backup) try self.refreshBackups();
         if (self.model.screen == .stats and old_screen != .stats) if (self.browser.engine) |engine| {

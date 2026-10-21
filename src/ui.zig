@@ -6,13 +6,14 @@ const Session = @import("session.zig").Session;
 const Root = @This();
 const tachi = @import("tachi");
 const models = tachi.models;
+const storage = @import("storage.zig");
 const regions = @import("region_service.zig");
 pub const OnlineCommand = union(enum) { stores, refresh_stores, remove_store: usize, toggle_pin, toggle_hidden, show_hidden, languages, toggle_language: usize, sources, extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear, find_alternative: usize, pick_global: usize };
 pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const Navigation = enum { library, updates, history, browse, more };
-pub const State = struct { more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, pointer_start: ?f.Vec2 = null, reader_updates: u8 = 0 };
+pub const State = struct { storage_snapshot: ?storage.Snapshot = null, storage_revision: u32 = 0, storage_clearing: bool = false, more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, pointer_start: ?f.Vec2 = null, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { jump_chapter, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage }, jump_chapter, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
@@ -23,7 +24,39 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                 if (err == error.ChapterNotFound) session.setStatus("Chapter not found in this list") else return err;
             };
         },
-
+        .storage_loaded => |outcome| {
+            state.storage_snapshot = outcome catch |err| {
+                if (err != error.Canceled) try session.formatStatus("Cannot inspect storage: {s}", .{@errorName(err)});
+                return;
+            };
+        },
+        .storage_cleared => |outcome| {
+            state.storage_clearing = false;
+            outcome catch |err| {
+                if (err != error.Canceled) try session.formatStatus("Cannot clear cache: {s}", .{@errorName(err)});
+                return;
+            };
+            state.storage_revision +%= 1;
+            session.setStatus("Online reading cache cleared. Downloaded chapters are kept.");
+        },
+        .storage_action => |action| {
+            if (session.browser.busy != null or state.storage_clearing) return;
+            switch (action) {
+                .internal, .sd_card => session.setDownloadStorage(action == .sd_card) catch |err| {
+                    try session.formatStatus("Download destination unchanged: {s}", .{@errorName(err)});
+                },
+                .clear_cache => if (session.browser.engine) |engine| {
+                    if (engine.queue.running()) return;
+                    state.storage_clearing = true;
+                },
+                .manage => if (session.browser.engine != null) {
+                    session.storage_managing = true;
+                    try session.act(.{ .feed = .library });
+                    try session.refreshRows();
+                    session.setStatus("Downloaded titles. Open a title, then use a chapter's menu to delete its download.");
+                },
+            }
+        },
         .region_frame => |outcome| {
             const result = outcome catch |err| {
                 if (err != error.Canceled) try session.formatStatus("Cannot render page: {s}", .{@errorName(err)});
@@ -33,6 +66,9 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
         },
         .navigate => |destination| {
             if (session.browser.busy != null) return;
+            const was_managing = session.storage_managing;
+            session.storage_managing = false;
+            if (was_managing) try session.refreshRows();
             // Reselecting Browse preserves its active tab, filter and list page.
             if (destination == .browse and (session.model.screen == .sources or session.model.screen == .extensions)) {
                 ctx.focus("screen");
@@ -160,6 +196,12 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
         },
         .act => |action| {
             if (session.browser.busy != null) return;
+            if (action == .back and session.storage_managing and session.model.screen == .library) {
+                session.storage_managing = false;
+                try session.act(.{ .feed = .storage });
+                try session.refreshRows();
+                return;
+            }
             if (action == .back and state.reading_from_more and session.model.screen == .settings) {
                 state.reading_from_more = false;
                 state.more_root = true;
@@ -176,7 +218,7 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                 session.start(.sources);
                 return;
             }
-            const effective: lib.Action = if (action == .back and state.more_root and (session.model.screen == .queue or session.model.screen == .upcoming)) .{ .feed = .settings } else if (action == .next_chapter) .{ .read = session.next_chapter orelse return } else action;
+            const effective: lib.Action = if (action == .back and state.more_root and (session.model.screen == .queue or session.model.screen == .upcoming or session.model.screen == .storage)) .{ .feed = .settings } else if (action == .next_chapter) .{ .read = session.next_chapter orelse return } else action;
             const pick: ?lib.Pick = switch (effective) {
                 .read => |i| .{ .manga = session.model.manga, .chapter = i },
                 .open_chapter => |p| p,
@@ -267,7 +309,12 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                 }
             }
             const action: lib.Action = switch (event.key) {
-                .escape => if (model.screen == .library) {
+                .escape => if (model.screen == .library and session.storage_managing) {
+                    session.storage_managing = false;
+                    try session.act(.{ .feed = .storage });
+                    try session.refreshRows();
+                    return;
+                } else if (model.screen == .library) {
                     try ctx.quit();
                     return;
                 } else .back,
@@ -285,7 +332,7 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                 state.more_root = true;
                 return;
             }
-            const effective: lib.Action = if (action == .back and state.more_root and (model.screen == .queue or model.screen == .upcoming)) .{ .feed = .settings } else action;
+            const effective: lib.Action = if (action == .back and state.more_root and (model.screen == .queue or model.screen == .upcoming or model.screen == .storage)) .{ .feed = .settings } else action;
             try session.act(effective);
             if (model.screen == .reader) refreshReader(state, session, ctx);
         },
@@ -429,6 +476,7 @@ fn moreView(ui: *app.Ui) !void {
     defer ui.close();
     const destinations = .{
         .{ "more-downloads", "Download queue", lib.Screen.queue },
+        .{ "more-storage", "Manage storage", lib.Screen.storage },
         .{ "more-categories", "Categories", lib.Screen.categories },
         .{ "more-stats", "Statistics", lib.Screen.stats },
         .{ "more-backup", "Backup and restore", lib.Screen.backup },
@@ -467,7 +515,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         .focus = .{ .on_key = on.handler(.key), .keys = .{ .typing = false, .escape = true } },
     });
     defer ui.close();
-    const navigation = rootNavigation(model.screen, state.more_root);
+    const navigation = if (session.storage_managing) null else rootNavigation(model.screen, state.more_root);
     if (model.screen != .reader) try toolbar(ui, session, navigation);
     if (session.download_error and session.browser.busy == null) {
         try ui.open("download-error", .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .all(10), .child_gap = 5 }, .border = .{ .color = .black, .widths = .outside(2) } });
@@ -549,6 +597,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         .title_options => try titleOptionsView(ui, session),
         .engine_settings => try settingsView(ui, session),
         .stats => try statsView(ui, session),
+        .storage => try storageView(ui, session, state),
         .stores => try storesView(ui, session),
         .trackers, .tracker_login, .tracking, .track_search => try trackingView(ui, session),
         .duplicate => try duplicateView(ui, session),
@@ -567,7 +616,7 @@ fn toolbar(ui: *app.Ui, session: *const Session, navigation: ?Navigation) !void 
         defer ui.close();
         if (navigation == null and session.browser.busy == null) try button(ui, "back", "Back", .back);
         try text(ui, switch (model.screen) {
-            .library => "Library",
+            .library => if (session.storage_managing) "Downloaded titles" else "Library",
             .chapters => "Chapters",
             .reader => "Reader",
             .settings => if (navigation == .more) "More" else "Settings",
@@ -591,6 +640,7 @@ fn toolbar(ui: *app.Ui, session: *const Session, navigation: ?Navigation) !void 
             .tracking => "Tracking",
             .track_search => "Find on tracker",
             .stats => "Statistics",
+            .storage => "Storage",
             .duplicate => "Already in library?",
             .title_options => "Chapter options",
             .upcoming => "Upcoming",
@@ -599,6 +649,36 @@ fn toolbar(ui: *app.Ui, session: *const Session, navigation: ?Navigation) !void 
         if (navigation == null and model.screen != .settings and session.browser.busy == null) try button(ui, "settings", "Aa", .settings);
     }
 }
+fn storageView(ui: *app.Ui, session: *const Session, state: *const State) !void {
+    const on = ui.messages(Root);
+    const engine = session.browser.engine orelse {
+        try text(ui, "Storage is unavailable", 15, 0);
+        return;
+    };
+    try ui.task("storage-inspection", .{ .restart = state.storage_revision }, storage.inspect, .{engine}, on.handler(.storage_loaded));
+    if (state.storage_clearing) try ui.task("clear-online-cache", .{}, storage.clearCache, .{engine}, on.handler(.storage_cleared));
+    try ui.open("storage-content", .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 10 } });
+    defer ui.close();
+    try text(ui, "New downloads", 18, 0);
+    const selected_sd = session.settings.downloads.storage == .sd_card;
+    try app.widgets.button(ui, "storage-internal", .{ .label = if (selected_sd) "[ ] Internal storage" else "[x] Internal storage", .on_click = on.bind(.{ .storage_action = .internal }) });
+    const sd_available = if (state.storage_snapshot) |snapshot| snapshot.sd_card.present else false;
+    try app.widgets.button(ui, "storage-sd", .{ .label = if (selected_sd) "[x] SD card" else "[ ] SD card", .enabled = sd_available, .on_click = on.bind(.{ .storage_action = .sd_card }) });
+    try ui.text("Existing downloads stay on their original storage. Interrupted downloads resume there.", .{ .font_size = 12, .wrap_mode = .words });
+    if (state.storage_snapshot) |snapshot| {
+        inline for (.{ .{ "Internal", snapshot.internal }, .{ "SD card", snapshot.sd_card } }) |item| {
+            if (!item[1].present) {
+                try ui.print(.{ .font_size = 13 }, "{s}: not inserted or unavailable", .{item[0]});
+            } else {
+                try ui.print(.{ .font_size = 13 }, "{s}: {d} MiB of downloads", .{ item[0], item[1].bytes / (1 << 20) });
+                if (item[1].available) |bytes| try ui.print(.{ .font_size = 12 }, "{d} MiB available", .{bytes / (1 << 20)});
+            }
+        }
+    } else try text(ui, "Checking storage...", 13, 0);
+    try app.widgets.button(ui, "storage-manage", .{ .label = "Manage downloaded chapters", .on_click = on.bind(.{ .storage_action = .manage }) });
+    try app.widgets.button(ui, "storage-clear-cache", .{ .label = if (state.storage_clearing) "Clearing cache..." else "Clear online reading cache", .enabled = !state.storage_clearing and !engine.queue.running(), .on_click = on.bind(.{ .storage_action = .clear_cache }) });
+}
+
 fn list(ui: *app.Ui, model: *const lib.Model) !void {
     const is_library = model.screen == .library;
     const count = if (is_library) model.titleCount() else model.chapterCount();

@@ -75,7 +75,7 @@ pub fn main(init: std.process.Init) !void {
     try worker.init(gpa, io, .{ .exe = worker_exe, .args = &.{ "--serve", root }, .wrapper = init.minimal.environ.getPosix("POCKETMANGA_WORKER_EMULATOR") });
     defer worker.deinit();
     const ca_file = try std.fs.path.join(gpa, &.{ root, "runtime/ca.pem" });
-    var engine: tachi.Engine = .init(gpa, io, worker.backend(), .{ .dir = root, .ca_file = ca_file });
+    var engine: tachi.Engine = .init(gpa, io, worker.backend(), .{ .dir = root, .ca_file = ca_file, .release_jvm = false, .sd_dir = "/mnt/ext2/pocketmanga", .sd_mount = "/mnt/ext2" });
     defer engine.deinit();
     // Stops tracking updates and the download queue before the worker goes.
     defer engine.queue.deinit(&engine);

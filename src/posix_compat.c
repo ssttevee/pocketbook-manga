@@ -69,3 +69,11 @@ int pm_entropy(unsigned char *buf, size_t len) {
     close(fd);
     return 0;
 }
+
+#include <sys/statvfs.h>
+int pm_storage_free(const char *path, uint64_t *available) {
+    struct statvfs st;
+    if (statvfs(path, &st)) return errno;
+    *available = (uint64_t)st.f_bavail * st.f_frsize;
+    return 0;
+}
