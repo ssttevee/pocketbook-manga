@@ -8,12 +8,12 @@ const Session = @import("session.zig").Session;
 pub const Host = ink.App(Root);
 pub const fake = ink.fake;
 pub const fixture: lib.Library = .{ .manga = &.{
-    .{ .id = "demo-1", .title = "The Copper Lantern", .author = "Sample library", .chapters = &.{
+    .{ .id = "demo-1", .title = "The Copper Lantern", .cover = "demo/lantern.png", .author = "Sample library", .chapters = &.{
         .{ .id = "demo-1/1", .title = "Chapter 1 - A new beginning", .pages = &.{ "demo/001.png", "demo/002.png", "demo/003.png" } },
         .{ .id = "demo-1/2", .title = "Chapter 2 - The long road", .pages = &.{"demo/004.png"} },
     } },
-    .{ .id = "demo-2", .title = "A Traveller's Notebook", .author = "Sample library" },
-    .{ .id = "demo-3", .title = "Stories from the Observatory", .author = "Sample library" },
+    .{ .id = "demo-2", .title = "A Traveller's Notebook", .cover = "demo/notebook.png", .author = "Sample library" },
+    .{ .id = "demo-3", .title = "Stories from the Observatory", .cover = "demo/observatory.png", .author = "Sample library" },
 } };
 pub fn sampleImage(session: *Session, path: []const u8) !void {
     const width = 240;
@@ -29,6 +29,19 @@ pub fn sampleImage(session: *Session, path: []const u8) !void {
     };
     if (session.image) |old| session.model.gpa.free(old.pixels);
     session.image = .{ .width = width, .height = height, .pixels = pixels, .revision = std.hash.Wyhash.hash(0, path) };
+}
+/// Synthetic grayscale artwork for previewing covers without copyrighted art.
+pub fn sampleCover(session: *Session, path: []const u8, width: usize, height: usize) !@import("reader-image") {
+    const pixels = try session.model.gpa.alloc(u8, width * height);
+    const seed = std.hash.Wyhash.hash(0, path);
+    for (0..height) |y| for (0..width) |x| {
+        const frame = x < 3 or y < 3 or x + 3 >= width or y + 3 >= height;
+        const horizon = y > height * 2 / 3;
+        const stripe = (x + y / 2 + seed % 41) % 43 < 3;
+        const window = x > width / 3 and x < width * 2 / 3 and y > height / 4 and y < height * 3 / 5;
+        pixels[y * width + x] = if (frame) 45 else if (window) 245 else if (stripe) 95 else if (horizon) 80 else @intCast(160 + seed % 60);
+    };
+    return .{ .width = width, .height = height, .pixels = pixels, .revision = seed };
 }
 pub fn start(gpa: std.mem.Allocator, io: std.Io, session: *Session) !void {
     try fake.init(gpa, .{});
@@ -169,7 +182,7 @@ test "InkView system keyboard filters the library by title" {
 test "title and chapter press feedback stays within the row and never flashes" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    var model: lib.Model = .{ .gpa = arena.allocator(), .library = fixture };
+    var model: lib.Model = .{ .gpa = arena.allocator(), .library = fixture, .prefs = .{ .library_grid = false } };
     var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io };
     try start(std.testing.allocator, std.testing.io, &session);
     defer stop();

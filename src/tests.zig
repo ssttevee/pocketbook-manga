@@ -160,6 +160,7 @@ test {
     _ = @import("smoke.zig");
     _ = @import("online_test.zig");
     _ = @import("navigation_test.zig");
+    _ = @import("cover_test.zig");
     _ = @import("power.zig");
     _ = @import("device_io.zig");
 }
@@ -450,4 +451,126 @@ test "library category tabs reach categories outside the visible window" {
     try std.testing.expectEqual(1, model.category);
     try h.click("Default");
     try std.testing.expectEqual(0, model.category);
+}
+
+test "library cover grid pages two titles and switches to seven row list" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var manga: [9]lib.Manga = undefined;
+    for (&manga, 0..) |*title, i| title.* = .{
+        .id = try std.fmt.allocPrint(a, "title-{d}", .{i}),
+        .title = try std.fmt.allocPrint(a, "Story {d}", .{i + 1}),
+        .cover = "covers/fixture.png",
+    };
+    manga[0].title = "A very long manga title that wraps across several lines on a small screen";
+    var model: lib.Model = .{ .gpa = a, .library = .{ .manga = &manga, .categories = &.{ .{ .id = 1, .name = "Reading" }, .{ .id = 2, .name = "Later" } } } };
+    var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io, .load_cover = @import("smoke.zig").sampleCover };
+    defer session.deinit();
+    try session.refreshRows();
+    session.setStatus("Library updated");
+    var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try h.expectText("Story 2");
+    const pager = h.findText("Previous").?;
+    const layout_toggle = h.findText("List").?;
+    try std.testing.expect(layout_toggle.bbox.x + layout_toggle.bbox.w <= 343);
+    const nav = h.findText("More").?;
+    try std.testing.expect(nav.bbox.y + nav.bbox.h <= 464);
+    for (manga[0..2]) |title| {
+        const caption = h.findText(title.title).?;
+        try std.testing.expect(caption.bbox.x >= 0);
+        try std.testing.expect(caption.bbox.x + caption.bbox.w <= 343);
+        try std.testing.expect(caption.bbox.y + caption.bbox.h <= pager.bbox.y);
+    }
+    try std.testing.expect(h.findText("Story 3") == null);
+    try h.click("Next");
+    try std.testing.expectEqual(2, model.offset);
+    try h.expectText("Story 4");
+    try std.testing.expect(h.findText("Story 5") == null);
+    try h.click("Next");
+    try h.click("Next");
+    try h.click("Next");
+    try std.testing.expectEqual(8, model.offset);
+    try h.expectText("Story 9");
+    try h.click("List");
+    try std.testing.expect(!model.prefs.library_grid);
+    try std.testing.expectEqual(0, model.offset);
+    try h.expectText("Story 7");
+    try std.testing.expect(h.findText("Story 8") == null);
+    try h.click("Grid");
+    try std.testing.expect(model.prefs.library_grid);
+    try h.click("...");
+    try std.testing.expectEqual(lib.Screen.title_menu, model.screen);
+}
+
+test "library pagination clamps both layouts and preserves filters when switching" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var manga: [9]lib.Manga = undefined;
+    @memset(&manga, .{ .id = "story", .title = "Story" });
+    var model: lib.Model = .{
+        .gpa = arena.allocator(),
+        .library = .{ .manga = &manga },
+        .categories = &.{ "Default", "Reading", "Later" },
+        .category = 2,
+    };
+    try model.dispatch(.{ .search = "Story" });
+    try model.dispatch(.{ .list_page = std.math.maxInt(i32) });
+    try std.testing.expectEqual(8, model.offset);
+    try model.dispatch(.{ .list_page = std.math.minInt(i32) });
+    try std.testing.expectEqual(0, model.offset);
+    try model.dispatch(.{ .list_page = 1 });
+    try std.testing.expectEqual(2, model.offset);
+    try model.dispatch(.library_grid);
+    try std.testing.expectEqual(0, model.offset);
+    try std.testing.expectEqual(2, model.category);
+    try std.testing.expectEqualStrings("Story", model.query_text);
+    try model.dispatch(.{ .list_page = std.math.maxInt(i32) });
+    try std.testing.expectEqual(7, model.offset);
+    try model.dispatch(.{ .list_page = std.math.minInt(i32) });
+    try std.testing.expectEqual(0, model.offset);
+    try model.dispatch(.library_grid);
+    try std.testing.expectEqual(2, model.category);
+    try std.testing.expectEqualStrings("Story", model.query_text);
+}
+
+test "title header and seven chapter rows fit with a real cover and long metadata" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var chapters: [7]lib.Chapter = undefined;
+    for (&chapters, 0..) |*chapter, i| chapter.* = .{
+        .id = try std.fmt.allocPrint(a, "chapter-{d}", .{i}),
+        .title = try std.fmt.allocPrint(a, "Chapter {d}", .{i + 1}),
+        .read = i == 0,
+        .bookmark = i == 1,
+        .scanlator = "A long scanlation group name",
+    };
+    const manga: lib.Manga = .{
+        .id = "story",
+        .title = "A very long manga title that wraps over several lines in the detail header",
+        .author = "An author with a very long name that should be shortened",
+        .cover = "covers/story.png",
+        .source_id = 42,
+        .chapters = &chapters,
+    };
+    var model: lib.Model = .{ .gpa = a, .screen = .chapters, .library = .{ .manga = &.{manga} } };
+    var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io, .load_cover = @import("smoke.zig").sampleCover };
+    defer session.deinit();
+    session.setStatus("Library updated");
+    var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    const title = h.findText(manga.title).?;
+    try std.testing.expect(title.bbox.x + title.bbox.w <= 343);
+    const queue = h.findText("Queue unread").?;
+    try std.testing.expect(queue.bbox.x + queue.bbox.w <= 343);
+    const last = h.findText("Chapter 7").?;
+    const pager = h.findText("Previous").?;
+    try std.testing.expect(last.bbox.y + last.bbox.h <= pager.bbox.y);
+    try std.testing.expect(pager.bbox.y + pager.bbox.h <= 464);
+    const status = h.findText("Library updated").?;
+    try std.testing.expect(status.bbox.y + status.bbox.h <= 464);
 }

@@ -32,15 +32,13 @@ fn pngSize(io: std.Io, path: []const u8) ![2]u32 {
     return .{ width, height };
 }
 
-fn loadPage(session: *Session, relative: []const u8) !void {
+fn decodeImage(session: *Session, relative: []const u8, width: usize, height: usize) !@import("reader-image") {
     const gpa = session.model.gpa;
     if (!lib.safePath(relative)) return error.UnsafePagePath;
     const path = try session.browser.engine.?.pagePath(gpa, relative);
     defer gpa.free(path);
-    // Fit decode to the physical panel to bound memory on the 512MB Verse.
-    const host = &ink.App(Root).instance;
-    const w = host.api.ScreenWidth();
-    const h = host.api.ScreenHeight();
+    const w: c_int = @intCast(width);
+    const h: c_int = @intCast(height);
     const ext = std.fs.path.extension(relative);
     const bitmap = if (std.ascii.eqlIgnoreCase(ext, ".png")) bitmap: {
         // LoadPNGStretch crashes fitting landscape pages itself, so fit them here.
@@ -49,7 +47,10 @@ fn loadPage(session: *Session, relative: []const u8) !void {
         const fw: c_int = @max(1, @as(c_int, @intFromFloat(@round(@as(f32, @floatFromInt(size[0])) * fit))));
         const fh: c_int = @max(1, @as(c_int, @intFromFloat(@round(@as(f32, @floatFromInt(size[1])) * fit))));
         break :bitmap png(path, fw, fh, 0, 1);
-    } else jpeg(path, w, h, 64, 128, 1);
+    } else if (std.ascii.eqlIgnoreCase(ext, ".jpg") or std.ascii.eqlIgnoreCase(ext, ".jpeg"))
+        jpeg(path, w, h, 64, 128, 1)
+    else
+        return error.UnsupportedImageFormat;
     const bm = bitmap orelse return error.ImageDecodeFailed;
     defer std.c.free(bm);
     const depth = bm.depth & 0xff;
@@ -57,21 +58,42 @@ fn loadPage(session: *Session, relative: []const u8) !void {
     if (depth != 8 and depth != 4 and depth != 1 and depth != 24) return error.UnsupportedBitmapDepth;
     if (@as(usize, bm.scanline) < (@as(usize, bm.width) * depth + 7) / 8) return error.InvalidBitmap;
     const bytes: [*]const u8 = @as([*]const u8, @ptrCast(bm)) + @sizeOf(Bitmap);
-    const pixels = try gpa.alloc(u8, @as(usize, bm.width) * bm.height);
+    // Enforce the requested memory bound even if a firmware decoder returns
+    // its original dimensions instead of fitting to the supplied viewport.
+    const scale = @min(@as(f32, 1), @min(@as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(bm.width)), @as(f32, @floatFromInt(height)) / @as(f32, @floatFromInt(bm.height))));
+    const output_width: usize = @max(1, @as(usize, @intFromFloat(@floor(@as(f32, @floatFromInt(bm.width)) * scale))));
+    const output_height: usize = @max(1, @as(usize, @intFromFloat(@floor(@as(f32, @floatFromInt(bm.height)) * scale))));
+    const pixels = try gpa.alloc(u8, output_width * output_height);
     errdefer gpa.free(pixels);
-    for (0..bm.height) |y| for (0..bm.width) |x| {
-        const row = bytes + y * bm.scanline;
-        pixels[y * bm.width + x] = switch (depth) {
-            8 => row[x],
-            4 => @as(u8, if (x % 2 == 0) row[x / 2] >> 4 else row[x / 2] & 15) * 17,
-            1 => if ((row[x / 8] >> @as(u3, @intCast(7 - x % 8))) & 1 == 1) 255 else 0,
-            24 => @intCast((@as(u32, row[x * 3]) * 299 + @as(u32, row[x * 3 + 1]) * 587 + @as(u32, row[x * 3 + 2]) * 114) / 1000),
+    for (0..output_height) |y| for (0..output_width) |x| {
+        const source_x = x * bm.width / output_width;
+        const source_y = y * bm.height / output_height;
+        const row = bytes + source_y * bm.scanline;
+        pixels[y * output_width + x] = switch (depth) {
+            8 => row[source_x],
+            4 => @as(u8, if (source_x % 2 == 0) row[source_x / 2] >> 4 else row[source_x / 2] & 15) * 17,
+            1 => if ((row[source_x / 8] >> @as(u3, @intCast(7 - source_x % 8))) & 1 == 1) 255 else 0,
+            24 => @intCast((@as(u32, row[source_x * 3]) * 299 + @as(u32, row[source_x * 3 + 1]) * 587 + @as(u32, row[source_x * 3 + 2]) * 114) / 1000),
             else => unreachable,
         };
     };
-    gpa.free(page_pixels);
-    page_pixels = pixels;
-    session.image = .{ .width = bm.width, .height = bm.height, .pixels = pixels, .revision = std.hash.Wyhash.hash(0, relative) };
+    return .{ .width = output_width, .height = output_height, .pixels = pixels, .revision = std.hash.Wyhash.hash(0, relative) };
+}
+
+fn canFetchCover(_: *Session) bool {
+    const worker = lifecycle_worker orelse return false;
+    // Cold library screens keep placeholders. Once browsing has warmed the
+    // worker, optional artwork can load without competing with JVM startup
+    // or waiting for a released worker to finish saving its startup cache.
+    return worker.alive() and worker.workerReady();
+}
+
+fn loadPage(session: *Session, relative: []const u8) !void {
+    const host = &ink.App(Root).instance;
+    const image = try decodeImage(session, relative, @intCast(host.api.ScreenWidth()), @intCast(host.api.ScreenHeight()));
+    session.model.gpa.free(page_pixels);
+    page_pixels = @constCast(image.pixels);
+    session.image = image;
 }
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -90,7 +112,8 @@ pub fn main(init: std.process.Init) !void {
         else => return err,
     };
     if (prefs) |p| model.prefs = p.value;
-    var session: Session = .{ .model = &model, .root = root, .io = io, .save_path = prefs_path, .load_image = loadPage };
+    var session: Session = .{ .model = &model, .root = root, .io = io, .save_path = prefs_path, .load_image = loadPage, .load_cover = decodeImage, .can_fetch_cover = canFetchCover };
+    defer session.covers.deinit(gpa);
     // Extensions run in the worker process; the library, downloads and the
     // local source stay here. Test emulators wrap the worker.
     const worker_exe = try std.fs.path.join(gpa, &.{ root, "bin/pocketmanga-worker" });
@@ -104,6 +127,7 @@ pub fn main(init: std.process.Init) !void {
     defer engine.queue.deinit(&engine);
     defer engine.finishTracking();
     session.browser.engine = &engine;
+    defer session.cancelCoverJob();
     engine.launched() catch |err| std.log.warn("launch upkeep: {s}", .{@errorName(err)});
     try session.reloadLibrary();
     try session.migrateProgress();
@@ -165,7 +189,10 @@ fn stopWorker() void {
     defer updatePower(false);
     if (lifecycle_engine) |engine| {
         engine.pause();
-        if (lifecycle_session) |session| if (session.browser.busy) |job| job.cancel();
+        if (lifecycle_session) |session| {
+            session.cancelCoverJob();
+            if (session.browser.busy) |job| job.cancel();
+        }
         if (lifecycle_worker) |worker| worker.close();
     }
 }

@@ -6,7 +6,7 @@ pub fn main(init: std.process.Init) !void {
     var arena: std.heap.ArenaAllocator = .init(init.gpa);
     defer arena.deinit();
     var model: lib.Model = .{ .gpa = arena.allocator(), .library = smoke.fixture };
-    var session: Session = .{ .model = &model, .root = ".", .io = init.io, .load_image = smoke.sampleImage };
+    var session: Session = .{ .model = &model, .root = ".", .io = init.io, .load_image = smoke.sampleImage, .load_cover = smoke.sampleCover };
     defer session.deinit();
     try std.Io.Dir.cwd().createDirPath(init.io, "preview");
     try smoke.start(init.gpa, init.io, &session);
@@ -104,15 +104,15 @@ fn libraryScreens(init: std.process.Init, session: *Session, model: *lib.Model) 
     const day = std.time.ms_per_day;
     try engine.store.save(a, .{
         .manga = &.{
-            .{ .id = "42:/lantern", .title = "The Copper Lantern", .source_id = 42, .remote = .{ .url = "/lantern", .title = "The Copper Lantern", .status = 1 }, .categories = &.{1}, .date_added = now - 30 * day, .chapters = &.{
+            .{ .id = "42:/lantern", .title = "The Copper Lantern", .cover = "demo/lantern.png", .source_id = 42, .remote = .{ .url = "/lantern", .title = "The Copper Lantern", .status = 1 }, .categories = &.{1}, .date_added = now - 30 * day, .chapters = &.{
                 .{ .id = "42:/lantern/3", .title = "Chapter 3 - Embers", .number = 3, .source_order = 0, .scanlator = "Lamp Scans", .date_fetch = now - day, .date_upload = now - day, .remote = .{ .url = "/lantern/3", .name = "Chapter 3 - Embers" } },
                 .{ .id = "42:/lantern/2", .title = "Chapter 2 - The long road", .number = 2, .source_order = 1, .scanlator = "Lamp Scans", .last_page_read = 4, .last_read = now - 2 * std.time.ms_per_hour, .date_fetch = now - 40 * day, .remote = .{ .url = "/lantern/2", .name = "Chapter 2 - The long road" } },
                 .{ .id = "42:/lantern/1", .title = "Chapter 1 - A new beginning", .number = 1, .source_order = 2, .scanlator = "Other Group", .read = true, .last_read = now - day, .date_fetch = now - 40 * day, .remote = .{ .url = "/lantern/1", .name = "Chapter 1 - A new beginning" } },
             } },
-            .{ .id = "42:/notebook", .title = "A Traveller's Notebook", .source_id = 42, .remote = .{ .url = "/notebook", .title = "A Traveller's Notebook", .status = 1 }, .categories = &.{2}, .next_update = now + 3 * day, .fetch_interval = 7, .chapters = &.{
+            .{ .id = "42:/notebook", .title = "A Traveller's Notebook", .cover = "demo/notebook.png", .source_id = 42, .remote = .{ .url = "/notebook", .title = "A Traveller's Notebook", .status = 1 }, .categories = &.{2}, .next_update = now + 3 * day, .fetch_interval = 7, .chapters = &.{
                 .{ .id = "42:/notebook/1", .title = "Entry 1", .number = 1, .remote = .{ .url = "/notebook/1", .name = "Entry 1" } },
             } },
-            .{ .id = "local:Observatory", .title = "Stories from the Observatory", .categories = &.{1}, .chapters = &.{
+            .{ .id = "local:Observatory", .title = "Stories from the Observatory", .cover = "demo/observatory.png", .categories = &.{1}, .chapters = &.{
                 .{ .id = "local:Observatory/1", .title = "Night one", .pages = &.{"local/Observatory/1/1.png"} },
             } },
         },

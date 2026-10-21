@@ -8,7 +8,7 @@ pub const Chapter = tachi.library.Chapter;
 pub const safePath = tachi.library.safePath;
 /// Display preferences. `progress` is the pre-libtachi reading progress,
 /// read once to migrate it into libtachi's reading state.
-pub const Preferences = struct { rtl: bool = true, full_refresh: bool = true, progress: []const LegacyProgress = &.{} };
+pub const Preferences = struct { rtl: bool = true, full_refresh: bool = true, library_grid: bool = true, progress: []const LegacyProgress = &.{} };
 pub const LegacyProgress = struct { id: []const u8, page: usize = 0, completed: bool = false };
 
 pub fn readJson(comptime T: type, gpa: std.mem.Allocator, io: Io, path: []const u8) !std.json.Parsed(T) {
@@ -35,7 +35,7 @@ pub const Screen = enum { library, chapters, reader, settings, sources, extensio
 /// libtachi settings the settings screen changes.
 pub const Setting = enum { skip_completed, skip_unread, skip_not_started, skip_not_due, update_details, download_new, delete_marked_read, delete_bookmarked, delete_after_reading, download_ahead, skip_read, skip_filtered, skip_duplicates, incognito, downloaded_only, sort_mode, sort_ascending };
 pub const Pick = struct { manga: usize, chapter: usize };
-pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, open_chapter: Pick, turn: i32, next_chapter, list_page: i32, category: i32, feed: Screen, menu: usize, settings, help, rtl, refresh };
+pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, open_chapter: Pick, turn: i32, next_chapter, list_page: i32, category: i32, feed: Screen, menu: usize, settings, help, rtl, refresh, library_grid };
 pub const Model = struct {
     gpa: std.mem.Allocator,
     library: Library = .{},
@@ -73,6 +73,10 @@ pub const Model = struct {
     online_chapter: ?[]const u8 = null,
     online_pages: []const []const u8 = &.{},
     pub const rows = 7;
+    /// Comfortable covers use two portrait cards per page on the Verse.
+    pub fn pageRows(self: *const Model) usize {
+        return if (self.screen == .library and self.prefs.library_grid) 2 else rows;
+    }
     pub const ReadState = struct { page: u32, read: bool, started: bool };
 
     /// A chapter's reading state, including changes not yet reloaded.
@@ -232,8 +236,9 @@ pub const Model = struct {
                     else => return,
                 };
                 if (count == 0) return;
-                const next: i64 = @as(i64, @intCast(self.offset)) + @as(i64, delta) * rows;
-                self.offset = @intCast(std.math.clamp(next, 0, @as(i64, @intCast((count - 1) / rows * rows))));
+                const page_rows = self.pageRows();
+                const next: i64 = @as(i64, @intCast(self.offset)) + @as(i64, delta) * @as(i64, @intCast(page_rows));
+                self.offset = @intCast(std.math.clamp(next, 0, @as(i64, @intCast((count - 1) / page_rows * page_rows))));
             },
             .category => |delta| {
                 if (self.categories.len == 0) return;
@@ -248,6 +253,11 @@ pub const Model = struct {
             .help => {
                 self.screen = .sources;
                 self.offset = 0;
+            },
+            .library_grid => {
+                self.prefs.library_grid = !self.prefs.library_grid;
+                self.offset = 0;
+                self.dirty = true;
             },
             .rtl => {
                 self.prefs.rtl = !self.prefs.rtl;

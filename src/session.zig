@@ -3,6 +3,7 @@ const tachi = @import("tachi");
 const lib = @import("library.zig");
 const Browser = @import("browser.zig").Browser;
 const Image = @import("reader-image");
+const Covers = @import("covers.zig");
 /// A row of the updates, history or download queue screens.
 pub const FeedRow = struct { pick: lib.Pick, title: []const u8, detail: []const u8 };
 
@@ -13,6 +14,15 @@ pub const Session = struct {
     save_path: ?[]const u8 = null,
     image: ?Image = null,
     load_image: ?*const fn (*Session, []const u8) anyerror!void = null,
+    /// Decodes an owned, bounded thumbnail independently of the reader page.
+    load_cover: ?*const fn (*Session, []const u8, usize, usize) anyerror!Image = null,
+    covers: Covers = .{},
+    /// Optional artwork never owns the foreground busy/status presentation.
+    cover_job: ?*tachi.Job = null,
+    /// Device artwork uses an already-ready worker rather than starting a JVM.
+    can_fetch_cover: ?*const fn (*Session) bool = null,
+    cover_attempts: [64]?u64 = @splat(null),
+    cover_attempt_next: usize = 0,
     status: []const u8 = "",
     owned_status: ?[]const u8 = null,
     activity: ?*const fn (bool) void = null,
@@ -54,6 +64,79 @@ pub const Session = struct {
     /// The chapter after the one being read, as libtachi's reader list
     /// orders and skips them: an index into the title's chapters.
     next_chapter: ?usize = null,
+    pub fn beginCoverFrame(self: *Session) void {
+        self.covers.beginFrame();
+    }
+
+    fn decodeCover(self: *Session, path: []const u8, width: usize, height: usize) !Image {
+        return self.load_cover.?(self, path, width, height);
+    }
+
+    fn coverHash(source: i64, url: []const u8) u64 {
+        return std.hash.Wyhash.hash(@bitCast(source), url);
+    }
+
+    fn requestCover(self: *Session, manga: lib.Manga) void {
+        if (self.cover_job != null or self.browser.busy != null or self.model.screen != .library) return;
+        const engine = self.browser.engine orelse return;
+        if (self.can_fetch_cover) |ready| if (!ready(self)) return;
+        const source = manga.source_id orelse return;
+        const remote = manga.remote orelse return;
+        const url = remote.thumbnailUrl orelse return;
+        if (url.len == 0) return;
+        const hash = coverHash(source, url);
+        for (self.cover_attempts) |attempt| if (attempt == hash) return;
+        self.cover_attempts[self.cover_attempt_next] = hash;
+        self.cover_attempt_next = (self.cover_attempt_next + 1) % self.cover_attempts.len;
+        // Job.start clones source/URL before the library snapshot can change.
+        // Optional artwork uses an existing connection, without a Wi-Fi dialog.
+        self.cover_job = tachi.Job.start(engine, .{ .cover = .{ .source = source, .url = url } }) catch |err| {
+            std.log.warn("Cannot fetch cover: {s}", .{@errorName(err)});
+            return;
+        };
+        self.updateActivity();
+    }
+
+    pub fn cancelCoverJob(self: *Session) void {
+        const job = self.cover_job orelse return;
+        self.cover_job = null;
+        const request = job.request.cover;
+        const hash = coverHash(request.source, request.url);
+        for (&self.cover_attempts) |*attempt| if (attempt.* == hash) {
+            attempt.* = null;
+        };
+        job.cancel();
+        job.deinit();
+        self.updateActivity();
+    }
+
+    fn pollCover(self: *Session) void {
+        const job = self.cover_job orelse return;
+        if (!job.done.load(.acquire)) return;
+        job.join();
+        self.cover_job = null;
+        defer job.deinit();
+        if (job.failure) |failure| std.log.warn("Cannot fetch cover: {s}", .{failure});
+    }
+
+    /// Cached artwork is independent of the reader image. Missing remote
+    /// artwork loads one at a time while the library remains interactive.
+    pub fn coverImage(self: *Session, manga: lib.Manga) ?*Image {
+        if (self.load_cover == null) return null;
+        var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+        defer arena.deinit();
+        const path = if (self.browser.engine) |engine|
+            engine.coverPath(arena.allocator(), manga) catch return null
+        else
+            manga.cover;
+        const relative = path orelse {
+            self.requestCover(manga);
+            return null;
+        };
+        if (!lib.safePath(relative)) return null;
+        return self.covers.get(self.model.gpa, relative, self, decodeCover) catch null;
+    }
+
     /// Sets a static message, releasing any previously formatted status.
     pub fn setStatus(self: *Session, comptime message: []const u8) void {
         if (self.owned_status) |owned| self.model.gpa.free(owned);
@@ -99,9 +182,10 @@ pub const Session = struct {
         return std.fmt.allocPrint(self.model.gpa, "{d}/{d} pages saved. {s}", .{ done, total, failure });
     }
     pub fn updateActivity(self: *Session) void {
-        if (self.activity) |activity| activity(if (self.browser.busy) |job| !job.done.load(.acquire) else false);
+        if (self.activity) |activity| activity(if (self.browser.busy) |job| !job.done.load(.acquire) else if (self.cover_job) |job| !job.done.load(.acquire) else false);
     }
     pub fn start(self: *Session, request: tachi.engine.Request) void {
+        self.cancelCoverJob();
         defer self.updateActivity();
         if (request == .download and self.browser.busy == null) self.rememberDownload(request.download) catch {
             self.setStatus("Cannot start download: out of memory");
@@ -117,6 +201,7 @@ pub const Session = struct {
     }
     pub fn poll(self: *Session) !void {
         defer self.updateActivity();
+        self.pollCover();
         if (self.model.screen == .queue and self.browser.busy == null) try self.refreshFeed();
         const job = self.browser.busy orelse return;
         if (!job.done.load(.acquire)) return;
@@ -186,11 +271,13 @@ pub const Session = struct {
         }
     }
     pub fn reloadLibrary(self: *Session) !void {
+        self.cancelCoverJob();
         const engine = self.browser.engine orelse return;
         {
             var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
             errdefer arena.deinit();
             const library = try engine.loadLibrary(arena.allocator());
+            self.covers.deinit(self.model.gpa);
             self.model.clearReading();
             if (self.library_arena) |*old| old.deinit();
             self.model.library = library;
@@ -712,6 +799,8 @@ pub const Session = struct {
         try self.reloadLibrary();
     }
     pub fn deinit(self: *Session) void {
+        self.cancelCoverJob();
+        self.covers.deinit(self.model.gpa);
         if (self.owned_status) |owned| self.model.gpa.free(owned);
         self.clearDownloadIdentity();
         self.browser.deinit(self.model.gpa);
@@ -794,6 +883,7 @@ pub const Session = struct {
         const old_screen = self.model.screen;
         const old_manga = self.model.manga;
         try self.model.dispatch(action);
+        if (self.model.screen == .reader) self.cancelCoverJob();
         const lists = self.model.screen == .library or self.model.screen == .chapters;
         if (lists and (action == .search or action == .category or old_screen != self.model.screen or old_manga != self.model.manga or self.model.title_rows == null)) try self.refreshRows();
         const feed = self.model.screen == .updates or self.model.screen == .history or self.model.screen == .queue or self.model.screen == .upcoming;

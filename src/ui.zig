@@ -11,7 +11,7 @@ pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const Navigation = enum { library, updates, history, browse, more };
 pub const State = struct { more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { navigate: Navigation, reading_settings, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { navigate: Navigation, reading_settings, library_grid, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
@@ -39,6 +39,7 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
             try session.poll();
             if (session.browser.busy == null) ctx.focus("screen");
         },
+        .library_grid => try session.act(.library_grid),
         .reading_settings => {
             state.more_root = false;
             state.reading_from_more = true;
@@ -395,7 +396,8 @@ fn moreRow(ui: *app.Ui, key: anytype, label: []const u8, action: app.Action) !vo
 }
 
 pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
-    const session = ui.use(Session);
+    const session = @constCast(ui.use(Session));
+    session.beginCoverFrame();
     const model = session.model;
     const on = ui.messages(Root);
     if (session.browser.busy != null) try ui.every("network-poll", .fromMilliseconds(200), on.bind(.poll)) else if (model.screen == .queue) try ui.every("queue-poll", .fromMilliseconds(2000), on.bind(.poll));
@@ -531,11 +533,13 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         .categories => try categoriesView(ui, model),
     }
     if (session.status.len > 0 and !session.download_error and session.browser.busy == null) try text(ui, session.status, 11, 0);
+    if (session.cover_job != null) try ui.every("cover-poll", .fromMilliseconds(200), on.bind(.poll));
     if (navigation) |selected| try navigationBar(ui, selected, session.browser.busy == null);
 }
 fn list(ui: *app.Ui, model: *const lib.Model) !void {
     const is_library = model.screen == .library;
     const count = if (is_library) model.titleCount() else model.chapterCount();
+    const page_rows = model.pageRows();
     const on = ui.messages(Root);
     {
         try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .init(12, 12, 4, 6), .child_gap = 5 } });
@@ -544,8 +548,9 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
             {
                 try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 8, .child_alignment = .center_left } });
                 defer ui.close();
-                try app.widgets.searchField(ui, "query", .{ .text = model.query_text, .placeholder = "Search library", .on_change = on.handler(.query) });
+                try app.widgets.searchField(ui, "query", .{ .text = model.query_text, .placeholder = "Search library", .on_change = on.handler(.query), .sizing = .{ .width = .fixed(160) } });
                 if (model.library.manga.len > 0) try onlineButton(ui, "update-library", "Update", .update_all);
+                try app.widgets.button(ui, "library-layout", .{ .label = if (model.prefs.library_grid) "List" else "Grid", .on_click = on.bind(.library_grid) });
             }
             if (model.categories.len > 1) {
                 try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 12, .child_alignment = .center_left }, .border = .{ .color = .gray(220), .widths = .{ .bottom = 1 } } });
@@ -568,8 +573,25 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
             } else try ui.print(.{ .font_size = 11, .color = .gray(90) }, "{d} {s}", .{ count, if (count == 1) "title" else "titles" });
         } else {
             const manga = model.library.manga[model.manga];
-            try text(ui, manga.title, 19, 0);
-            if (manga.author.len > 0) try text(ui, manga.author, 12, 80);
+            {
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(72) }, .child_gap = 12 } });
+                defer ui.close();
+                {
+                    try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(48), .height = .fixed(72) }, .child_alignment = .center }, .background_color = .gray(238), .corner_radius = .uniform(3) });
+                    defer ui.close();
+                    const session = @constCast(ui.use(Session));
+                    if (session.coverImage(manga)) |image| ui.content(&image.content) else try text(ui, "Manga", 10, 110);
+                }
+                {
+                    try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(@max(1, ui.core.viewport.x - 84)) }, .axis = .y, .child_gap = 3 } });
+                    defer ui.close();
+                    try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(42) } } });
+                    try ui.text(manga.title, .{ .font_size = 17, .font_weight = .bold, .wrap_mode = .words, .overflow = .ellipsis_end });
+                    ui.close();
+                    if (manga.author.len > 0) try text(ui, manga.author, 12, 80);
+                    try text(ui, if (manga.local()) "Local manga" else if (manga.favorite) "In library" else "Online manga", 10, 90);
+                }
+            }
             {
                 try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 8, .child_alignment = .center_left } });
                 defer ui.close();
@@ -591,7 +613,7 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
             try text(ui, "Find something to read in Browse.", 12, 80);
             try text(ui, "Local folders can be scanned in More.", 12, 80);
         }
-        for (@min(model.offset, count)..@min(model.offset + lib.Model.rows, count)) |row| {
+        if (is_library and model.prefs.library_grid and count > 0) try libraryGrid(ui, model) else for (@min(model.offset, count)..@min(model.offset + page_rows, count)) |row| {
             const i = if (is_library) model.titleIndex(row) else model.chapterIndex(row);
             const title = if (is_library) model.library.manga[i].title else model.library.manga[model.manga].chapters[i].title;
             const key = .{ .row = i };
@@ -624,16 +646,74 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
             }
             ui.close();
         }
-        ui.spacer();
+        if (!(is_library and model.prefs.library_grid and count > 0)) ui.spacer();
     }
     {
         try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .init(12, 12, 4, 4), .child_gap = 8, .child_alignment = .center_left } });
         defer ui.close();
         try app.widgets.button(ui, "previous-list", .{ .label = "Previous", .enabled = model.offset > 0, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = -1 }) }) });
         ui.spacer();
-        try ui.print(.{ .font_size = 11, .color = .gray(90) }, "{d}/{d}", .{ if (count == 0) @as(usize, 0) else model.offset / lib.Model.rows + 1, (count + lib.Model.rows - 1) / lib.Model.rows });
+        try ui.print(.{ .font_size = 11, .color = .gray(90) }, "{d}/{d}", .{ if (count == 0) @as(usize, 0) else model.offset / page_rows + 1, (count + page_rows - 1) / page_rows });
         ui.spacer();
-        try app.widgets.button(ui, "next-list", .{ .label = "Next", .enabled = model.offset + lib.Model.rows < count, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = 1 }) }) });
+        try app.widgets.button(ui, "next-list", .{ .label = "Next", .enabled = model.offset + page_rows < count, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = 1 }) }) });
+    }
+}
+/// Comfortable cover cards mirror Mihon's library with full-size portraits on e-ink.
+fn libraryGrid(ui: *app.Ui, model: *const lib.Model) !void {
+    const session = @constCast(ui.use(Session));
+    const on = ui.messages(Root);
+    const end = @min(model.offset + model.pageRows(), model.titleCount());
+    var row = @min(model.offset, end);
+    try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .child_gap = 8 } });
+    defer ui.close();
+    // A single row keeps portrait covers large; paging replaces Android scrolling.
+    {
+        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(244) }, .child_gap = 12 } });
+        defer ui.close();
+        for (0..2) |_| {
+            try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .child_gap = 3 } });
+            defer ui.close();
+            if (row >= end) continue;
+            const i = model.titleIndex(row);
+            row += 1;
+            const manga = model.library.manga[i];
+            const counts = manga.counts();
+            const key = .{ .row = i };
+            {
+                try ui.open(key, .{
+                    .layout = .{ .sizing = .grow(.{}), .axis = .y, .child_gap = 4 },
+                    .background_color = rowFill(ui, key),
+                    .on_click = on.bind(.{ .act = @as(lib.Action, .{ .open = i }) }),
+                });
+                defer ui.close();
+                {
+                    try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(190) }, .child_alignment = .center }, .background_color = .gray(238), .corner_radius = .uniform(4) });
+                    defer ui.close();
+                    if (session.coverImage(manga)) |image| ui.content(&image.content) else {
+                        try ui.open(null, .{ .layout = .{ .axis = .y, .child_alignment = .center, .child_gap = 4 } });
+                        defer ui.close();
+                        try text(ui, "NO COVER", 10, 110);
+                        try text(ui, if (manga.local()) "Local manga" else "Manga", 11, 90);
+                    }
+                }
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(26) } } });
+                try ui.text(manga.title, .{ .font_size = 12, .font_weight = .bold, .wrap_mode = .words, .overflow = .ellipsis_end });
+                ui.close();
+            }
+            {
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_alignment = .center_left, .child_gap = 4 } });
+                defer ui.close();
+                if (counts.unread > 0) try ui.print(.{ .font_size = 10, .color = .black }, "{d} unread", .{counts.unread});
+                if (counts.downloaded > 0) try ui.print(.{ .font_size = 10, .color = .gray(80) }, "{d} saved", .{counts.downloaded});
+                ui.spacer();
+                try ui.open(.{ .menu = i }, .{
+                    .layout = .{ .sizing = .{ .width = .fixed(24), .height = .fixed(20) }, .child_alignment = .center },
+                    .on_click = on.bind(.{ .act = @as(lib.Action, .{ .menu = i }) }),
+                });
+                try text(ui, "...", 15, 60);
+                ui.close();
+            }
+        }
     }
 }
 /// libtachi's settings, one row each: checks for switches, values for the rest.
