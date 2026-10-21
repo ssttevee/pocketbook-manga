@@ -56,7 +56,7 @@ pub const State = struct {
         self.loaded = true;
     }
 };
-pub const Operation = enum { delete, read, unread };
+pub const Operation = enum { delete, read, unread, move_internal, move_sd };
 pub const Page = struct { delta: i32, size: usize };
 pub const Msg = union(enum) { loaded: anyerror![]const Row, toggle: []const u8, all, clear, page: Page, operation: Operation, answer: ?usize, completed: anyerror!usize };
 
@@ -100,7 +100,13 @@ fn operate(task: *app.Task, engine: *tachi.Engine, ids: []const []const u8, oper
     return switch (operation) {
         .delete => engine.deleteDownloads(ids),
         .read, .unread => engine.markRead(ids, operation == .read),
+        .move_internal, .move_sd => @import("storage_move.zig").move(engine, ids, operation == .move_sd, .{ .context = task, .check = checkMoveCancel }),
     };
+}
+
+fn checkMoveCancel(context: *anyopaque) anyerror!void {
+    const task: *app.Task = @ptrCast(@alignCast(context));
+    try task.checkCancel();
 }
 
 fn beginOperation(state: *State, session: *Session, ctx: *app.Update(Self), operation: Operation) !void {
@@ -139,19 +145,26 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Self)) !void {
             if (page.delta < 0) state.offset -|= page.size else if (state.offset + page.size < state.rows.len) state.offset += page.size;
         },
         .operation => |operation| {
-            if (state.busy or engine.queue.running() or state.selected.count() == 0) return;
+            if (state.busy or session.browser.busy != null or session.read_download != null or engine.queue.running() or state.selected.count() == 0) return;
             if (operation == .delete) {
                 try ctx.confirm(.{ .title = "Delete downloads", .text = "Delete the selected chapters' downloaded files? Library entries and reading progress are kept. Protected chapters follow your deletion settings.", .buttons = &.{ "Delete", "Keep" }, .default = 1 }, ctx.handler(.answer));
             } else try beginOperation(state, session, ctx, operation);
         },
-        .answer => |answer| if (answer == 0 and !state.busy and !engine.queue.running()) {
+        .answer => |answer| if (answer == 0 and !state.busy and session.browser.busy == null and session.read_download == null and !engine.queue.running()) {
             try beginOperation(state, session, ctx, .delete);
         },
         .completed => |outcome| {
             state.busy = false;
             session.storage_busy = false;
             const count = outcome catch |err| {
-                if (err == error.StorageUnavailable) session.setStatus("Insert the SD card holding these downloads before deleting them.") else try session.formatStatus("Cannot update selected chapters: {s}", .{@errorName(err)});
+                if (state.operation == .move_internal or state.operation == .move_sd) {
+                    try session.reloadLibrary();
+                    state.loaded = false;
+                    state.revision +%= 1;
+                }
+                if (err == error.StorageUnavailable) {
+                    if (state.operation == .delete) session.setStatus("Insert the SD card holding these downloads before deleting them.") else session.setStatus("Insert the SD card before moving these downloads.");
+                } else if (err == error.DestinationHasDownloads) session.setStatus("The destination already has files for a selected chapter. The original downloads were kept.") else if (err == error.NoSpaceLeft) session.setStatus("There is not enough free space on the destination disk.") else try session.formatStatus("Cannot update selected chapters: {s}", .{@errorName(err)});
                 return;
             };
             try session.reloadLibrary();
@@ -165,6 +178,13 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Self)) !void {
                 },
                 .read => session.notify("Selected chapters marked read"),
                 .unread => session.notify("Selected chapters marked unread"),
+                .move_internal, .move_sd => {
+                    state.clear(ctx.gpa);
+                    state.loaded = false;
+                    state.revision +%= 1;
+                    try session.formatStatus("Moved {d} chapter downloads to {s}.", .{ count, if (state.operation == .move_sd) "SD card" else "internal storage" });
+                    session.status_transient = true;
+                },
             }
         },
     }
@@ -183,7 +203,7 @@ pub fn view(ui: *app.Ui, state: *const State, props: Props) !void {
         try app.widgets.button(ui, "select-all", .{ .label = "Select all", .enabled = state.loaded and !state.busy and state.rows.len > 0, .on_click = on.bind(.all) });
         try app.widgets.button(ui, "clear-selection", .{ .label = "Clear selection", .enabled = !state.busy and state.selected.count() > 0, .on_click = on.bind(.clear) });
     }
-    const size: usize = @max(1, @as(usize, @intFromFloat(@max(0, ui.core.viewport.y - 208))) / 50);
+    const size: usize = @max(1, @as(usize, @intFromFloat(@max(0, ui.core.viewport.y - 246))) / 50);
     const start = if (state.loaded) @min(state.offset, state.rows.len) else 0;
     const end = if (state.loaded) @min(start + size, state.rows.len) else 0;
     if (!state.loaded) try ui.text(if (props.series) "Loading downloaded series..." else "Loading downloaded chapters...", .{ .font_size = 15 }) else if (state.rows.len == 0) try ui.text("No downloaded chapters", .{ .font_size = 15 });
@@ -203,10 +223,17 @@ pub fn view(ui: *app.Ui, state: *const State, props: Props) !void {
     {
         try ui.open("bulk-actions", .{ .layout = .{ .child_gap = 4 } });
         defer ui.close();
-        const enabled = !state.busy and state.selected.count() > 0 and !(if (session.browser.engine) |engine| engine.queue.running() else false);
+        const enabled = !state.busy and session.browser.busy == null and session.read_download == null and state.selected.count() > 0 and !(if (session.browser.engine) |engine| engine.queue.running() else false);
         inline for (.{ .{ "Delete", Operation.delete }, .{ "Read", Operation.read }, .{ "Unread", Operation.unread } }) |action| try app.widgets.button(ui, action[0], .{ .label = if (props.series and action[1] == .delete) "Delete downloads" else action[0], .enabled = enabled, .on_click = on.bind(.{ .operation = action[1] }) });
     }
-    if (state.busy) try ui.text(if (state.operation == .delete) "Deleting downloads..." else "Updating reading progress...", .{ .font_size = 13 });
+    {
+        try ui.open("move-actions", .{ .layout = .{ .child_gap = 4 } });
+        defer ui.close();
+        const enabled = !state.busy and session.browser.busy == null and session.read_download == null and state.selected.count() > 0 and !(if (session.browser.engine) |engine| engine.queue.running() else false);
+        try app.widgets.button(ui, "move-internal", .{ .label = "Move to internal", .enabled = enabled, .on_click = on.bind(.{ .operation = .move_internal }) });
+        try app.widgets.button(ui, "move-sd", .{ .label = "Move to SD", .enabled = enabled and (if (session.browser.engine) |engine| engine.sdAvailable() else false), .on_click = on.bind(.{ .operation = .move_sd }) });
+    }
+    if (state.busy) try ui.text(if (state.operation == .delete) "Deleting downloads..." else if (state.operation == .move_internal or state.operation == .move_sd) "Moving downloads..." else "Updating reading progress...", .{ .font_size = 13 });
     {
         try ui.open("manager-pages", .{ .layout = .{ .child_gap = 8, .child_alignment = .center_left } });
         defer ui.close();
