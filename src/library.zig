@@ -54,6 +54,7 @@ pub const Model = struct {
     reader_requires_presentation: bool = false,
     reader_record_positions: bool = true,
     reader_presented: bool = false,
+    reader_controls: bool = false,
     reader_geometry: ?viewport.Geometry = null,
     reader_position: f64 = 0,
     reader_pending_end: bool = false,
@@ -262,6 +263,7 @@ pub const Model = struct {
                 if (ch.pages.len == 0) return;
                 self.chapter = i;
                 self.page = @min(self.readState(ch).page, ch.pages.len - 1);
+                self.reader_controls = false;
                 self.screen = .reader;
                 self.restoreRegion(ch.id);
                 try self.remember();

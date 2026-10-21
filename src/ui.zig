@@ -225,6 +225,18 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                     } else {
                         if (!was_tapping) return;
                         if (event.local.x < 0 or event.local.y < 0 or event.local.x > event.size.x or event.local.y > event.size.y) return;
+                        // Edge zones reveal controls without advancing the page.
+                        if (event.local.y < 48 or event.local.y >= event.size.y - 36) {
+                            session.model.reader_controls = !session.model.reader_controls;
+                            ctx.refresh(.page);
+                            ctx.focus("screen");
+                            return;
+                        }
+                        if (session.model.reader_controls) {
+                            session.model.reader_controls = false;
+                            ctx.refresh(.page);
+                            return;
+                        }
                         const left = event.local.x < event.size.x / 2;
                         const forward = left == session.model.prefs.rtl;
                         try session.act(.{ .turn = if (forward) 1 else -1 });
@@ -456,43 +468,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
     });
     defer ui.close();
     const navigation = rootNavigation(model.screen, state.more_root);
-    // Mihon keeps a named destination in the app bar and primary tabs below.
-    {
-        try ui.open("toolbar", .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(48) }, .padding = .init(12, 12, 4, 4), .child_gap = 8, .child_alignment = .center_left }, .border = .{ .color = .gray(220), .widths = .{ .bottom = 1 } } });
-        defer ui.close();
-        if (navigation == null and session.browser.busy == null) try button(ui, "back", "Back", .back);
-        try text(ui, switch (model.screen) {
-            .library => "Library",
-            .chapters => "Chapters",
-            .reader => "Reader",
-            .settings => if (state.more_root) "More" else "Settings",
-            .sources => "Browse",
-            .extensions => "Browse",
-            .catalog => "Browse",
-            .source_settings => "Source settings",
-            .updates => "Updates",
-            .history => "History",
-            .queue => "Downloads",
-            .chapter_menu => "Chapter",
-            .title_menu => "Title",
-            .engine_settings => "Library settings",
-            .backup => "Backup",
-            .categories => "Categories",
-            .global_search => if (session.browser.migrate_from != null) "Migrate to" else "Search all",
-            .languages => "Languages",
-            .stores => "Extension stores",
-            .trackers => "Trackers",
-            .tracker_login => "Log in",
-            .tracking => "Tracking",
-            .track_search => "Find on tracker",
-            .stats => "Statistics",
-            .duplicate => "Already in library?",
-            .title_options => "Chapter options",
-            .upcoming => "Upcoming",
-        }, 22, 0);
-        ui.spacer();
-        if (navigation == null and model.screen != .settings and session.browser.busy == null) try button(ui, "settings", "Aa", .settings);
-    }
+    if (model.screen != .reader) try toolbar(ui, session, navigation);
     if (session.download_error and session.browser.busy == null) {
         try ui.open("download-error", .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .all(10), .child_gap = 5 }, .border = .{ .color = .black, .widths = .outside(2) } });
         try text(ui, if (session.download_blocked) "Cannot download from this source" else if (session.download_canceled) "Download canceled - tap chapter to resume" else "Download failed - tap chapter to resume", 15, 0);
@@ -579,9 +555,49 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         .backup => try backupView(ui, session),
         .categories => try categoriesView(ui, model),
     }
+    if (model.screen == .reader and model.reader_controls) try toolbar(ui, session, navigation);
     if (session.status.len > 0 and model.screen != .reader and !session.download_error and session.browser.busy == null) try text(ui, session.status, 11, 0);
     if (session.cover_job != null) try ui.every("cover-poll", .fromMilliseconds(200), on.bind(.poll));
     if (navigation) |selected| try navigationBar(ui, selected, session.browser.busy == null);
+}
+fn toolbar(ui: *app.Ui, session: *const Session, navigation: ?Navigation) !void {
+    const model = session.model;
+    {
+        try ui.open("toolbar", .{ .floating = if (model.screen == .reader) .{ .mode = .root } else .{}, .background_color = .white, .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(48) }, .padding = .init(12, 12, 4, 4), .child_gap = 8, .child_alignment = .center_left }, .border = .{ .color = .gray(220), .widths = .{ .bottom = 1 } } });
+        defer ui.close();
+        if (navigation == null and session.browser.busy == null) try button(ui, "back", "Back", .back);
+        try text(ui, switch (model.screen) {
+            .library => "Library",
+            .chapters => "Chapters",
+            .reader => "Reader",
+            .settings => if (navigation == .more) "More" else "Settings",
+            .sources => "Browse",
+            .extensions => "Browse",
+            .catalog => "Browse",
+            .source_settings => "Source settings",
+            .updates => "Updates",
+            .history => "History",
+            .queue => "Downloads",
+            .chapter_menu => "Chapter",
+            .title_menu => "Title",
+            .engine_settings => "Library settings",
+            .backup => "Backup",
+            .categories => "Categories",
+            .global_search => if (session.browser.migrate_from != null) "Migrate to" else "Search all",
+            .languages => "Languages",
+            .stores => "Extension stores",
+            .trackers => "Trackers",
+            .tracker_login => "Log in",
+            .tracking => "Tracking",
+            .track_search => "Find on tracker",
+            .stats => "Statistics",
+            .duplicate => "Already in library?",
+            .title_options => "Chapter options",
+            .upcoming => "Upcoming",
+        }, 22, 0);
+        ui.spacer();
+        if (navigation == null and model.screen != .settings and session.browser.busy == null) try button(ui, "settings", "Aa", .settings);
+    }
 }
 fn list(ui: *app.Ui, model: *const lib.Model) !void {
     const is_library = model.screen == .library;
@@ -1206,11 +1222,10 @@ fn reader(ui: *app.Ui, session: *const Session) !void {
     const on = ui.messages(Root);
     if (session.region_service) |service| {
         const mutable = @constCast(session);
-        // Reader chrome is fixed: 48pt toolbar and 36pt footer. Use the
-        // physical content viewport, not the full panel, for the one resize.
+        // Controls overlay the page, so revealing them never resizes or decodes it again.
         const viewport: lib.viewport.Size = .{
             .width = @intFromFloat(@max(1, @round(ui.core.viewport.x * session.display_scale))),
-            .height = @intFromFloat(@max(1, @round(@max(1, ui.core.viewport.y - 84) * session.display_scale))),
+            .height = @intFromFloat(@max(1, @round(ui.core.viewport.y * session.display_scale))),
         };
         if (!std.meta.eql(mutable.region_viewport, viewport)) {
             mutable.clearRegionImage();
@@ -1236,8 +1251,8 @@ fn reader(ui: *app.Ui, session: *const Session) !void {
         defer ui.close();
         if (session.image) |*image| ui.content(@constCast(&image.content)) else try text(ui, if (session.status.len > 0) session.status else if (session.region_service != null) "Loading page…" else if (session.load_image == null) "Page preview" else "Page unavailable", 14, 0);
     }
-    {
-        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(36) }, .padding = .init(6, 6, 0, 0), .child_gap = 6, .child_alignment = .center_left }, .border = .{ .color = .black, .widths = .{ .top = 1 } } });
+    if (model.reader_controls) {
+        try ui.open("reader-footer", .{ .floating = .{ .mode = .root, .parent_point = .left_bottom, .unit_point = .left_bottom }, .background_color = .white, .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(36) }, .padding = .init(6, 6, 0, 0), .child_gap = 6, .child_alignment = .center_left }, .border = .{ .color = .black, .widths = .{ .top = 1 } } });
         defer ui.close();
         try button(ui, "left-page", if (model.prefs.rtl) "Next" else "Prev", .{ .turn = if (model.prefs.rtl) 1 else -1 });
         ui.spacer();

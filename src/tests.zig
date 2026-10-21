@@ -30,15 +30,18 @@ test "drawn UI opens chapters, turns pages, resumes and saves completion" {
     try h.click("Test Story");
     try h.click("Chapter 1");
     try std.testing.expectEqual(lib.Screen.reader, model.screen);
+    try h.clickAt(.init(170, 12));
     try h.click("Next");
     try std.testing.expectEqual(1, model.page);
     try std.testing.expect(model.readState(fixture.manga[0].chapters[0]).read);
     try h.click("Back");
     try h.click("Chapter 1");
     try std.testing.expectEqual(1, model.page);
+    try h.clickAt(.init(170, 12));
     try h.click("Chapter >");
     try std.testing.expectEqual(1, model.chapter);
     try std.testing.expectEqual(0, model.page);
+    try h.clickAt(.init(170, 12));
     try h.click("Aa");
     try h.click("Right to left (manga)");
     try std.testing.expect(!model.prefs.rtl);
@@ -157,13 +160,13 @@ test "page bounds and stale progress are clamped" {
     try std.testing.expect(model.readState(library.manga[0].chapters[0]).read);
 }
 test {
-    _ = @import("series_controls_test.zig");
     _ = @import("smoke.zig");
     _ = @import("online_test.zig");
     _ = @import("navigation_test.zig");
     _ = @import("browser_layout_test.zig");
     _ = @import("cover_test.zig");
     _ = @import("reader_navigation_test.zig");
+    _ = @import("series_controls_test.zig");
     _ = @import("region_cache_test.zig");
     _ = @import("region_integration_test.zig");
     _ = @import("reader_gesture_test.zig");

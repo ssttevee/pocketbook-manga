@@ -221,7 +221,7 @@ test "production codecs drive vertical and horizontal reader tasks and reject st
     try std.testing.expect(session.regionCurrent());
     try std.testing.expectEqual(lib.viewport.Axis.vertical, model.reader_geometry.?.axis);
     try std.testing.expectEqual(@as(usize, 343), session.image.?.width);
-    try std.testing.expectEqual(@as(usize, 380), session.image.?.height);
+    try std.testing.expectEqual(@as(usize, 464), session.image.?.height);
     const old_pixels = try arena.allocator().dupe(u8, session.region_pixels.?);
     const stale_request: Regions.Request = .{
         .root = root,
@@ -235,7 +235,7 @@ test "production codecs drive vertical and horizontal reader tasks and reject st
         .rtl = model.prefs.rtl,
     };
     const old_geometry = model.reader_geometry.?;
-    try h.click("Next");
+    try h.clickAt(.init(25, 230));
     try std.testing.expect(!session.regionCurrent());
     try std.testing.expect(!try session.acceptRegion(.{ .request = stale_request, .value = .{ .frame = .{
         .source = old_geometry.source,
@@ -262,7 +262,7 @@ test "production codecs drive vertical and horizontal reader tasks and reject st
     try std.testing.expectEqual(lib.viewport.Axis.horizontal, model.reader_geometry.?.axis);
     const first_x = model.reader_geometry.?.region(model.reader_position).x;
     try std.testing.expect(first_x > 0); // Default right-to-left reading.
-    try h.click("Next");
+    try h.clickAt(.init(25, 230));
     try h.runTasks();
     try std.testing.expect(model.reader_geometry.?.region(model.reader_position).x < first_x);
     try std.testing.expect(!model.readState(fixture.manga[0].chapters[0]).read);

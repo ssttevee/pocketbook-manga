@@ -26,6 +26,9 @@ pub fn main(init: std.process.Init) !void {
     smoke.cancelPress();
     try smoke.tapText("Chapter 1 - A new beginning");
     try smoke.writeScreen(init.gpa, init.io, "preview/reader.pgm");
+    smoke.fake.tap(170, 12);
+    smoke.fake.advance(1);
+    try smoke.writeScreen(init.gpa, init.io, "preview/reader-controls.pgm");
     try smoke.tapText("Aa");
     try smoke.writeScreen(init.gpa, init.io, "preview/settings.pgm");
     try smoke.tapText("Back");

@@ -121,6 +121,8 @@ test "device UI installs a source, searches, adds and downloads a chapter, reads
     _ = smoke.fake.pressKey(.next);
     try std.testing.expectEqual(1, model.page);
     try std.testing.expect(model.readState(model.library.manga[0].chapters[0]).read);
+    smoke.fake.tap(170, 12);
+    smoke.fake.advance(1);
     try smoke.tapText("Back");
     try smoke.tapText("Refresh chapters");
     try finish(&session);
@@ -606,7 +608,6 @@ test "queue controls show a paused queue and only its applicable action" {
     try std.testing.expect(h.findText("Start") == null);
     try std.testing.expect(h.findText("Stop") == null);
 }
-
 
 test "entering reading releases a retained worker after background downloads finish" {
     const Backend = tachi.backend.Backend;
