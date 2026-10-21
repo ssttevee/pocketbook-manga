@@ -152,3 +152,24 @@ test "returning from reading keeps the current chapter on the measured list page
     try model.dispatch(.back);
     try std.testing.expectEqual(@as(usize, 8), model.offset);
 }
+
+test "confirmation toast expires without moving content and stale dismissals preserve later errors" {
+    var model: lib.Model = .{ .gpa = std.testing.allocator, .library = .{ .manga = &.{.{ .id = "s", .title = "Story" }} } };
+    var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io };
+    defer session.deinit();
+    var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    const before = h.findText("Story").?.bbox;
+    session.notify("Added to library");
+    const old_revision = session.status_revision;
+    try h.frame();
+    try h.expectText("Added to library");
+    try std.testing.expectEqual(before, h.findText("Story").?.bbox);
+    try h.advance(.fromMilliseconds(2000));
+    try h.expectNoText("Added to library");
+    session.setStatus("Cannot save library");
+    try h.post(h.root().handler(Root, .dismiss_status), old_revision);
+    try h.advance(.fromSeconds(3));
+    try h.expectText("Cannot save library");
+}

@@ -13,12 +13,15 @@ pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const Navigation = enum { library, updates, history, browse, more };
 pub const State = struct { storage_snapshot: ?storage.Snapshot = null, storage_revision: u32 = 0, storage_clearing: bool = false, more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, pointer_start: ?f.Vec2 = null, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage }, jump_chapter, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage }, jump_chapter, dismiss_status: u64, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
     switch (msg) {
-        .jump_chapter => try ctx.systemText(.{ .title = "Jump to chapter number or exact title", .initial = "" }, ctx.handler(.chapter_target)),
+        .jump_chapter => try ctx.systemText(.{ .title = "Jump to chapter number", .initial = "", .flags = .{ .numeric = true } }, ctx.handler(.chapter_target)),
+        .dismiss_status => |revision| if (session.status_revision == revision and session.status_transient) {
+            session.setStatus("");
+        },
         .chapter_target => |target| if (target) |value| {
             session.act(.{ .jump_chapter = value }) catch |err| {
                 if (err == error.ChapterNotFound) session.setStatus("Chapter not found in this list") else return err;
@@ -37,7 +40,7 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                 return;
             };
             state.storage_revision +%= 1;
-            session.setStatus("Online reading cache cleared. Downloaded chapters are kept.");
+            session.notify("Online reading cache cleared");
         },
         .storage_action => |action| {
             if (session.browser.busy != null or state.storage_clearing) return;
@@ -527,7 +530,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
     if (session.browser.busy) |job| {
         try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 16 } });
         defer ui.close();
-        try text(ui, if (job.request == .download) "Downloading chapter" else "Working on your reader", 18, 0);
+        try text(ui, operationTitle(job.request), 18, 0);
         if (job.request == .download) if (session.download_identity) |identity| {
             try downloadIdentity(ui, identity.series, identity.chapter);
         };
@@ -605,7 +608,21 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         .categories => try categoriesView(ui, model),
     }
     if (model.screen == .reader and model.reader_controls) try toolbar(ui, session, navigation);
-    if (session.status.len > 0 and model.screen != .reader and !session.download_error and session.browser.busy == null) try text(ui, session.status, 11, 0);
+    if (session.status.len > 0 and model.screen != .reader and !session.download_error and session.browser.busy == null) {
+        if (session.status_transient) {
+            const dismiss = on.bind(.{ .dismiss_status = session.status_revision });
+            try ui.after(.{ .status = session.status_revision }, .fromMilliseconds(2000), dismiss);
+            try ui.open("status-toast", .{
+                .floating = .{ .mode = .root, .parent_point = .left_bottom, .unit_point = .left_bottom, .offset = .init(12, -48) },
+                .layout = .{ .sizing = .{ .width = .fixed(@max(1, ui.core.viewport.x - 24)) }, .padding = .all(10) },
+                .background_color = .white,
+                .border = .{ .color = .black, .widths = .outside(1) },
+                .on_click = dismiss,
+            });
+            try ui.text(session.status, .{ .font_size = 13, .wrap_mode = .words });
+            ui.close();
+        } else try text(ui, session.status, 11, 0);
+    }
     if (session.cover_job != null) try ui.every("cover-poll", .fromMilliseconds(200), on.bind(.poll));
     if (navigation) |selected| try navigationBar(ui, selected, session.browser.busy == null);
 }

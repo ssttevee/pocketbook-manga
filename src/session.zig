@@ -41,6 +41,8 @@ pub const Session = struct {
     cover_attempt_next: usize = 0,
     status: []const u8 = "",
     owned_status: ?[]const u8 = null,
+    status_revision: u64 = 0,
+    status_transient: bool = false,
     activity: ?*const fn (bool) void = null,
     download_error: bool = false,
     download_canceled: bool = false,
@@ -226,12 +228,21 @@ pub const Session = struct {
         if (self.owned_status) |owned| self.model.gpa.free(owned);
         self.owned_status = null;
         self.status = message;
+        self.status_revision +%= 1;
+        self.status_transient = false;
+    }
+
+    pub fn notify(self: *Session, comptime message: []const u8) void {
+        self.setStatus(message);
+        self.status_transient = true;
     }
 
     fn ownStatus(self: *Session, message: []const u8) void {
         if (self.owned_status) |owned| self.model.gpa.free(owned);
         self.owned_status = message;
         self.status = message;
+        self.status_revision +%= 1;
+        self.status_transient = false;
     }
 
     /// Allocate before replacing: formatting may borrow the current status.
@@ -319,6 +330,7 @@ pub const Session = struct {
             if (job.request == .download) try self.downloadDetail(job, failure) else try self.model.gpa.dupe(u8, failure)
         else
             try self.model.gpa.dupe(u8, job.result.message));
+        self.status_transient = job.failure == null;
         if (job.failure != null) {
             if (self.browser.pending_chapter) |id| self.model.gpa.free(id);
             self.browser.pending_chapter = null;
@@ -859,6 +871,7 @@ pub const Session = struct {
         try self.connectForDownloads();
         const added = try engine.queue.enqueue(engine, ids.items, true);
         try self.formatStatus("{d} chapters queued", .{added});
+        self.status_transient = true;
     }
 
     /// Lays out the library and chapter lists as libtachi's views do: the
@@ -1014,7 +1027,7 @@ pub const Session = struct {
         settings.downloads.storage = if (sd_card) .sd_card else .internal;
         try engine.saveSettings(settings);
         try self.loadSettings();
-        self.setStatus("New downloads will use the selected storage. Existing downloads stay where they are.");
+        self.notify("Download destination updated");
     }
 
     /// The sort of the category the library shows.

@@ -293,3 +293,16 @@ test "image content respects later controls and scissor clipping on full and dam
         };
     }
 }
+
+test "jump opens InkView numeric keyboard" {
+    var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .screen = .chapters };
+    defer model.deinit();
+    var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io };
+    defer session.deinit();
+    try start(std.testing.allocator, std.testing.io, &session);
+    defer stop();
+    try tapText("Jump");
+    try std.testing.expectEqual(@as(usize, 1), fake.state.keyboards.items.len);
+    try std.testing.expectEqual(.numeric, fake.state.keyboards.items[0].flags.layout);
+    fake.keyboardResult(null);
+}

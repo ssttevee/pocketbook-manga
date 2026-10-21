@@ -74,7 +74,9 @@ test "storage inspection counts both volumes and cache clearing preserves downlo
     try std.testing.expectEqual(.sd_card, (try reopened.loadSettings(a)).downloads.storage);
     try h.click("Clear online reading cache");
     try h.runTasks();
-    try h.expectText("Online reading cache cleared. Downloaded chapters are kept.");
+    try h.expectText("Online reading cache cleared");
+    try h.advance(.fromMilliseconds(2000));
+    try h.expectNoText("Online reading cache cleared");
     try std.testing.expectEqualStrings("image", try tmp.dir.readFileAlloc(std.testing.io, "internal/downloads/chapter/1.png", a, .limited(100)));
     try std.testing.expectEqualStrings("second image", try tmp.dir.readFileAlloc(std.testing.io, "card/pocketmanga/downloads/chapter/2.png", a, .limited(100)));
     try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "internal/cache/chapters/pages/page.png", .{}));
