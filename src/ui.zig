@@ -1467,7 +1467,7 @@ fn reader(ui: *app.Ui, session: *const Session) !void {
             model.reader_presented = false;
             mutable.region_viewport = viewport;
         }
-        const request: regions.Request = .{
+        var request: regions.Request = .{
             .root = session.root,
             .relative = ch.pages[model.page],
             .chapter = ch.id,
@@ -1480,6 +1480,9 @@ fn reader(ui: *app.Ui, session: *const Session) !void {
             .engine = session.browser.engine,
             .next_pages = ch.pages[model.page + 1 .. @min(ch.pages.len, model.page + 3)],
         };
+        if (!mutable.regionCurrent()) _ = try mutable.acceptCachedRegion(request);
+        request.position = model.reader_position;
+        request.backward = model.reader_pending_end;
         try ui.task("reader-region", .{ .restart = .{ request.relative, request.chapter, request.page, request.epoch, viewport, @as(u64, @bitCast(request.position)), request.backward, request.rtl } }, regions.render, .{ service, request, on.handler(.region_frame) }, on.handler(.region_frame));
     };
     {

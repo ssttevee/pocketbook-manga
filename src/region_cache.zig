@@ -1,5 +1,5 @@
 //! Bounded display-resolution tiles. Only a serialized background reader task
-//! touches this service; the UI receives its own immutable viewport pixels.
+//! owns decoder state; the UI may compose verified, immutable disk tiles.
 const std = @import("std");
 const vp = @import("reader_viewport.zig");
 pub const Size = vp.Size;
@@ -41,6 +41,11 @@ pub const Service = struct {
     clock: u64 = 0,
     disk_scanned: bool = false,
     disk_written: usize = 0,
+    // Only this bounded metadata is shared with the UI. Tile files are published
+    // by atomic rename; a missing or pruned file simply makes the fast path miss.
+    prepared_mutex: std.Io.Mutex = .init,
+    prepared: [16]?struct { key: u64, geometry: vp.Geometry } = @splat(null),
+    prepared_next: usize = 0,
 
     pub fn init(gpa: std.mem.Allocator, backend: Backend, cache_dir: []const u8) Service {
         return .{ .gpa = gpa, .backend = backend, .cache_dir = cache_dir };
@@ -62,20 +67,7 @@ pub const Service = struct {
     pub fn frame(self: *Service, arena: std.mem.Allocator, io: std.Io, path: [:0]const u8, view: Size, progress: f64, backward: bool, rtl: bool, checkpoint: Checkpoint) !Frame {
         try checkpoint.run(io);
         if (view.width == 0 or view.height == 0 or view.width > 8192 or view.height > 8192) return error.InvalidViewport;
-        const stat = try std.Io.Dir.cwd().statFile(io, path, .{});
-        var hash = std.hash.Wyhash.init(0x504d524547494f4e);
-        hash.update(path);
-        hash.update(std.mem.asBytes(&stat.size));
-        // i96 has padding in its native representation. Hash only the twelve
-        // meaningful bytes so identical timestamps survive process recreation.
-        var timestamp: [12]u8 = undefined;
-        std.mem.writeInt(i96, &timestamp, stat.mtime.nanoseconds, .little);
-        hash.update(&timestamp);
-        hash.update(std.mem.asBytes(&view.width));
-        hash.update(std.mem.asBytes(&view.height));
-        // Include pipeline version: cached pixels must change with filters.
-        hash.update("gray-white-lanczos3-v1");
-        const key = hash.final();
+        const key = try imageKey(io, path, view);
         if (self.key != key) {
             self.clear();
             const source = try self.backend.probe(self.backend.context, path);
@@ -97,6 +89,17 @@ pub const Service = struct {
             self.geometry = geometry;
             self.key = key;
         }
+        try self.prepared_mutex.lock(io);
+        const slot = blk: {
+            for (self.prepared, 0..) |entry, i| if (entry) |value| {
+                if (value.key == key) break :blk i;
+            };
+            const next = self.prepared_next;
+            self.prepared_next = (next + 1) % self.prepared.len;
+            break :blk next;
+        };
+        self.prepared[slot] = .{ .key = key, .geometry = self.geometry.? };
+        self.prepared_mutex.unlock(io);
         var geometry = self.geometry.?;
         geometry.rtl = rtl;
         const position = if (backward) @as(f64, 1) else vp.clamp(progress);
@@ -113,19 +116,90 @@ pub const Service = struct {
             while (x < rect.x + rect.width) : (x += tile_size) {
                 try checkpoint.run(io);
                 const tile = try self.getTile(io, x, y, checkpoint);
-                const left = @max(x, rect.x);
-                const top = @max(y, rect.y);
-                const right = @min(x + tile.width, rect.x + rect.width);
-                const bottom = @min(y + tile.height, rect.y + rect.height);
-                for (top..bottom) |row| {
-                    const src = (row - y) * tile.width + left - x;
-                    const dst = (row - rect.y) * rect.width + left - rect.x;
-                    @memcpy(pixels[dst..][0 .. right - left], tile.pixels[src..][0 .. right - left]);
-                }
+                copyTile(tile, rect, pixels);
             }
         }
         try checkpoint.run(io);
         return .{ .source = self.source, .geometry = geometry, .position = position, .rect = rect, .pixels = pixels, .revision = std.hash.Wyhash.hash(key, std.mem.asBytes(&rect)) };
+    }
+
+    fn copyTile(tile: Tile, rect: Rect, pixels: []u8) void {
+        const left = @max(tile.x, rect.x);
+        const top = @max(tile.y, rect.y);
+        const right = @min(tile.x + tile.width, rect.x + rect.width);
+        const bottom = @min(tile.y + tile.height, rect.y + rect.height);
+        for (top..bottom) |row| {
+            const src = (row - tile.y) * tile.width + left - tile.x;
+            const dst = (row - rect.y) * rect.width + left - rect.x;
+            @memcpy(pixels[dst..][0 .. right - left], tile.pixels[src..][0 .. right - left]);
+        }
+    }
+
+    fn imageKey(io: std.Io, path: [:0]const u8, view: Size) !u64 {
+        const stat = try std.Io.Dir.cwd().statFile(io, path, .{});
+        var hash = std.hash.Wyhash.init(0x504d524547494f4e);
+        hash.update(path);
+        hash.update(std.mem.asBytes(&stat.size));
+        // i96 has padding in its native representation. Hash only the twelve
+        // meaningful bytes so identical timestamps survive process recreation.
+        var timestamp: [12]u8 = undefined;
+        std.mem.writeInt(i96, &timestamp, stat.mtime.nanoseconds, .little);
+        hash.update(&timestamp);
+        hash.update(std.mem.asBytes(&view.width));
+        hash.update(std.mem.asBytes(&view.height));
+        // Include pipeline version: cached pixels must change with filters.
+        hash.update("gray-white-lanczos3-v1");
+        return hash.final();
+    }
+
+    /// Never opens a decoder or waits for the background reader. Metadata is
+    /// snapshotted under tryLock; only complete, validated disk tiles are used.
+    /// The caller owns the resulting pixels, just as with frame().
+    pub fn cachedFrame(self: *Service, arena: std.mem.Allocator, io: std.Io, path: [:0]const u8, view: Size, progress: f64, backward: bool, rtl: bool) !?Frame {
+        if (view.width == 0 or view.height == 0 or view.width > 8192 or view.height > 8192) return null;
+        const key = imageKey(io, path, view) catch |err| switch (err) {
+            error.Canceled => return err,
+            else => return null,
+        };
+        const known = blk: {
+            if (!self.prepared_mutex.tryLock()) return null;
+            defer self.prepared_mutex.unlock(io);
+            for (self.prepared) |entry| if (entry) |value| {
+                if (value.key == key) break :blk value.geometry;
+            };
+            return null;
+        };
+        var geometry = known;
+        geometry.rtl = rtl;
+        const position = if (backward) @as(f64, 1) else vp.clamp(progress);
+        const rect = geometry.region(position);
+        const pixels = try arena.alloc(u8, @as(usize, rect.width) * rect.height);
+        var success = false;
+        defer if (!success) arena.free(pixels);
+        const scratch = try arena.alloc(u8, tile_size * tile_size);
+        defer arena.free(scratch);
+        var y = rect.y / tile_size * tile_size;
+        while (y < rect.y + rect.height) : (y += tile_size) {
+            var x = rect.x / tile_size * tile_size;
+            while (x < rect.x + rect.width) : (x += tile_size) {
+                const width = @min(tile_size, geometry.output.width - x);
+                const height = @min(tile_size, geometry.output.height - y);
+                const tile: Tile = .{ .x = x, .y = y, .width = width, .height = height, .pixels = scratch[0 .. @as(usize, width) * height], .used = 0 };
+                var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+                const tile_path = try std.fmt.bufPrint(&path_buf, "{s}/{x}-{d}-{d}.tile", .{ self.cache_dir, key, x, y });
+                if (!try readDisk(arena, io, tile_path, tile)) return null;
+                copyTile(tile, rect, pixels);
+            }
+        }
+        // A download/storage replacement during composition must not publish
+        // pixels from the old source, even if all its old tiles still exist.
+        const current_key = imageKey(io, path, view) catch |err| switch (err) {
+            error.Canceled => return err,
+            else => return null,
+        };
+        if (current_key != key) return null;
+        success = true;
+        return .{ .source = geometry.source, .geometry = geometry, .position = position, .rect = rect, .pixels = pixels, .revision = std.hash.Wyhash.hash(key, std.mem.asBytes(&rect)) };
     }
 
     /// Prepare one viewport in the shared bounded tile cache without retaining
@@ -199,7 +273,7 @@ pub const Service = struct {
         const tile: Tile = .{ .x = x, .y = y, .width = width, .height = height, .pixels = pixels, .used = self.clock };
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         const path = try std.fmt.bufPrint(&path_buf, "{s}/{x}-{d}-{d}.tile", .{ self.cache_dir, self.key.?, x, y });
-        if (!try self.readDisk(io, path, tile)) {
+        if (!try readDisk(self.gpa, io, path, tile)) {
             try checkpoint.run(io);
             try self.backend.read(self.backend.context, .{ .x = x, .y = y, .width = width, .height = height }, pixels, width);
             try checkpoint.run(io);
@@ -212,12 +286,12 @@ pub const Service = struct {
         self.tiles[index] = tile;
         return tile;
     }
-    fn readDisk(self: *Service, io: std.Io, path: []const u8, tile: Tile) !bool {
-        const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, self.gpa, .limited(tile.pixels.len + 17)) catch |err| switch (err) {
+    fn readDisk(gpa: std.mem.Allocator, io: std.Io, path: []const u8, tile: Tile) !bool {
+        const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(tile.pixels.len + 17)) catch |err| switch (err) {
             error.OutOfMemory, error.Canceled => return err,
             else => return false,
         };
-        defer self.gpa.free(bytes);
+        defer gpa.free(bytes);
         if (bytes.len != tile.pixels.len + 16 or !std.mem.eql(u8, bytes[0..4], "PMT1")) return false;
         if (std.mem.readInt(u16, bytes[4..6], .little) != tile.width or std.mem.readInt(u16, bytes[6..8], .little) != tile.height) return false;
         if (std.mem.readInt(u64, bytes[8..16], .little) != std.hash.Wyhash.hash(0, bytes[16..])) return false;

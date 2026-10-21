@@ -243,7 +243,10 @@ test "production codecs drive vertical and horizontal reader tasks and reject st
     // current frame with a failure or publish that future page as progress.
     try tmp.dir.rename("horizontal.png", tmp.dir, "held.png", std.testing.io);
     try h.clickAt(.init(25, 230));
-    try std.testing.expect(!session.regionCurrent());
+    // The next screenful was prepared before this input. Its pixels must be
+    // installed during this very frame, before any replacement task runs.
+    try std.testing.expect(session.regionCurrent());
+    try std.testing.expect(h.findText("Loading page…") == null);
     try std.testing.expect(!try session.acceptRegion(.{ .request = stale_request, .value = .{ .frame = .{
         .source = old_geometry.source,
         .geometry = old_geometry,
@@ -265,6 +268,11 @@ test "production codecs drive vertical and horizontal reader tasks and reject st
     try session.act(.{ .turn = 1 });
     try h.frame();
     try std.testing.expectEqual(@as(usize, 1), model.page);
+    // The same fast handoff applies across source pages and to the horizontal
+    // RTL entry viewport, without exposing an intermediate loading screen.
+    try std.testing.expect(session.regionCurrent());
+    try std.testing.expectEqual(lib.viewport.Axis.horizontal, model.reader_geometry.?.axis);
+    try std.testing.expect(h.findText("Loading page…") == null);
     try std.testing.expect(!model.readState(fixture.manga[0].chapters[0]).read);
     try h.runTasks();
     try std.testing.expect(session.regionCurrent());

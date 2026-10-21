@@ -322,3 +322,48 @@ test "prepared following pages reuse tiles in both axes after other pages and va
         }
     }
 }
+
+test "prepared viewports compose without decoding and reject stale or incomplete tiles" {
+    for ([_]cache.Size{ .{ .width = 1000, .height = 10000 }, .{ .width = 10000, .height = 1000 } }) |source| {
+        for ([_]bool{ false, true }) |rtl| {
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            const p = try paths(a, tmp.dir);
+            var fake: Fake = .{ .source = source };
+            var service = cache.Service.init(std.testing.allocator, fake.backend(), p.disk);
+            defer service.deinit();
+            const view: cache.Size = .{ .width = 343, .height = 464 };
+            try std.testing.expect(try service.cachedFrame(a, io, p.image, view, 0, false, rtl) == null);
+            try service.prepare(io, p.image, view, 0, rtl, .{});
+            try service.prepare(io, p.image, view, 1, rtl, .{});
+            const reads = fake.reads;
+            const opens = fake.opens;
+            const frame = (try service.cachedFrame(a, io, p.image, view, 0, false, rtl)).?;
+            try expectPixels(frame);
+            const backward = (try service.cachedFrame(a, io, p.image, view, 0, true, rtl)).?;
+            try expectPixels(backward);
+            try std.testing.expectEqual(@as(f64, 1), backward.position);
+            try std.testing.expectEqual(reads, fake.reads);
+            try std.testing.expectEqual(opens, fake.opens);
+            // The UI never waits for a metadata publisher, much less a decoder.
+            try service.prepared_mutex.lock(io);
+            const contended = try service.cachedFrame(a, io, p.image, view, 0, false, rtl);
+            service.prepared_mutex.unlock(io);
+            try std.testing.expect(contended == null);
+            try std.testing.expect(try service.cachedFrame(a, io, p.image, .{ .width = 344, .height = 464 }, 0, false, rtl) == null);
+            const x = frame.rect.x / cache.Service.tile_size * cache.Service.tile_size;
+            const y = frame.rect.y / cache.Service.tile_size * cache.Service.tile_size;
+            const tile = try std.fmt.allocPrint(a, "{s}/{x}-{d}-{d}.tile", .{ p.disk, service.key.?, x, y });
+            try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = tile, .data = "corrupt" });
+            try std.testing.expect(try service.cachedFrame(a, io, p.image, view, 0, false, rtl) == null);
+            try std.Io.Dir.cwd().deleteFile(io, tile);
+            try std.testing.expect(try service.cachedFrame(a, io, p.image, view, 0, false, rtl) == null);
+            try tmp.dir.writeFile(io, .{ .sub_path = "image", .data = "changed source" });
+            try std.testing.expect(try service.cachedFrame(a, io, p.image, view, 0, true, rtl) == null);
+            try std.testing.expectEqual(reads, fake.reads);
+        }
+    }
+}

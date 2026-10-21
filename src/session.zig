@@ -110,6 +110,21 @@ pub const Session = struct {
         self.region_drawn = null;
         if (self.region_service != null) self.image = null;
     }
+    /// Install a prepared viewport in this same UI frame. Decoder state stays
+    /// exclusively on the task thread; a cache miss follows the normal task.
+    pub fn acceptCachedRegion(self: *Session, request: Regions.Request) !bool {
+        const service = self.region_service orelse return false;
+        if (!tachi.library.safePath(request.relative)) return false;
+        var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+        defer arena.deinit();
+        const path = if (request.engine) |engine|
+            try engine.pagePath(arena.allocator(), request.relative)
+        else
+            try std.fs.path.join(arena.allocator(), &.{ request.root, request.relative });
+        const terminated = try arena.allocator().dupeSentinel(u8, path, 0);
+        const frame = try service.tiles.cachedFrame(arena.allocator(), self.io, terminated, request.viewport, request.position, request.backward, request.rtl) orelse return false;
+        return self.acceptRegion(.{ .request = request, .value = .{ .frame = frame } });
+    }
     pub fn acceptRegion(self: *Session, result: Regions.Result) !bool {
         const request = result.request;
         const model = self.model;
