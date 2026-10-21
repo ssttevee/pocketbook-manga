@@ -175,7 +175,7 @@ pub fn failedDownload(_: *tachi.Engine, job: *tachi.Job) !void {
     job.pages_total.store(3, .release);
     return error.NetworkDisconnected;
 }
-test "download failure stays visible with progress and resume instructions" {
+test "download failure stays visible with saved progress and no resume promise" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var engine: tachi.Engine = .init(arena.allocator(), std.testing.io, tachi.backend.none, .{ .dir = "." });
@@ -193,7 +193,7 @@ test "download failure stays visible with progress and resume instructions" {
     try std.testing.expect(session.download_error);
     try std.testing.expect(std.mem.indexOf(u8, session.status, "1/3") != null);
     try std.testing.expect(std.mem.indexOf(u8, session.status, "NetworkDisconnected") != null);
-    // The headline carries the outcome and the resume hint, so the detail repeats neither.
+    // The headline carries the outcome; the chapter row owns resumability.
     try std.testing.expect(std.mem.indexOf(u8, session.status, "Download failed") == null);
     try session.poll();
     try std.testing.expect(session.download_error);
@@ -201,9 +201,9 @@ test "download failure stays visible with progress and resume instructions" {
     var harness: @import("fabrum").app.testing.Harness(.{}, @import("ui.zig")) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{@import("fabrum").app.RootValue.of(&session)}, .widgets = .drawn });
     defer harness.deinit();
     try harness.frame();
-    try harness.expectText("Download failed - tap chapter to resume");
+    try harness.expectText("Download failed");
     try harness.expectText(session.status);
-    const label = harness.findText("Download failed - tap chapter to resume").?;
+    const label = harness.findText("Download failed").?;
     const detail = harness.findText(session.status).?;
     try std.testing.expect(detail.bbox.y + detail.bbox.h - label.bbox.y < 65);
     try std.testing.expect(harness.findElement(harness.root().element("series-title")) != null);
@@ -212,7 +212,7 @@ test "download failure stays visible with progress and resume instructions" {
     try std.testing.expect(!session.download_error);
     try std.testing.expect(!session.download_blocked);
     try std.testing.expectEqualStrings("", session.status);
-    try harness.expectNoText("Download failed - tap chapter to resume");
+    try harness.expectNoText("Download failed");
     try std.testing.expect(session.download_identity == null);
 }
 
@@ -277,8 +277,8 @@ test "downloading and cancellation keep the selected series and chapter" {
     session.browser.busy.?.cancel();
     try session.poll();
     try harness.frame();
-    try harness.expectText("Download canceled - tap chapter to resume");
-    try harness.expectText(book.title);
+    try harness.expectText("Download paused");
+    try std.testing.expectEqualStrings(book.title, session.download_identity.?.series);
     try harness.expectText(book.chapters[0].title);
     try std.testing.expect(std.mem.indexOf(u8, session.status, "4/12") != null);
 }
@@ -514,7 +514,7 @@ test "unsupported browser verification explains alternatives instead of offering
     defer h.deinit();
     try h.frame();
     try h.expectText("Cannot download from this source");
-    try h.expectNoText("Download failed - tap chapter to resume");
+    try h.expectNoText("Download failed");
     const detail = h.findText(session.status).?;
     try std.testing.expect(detail.bbox.h > 30);
     try std.testing.expect(detail.bbox.y + detail.bbox.h < 464);
@@ -651,4 +651,77 @@ test "entering reading releases a retained worker after background downloads fin
     try std.testing.expectEqual(1, fake.releases);
     try session.poll();
     try std.testing.expectEqual(1, fake.releases);
+}
+
+fn failedBeforePageList(_: *tachi.Engine, _: *tachi.Job) !void {
+    return error.NetworkDisconnected;
+}
+
+test "failure before the page list never invents saved page counts or resume advice" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = root });
+    engine.execute_fn = failedBeforePageList;
+    var model: lib.Model = .{ .gpa = a, .library = smoke.fixture, .screen = .chapters };
+    var session: Session = .{ .model = &model, .root = root, .io = std.testing.io };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    session.start(.{ .download = smoke.fixture.manga[0].chapters[0].id });
+    session.browser.busy.?.join();
+    try session.poll();
+    try std.testing.expectEqualStrings("NetworkDisconnected", session.status);
+    var h: @import("fabrum").app.testing.Harness(.{}, @import("ui.zig")) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{@import("fabrum").app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try h.expectText("Download failed");
+    try h.expectNoText("0/0 pages saved");
+    try h.expectNoText("tap chapter to resume");
+}
+
+fn savePartialAndWait(engine: *tachi.Engine, job: *tachi.Job) !void {
+    const a = job.arena.allocator();
+    const id = job.request.download;
+    const folder = try std.fmt.allocPrint(a, "downloads/{x}", .{std.hash.Wyhash.hash(0, id)});
+    var dir = try std.Io.Dir.cwd().openDir(engine.io, engine.options.dir, .{});
+    defer dir.close(engine.io);
+    try dir.createDirPath(engine.io, try std.fs.path.join(a, &.{ folder, "1" }));
+    try dir.writeFile(engine.io, .{ .sub_path = try std.fs.path.join(a, &.{ folder, "current-plan.json" }), .data = "{\"plan\":\"1\",\"total\":12}" });
+    for (1..4) |i| try dir.writeFile(engine.io, .{ .sub_path = try std.fmt.allocPrint(a, "{s}/1/{d:0>4}.png", .{ folder, i }), .data = "\x89PNG\r\n\x1a\nfixture" });
+    job.pages_done.store(3, .release);
+    job.pages_total.store(12, .release);
+    var waiting: std.Io.Event = .unset;
+    try waiting.wait(engine.io);
+}
+
+test "canceling a partial download refreshes its chapter row without leaving the series" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = root });
+    engine.execute_fn = savePartialAndWait;
+    const book: lib.Manga = .{ .id = "series", .title = "Story", .source_id = 42, .chapters = &.{.{ .id = "chapter", .title = "Chapter 1" }} };
+    var model: lib.Model = .{ .gpa = a, .library = .{ .manga = &.{book} }, .screen = .chapters };
+    var session: Session = .{ .model = &model, .root = root, .io = std.testing.io };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    try session.refreshRows();
+    try std.testing.expect(session.chapter_downloads[0] == null);
+    session.start(.{ .download = "chapter" });
+    while (session.browser.busy.?.pages_total.load(.acquire) == 0) try std.testing.io.sleep(.fromMilliseconds(1), .awake);
+    session.browser.busy.?.cancel();
+    try session.poll();
+    try std.testing.expectEqual(lib.Screen.chapters, model.screen);
+    try std.testing.expectEqual(@as(usize, 3), session.chapter_downloads[0].?.done);
+    var h: @import("fabrum").app.testing.Harness(.{}, @import("ui.zig")) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{@import("fabrum").app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try h.click("Dismiss");
+    try h.expectText("Unread · Download paused 3/12 · Tap to resume");
 }

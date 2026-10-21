@@ -84,7 +84,7 @@ test "interrupted chapters show saved page counts and jump dialog selects their 
     try h.click("Jump");
     try h.enterText("9");
     try h.expectText("Chapter 9");
-    try h.expectText("Unread · Resume 3/12");
+    try h.expectText("Unread · Download paused 3/12 · Tap to resume");
     try h.click("Jump");
     try h.enterText("100");
     try h.expectText("Chapter not found in this list");
@@ -136,7 +136,7 @@ test "chapter pagination leaves room for a wrapped download failure" {
     var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
     defer h.deinit();
     try h.frame();
-    try h.expectText("Unread · Resume 0/15");
+    try h.expectText("Unread · Download paused 0/15 · Tap to resume");
     const last = h.findText(chapters[model.pageRows() - 1].title).?;
     const pager = h.findText("Previous").?;
     try std.testing.expect(last.bbox.y + last.bbox.h <= pager.bbox.y);

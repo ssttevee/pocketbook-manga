@@ -536,7 +536,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
     if (model.screen != .reader) try toolbar(ui, session, navigation);
     if (session.download_error and session.browser.busy == null) {
         try ui.open("download-error", .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .all(10), .child_gap = 5 }, .border = .{ .color = .black, .widths = .outside(2) } });
-        try text(ui, if (session.download_blocked) "Cannot download from this source" else if (session.download_canceled) "Download canceled - tap chapter to resume" else "Download failed - tap chapter to resume", 15, 0);
+        try text(ui, if (session.download_blocked) "Cannot download from this source" else if (session.download_canceled) "Download paused" else "Download failed", 15, 0);
         if (session.download_identity) |identity| try text(ui, identity.chapter, 14, 0);
         if (session.download_blocked) try ui.text(session.status, .{ .font_size = 13, .wrap_mode = .words }) else try text(ui, session.status, 13, 0);
         try app.widgets.button(ui, "dismiss-download-error", .{ .label = "Dismiss", .on_click = on.bind(.dismiss_error) });
@@ -871,7 +871,7 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
                     const done = if (entry.pages_total > 0) entry.pages_done else if (saved) |p| p.done else 0;
                     const queued_total = if (entry.pages_total > 0) entry.pages_total else if (saved) |p| p.total else 0;
                     break :blk if (queued_total > 0) try ui.fmt("{s} {d}/{d}", .{ label, done, queued_total }) else label;
-                } else if (saved) |p| try ui.fmt("Resume {d}/{d}", .{ p.done, p.total }) else if (ch.downloaded()) "Downloaded" else "Not downloaded";
+                } else if (saved) |p| try ui.fmt("Download paused {d}/{d} · Tap to resume", .{ p.done, p.total }) else if (ch.downloaded()) "Downloaded" else "Not downloaded";
                 const progress = if (reading.len > 0) (if (saved != null or queued_entry != null or !state.started or state.page == 0) try ui.fmt("{s} · {s}", .{ reading, downloaded }) else reading) else downloaded;
                 try text(ui, title, 14, gray);
                 try ui.print(.{ .font_size = 10, .color = .gray(if (state.read) 130 else 90), .overflow = .ellipsis_end, .wrap_mode = .none }, "{s}{s}{s}{s}", .{

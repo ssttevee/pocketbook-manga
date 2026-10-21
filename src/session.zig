@@ -283,7 +283,8 @@ pub const Session = struct {
         const done = job.pages_done.load(.acquire);
         const total = job.pages_total.load(.acquire);
         if (std.mem.eql(u8, failure, "StorageUnavailable")) return self.model.gpa.dupe(u8, "The SD card is unavailable. Insert the original card to resume, or select internal storage for new downloads in More > Manage storage.");
-        if (self.download_canceled) return std.fmt.allocPrint(self.model.gpa, "{d}/{d} pages saved", .{ done, total });
+        if (self.download_canceled) return if (total > 0) std.fmt.allocPrint(self.model.gpa, "Download paused {d}/{d} · Tap to resume", .{ done, total }) else self.model.gpa.dupe(u8, "No pages were saved.");
+        if (total == 0) return if (self.download_blocked) std.fmt.allocPrint(self.model.gpa, "{s} {s}", .{ verification_explanation, verification_alternative }) else self.model.gpa.dupe(u8, failure);
         if (self.download_blocked) return std.fmt.allocPrint(self.model.gpa, "{d}/{d} pages saved. {s} {s}", .{ done, total, verification_explanation, verification_alternative });
         return std.fmt.allocPrint(self.model.gpa, "{d}/{d} pages saved. {s}", .{ done, total, failure });
     }
@@ -324,7 +325,11 @@ pub const Session = struct {
         self.browser.busy = null;
         var owned_job: ?*tachi.Job = job;
         defer if (owned_job) |owned| owned.deinit();
-        if (job.result.library_changed) try self.reloadLibrary();
+        if (job.result.library_changed) try self.reloadLibrary() else if (job.request == .download) {
+            // Partial files change without a library write, including cancellation.
+            // Refresh before returning on failure so the chapter can resume immediately.
+            try self.refreshRows();
+        }
         if (job.request == .add_store or job.request == .refresh_stores) try self.loadStores();
         if (job.request == .tracker and job.failure == null and job.request.tracker.operation == .login) {
             try self.loadTrackers();
