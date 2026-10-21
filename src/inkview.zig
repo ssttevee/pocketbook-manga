@@ -108,9 +108,9 @@ pub fn main(init: std.process.Init) !void {
     const library_name = std.c.getenv("INKVIEW_LIBRARY") orelse "libinkview.so";
     var image_library = try std.DynLib.open(std.mem.span(library_name));
     network_connect = image_library.lookup(@TypeOf(network_connect), "NetConnect") orelse return error.MissingNetworkApi;
-    power_guard = @import("power.zig").Guard.load(&image_library);
+    power_guard.guard = @import("power.zig").Guard.load(&image_library);
     session.activity = updatePower;
-    defer power_guard.update(false, 0);
+    defer power_guard.guard.update(false, 0);
     // The packaged binary itself can verify JNI and every required InkView
     // symbol without entering the hardware event loop. Nothing enables this
     // during normal launch; the firmware integration tests set the variable.
@@ -135,6 +135,7 @@ pub fn main(init: std.process.Init) !void {
     api.CloseApp = closeWithLifecycle;
     try ink.App(Root).run(gpa, io, api, .{}, .{
         .library = library_name,
+        .task_activity = updateTaskPower,
         .fonts = &.{.{ .name = "Go", .data = @embedFile("fonts/Go-Regular.ttf") }},
         .provide = &.{f.app.RootValue.of(&session)},
         // Back is routed through fabrum: chapter list -> library -> exit.
@@ -146,9 +147,12 @@ pub fn main(init: std.process.Init) !void {
     });
 }
 
-var power_guard: @import("power.zig").Guard = .{};
+var power_guard: @import("power.zig").Activity = .{};
 fn updatePower(active: bool) void {
-    power_guard.update(active, tachi.worker.tachi_now_ms());
+    power_guard.updateOnline(active, tachi.worker.tachi_now_ms());
+}
+fn updateTaskPower(active: bool) void {
+    power_guard.updateTasks(active, tachi.worker.tachi_now_ms());
 }
 var lifecycle_engine: ?*tachi.Engine = null;
 var lifecycle_worker: ?*tachi.worker.Client = null;

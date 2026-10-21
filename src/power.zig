@@ -9,7 +9,7 @@ pub const Guard = struct {
     stop: ?Sleep = null,
     postpone: ?Postpone = null,
     ban: ?Ban = null,
-    preventor: Preventor = .{ .name = "PocketManga online job", .forbidden = false },
+    preventor: Preventor = .{ .name = "PocketManga background work", .forbidden = false },
     active: bool = false,
     next_tick: u64 = 0,
     pub fn load(library: *std.DynLib) Guard {
@@ -36,6 +36,22 @@ pub const Guard = struct {
         if (self.postpone) |postpone| _ = postpone();
         if (!paired) if (self.ban) |ban| ban(10);
         self.next_tick = now + 5_000;
+    }
+};
+
+/// The event thread combines both sources so finishing one cannot release
+/// sleep prevention while the other still has background work.
+pub const Activity = struct {
+    guard: Guard = .{},
+    online: bool = false,
+    tasks: bool = false,
+    pub fn updateOnline(self: *Activity, active: bool, now: u64) void {
+        self.online = active;
+        self.guard.update(self.online or self.tasks, now);
+    }
+    pub fn updateTasks(self: *Activity, active: bool, now: u64) void {
+        self.tasks = active;
+        self.guard.update(self.online or self.tasks, now);
     }
 };
 
@@ -94,4 +110,26 @@ test "optional power symbols may be missing or unpaired" {
     fallback.update(false, 5_001);
     try std.testing.expect(!fallback.preventor.forbidden);
     try std.testing.expectEqual(2, Fake.bans);
+}
+
+test "online and decoder activity release sleep prevention only when both finish" {
+    Fake.starts = 0;
+    Fake.stops = 0;
+    Fake.ticks = 0;
+    var activity: Activity = .{ .guard = .{ .start = Fake.start, .stop = Fake.stop, .postpone = Fake.postpone } };
+    activity.updateOnline(true, 0);
+    activity.updateTasks(true, 1);
+    activity.updateOnline(false, 2);
+    try std.testing.expect(activity.guard.active);
+    try std.testing.expectEqual(@as(usize, 0), Fake.stops);
+    activity.updateTasks(false, 3);
+    try std.testing.expect(!activity.guard.active);
+    activity.updateTasks(true, 4);
+    activity.updateOnline(true, 5);
+    activity.updateTasks(false, 6);
+    try std.testing.expect(activity.guard.active);
+    activity.updateOnline(false, 7);
+    try std.testing.expect(!activity.guard.active);
+    try std.testing.expectEqual(@as(usize, 2), Fake.starts);
+    try std.testing.expectEqual(@as(usize, 2), Fake.stops);
 }

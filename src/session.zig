@@ -102,6 +102,7 @@ pub const Session = struct {
                 return false;
             },
             .frame => |frame| {
+                const accepted_at = std.Io.Clock.boot.now(self.io);
                 const pixels = blk: {
                     const owned = try model.gpa.dupe(u8, frame.pixels);
                     errdefer model.gpa.free(owned);
@@ -116,6 +117,7 @@ pub const Session = struct {
                 self.setStatus("");
                 self.recordProgress();
                 try self.saveDisplayPreferences();
+                if (result.ready_at) |ready_at| std.log.info("Reader region {s}: accepted delivery_ms={d} apply_ms={d}", .{ request.relative, ready_at.durationTo(accepted_at).toMilliseconds(), accepted_at.durationTo(std.Io.Clock.boot.now(self.io)).toMilliseconds() });
                 return true;
             },
         }

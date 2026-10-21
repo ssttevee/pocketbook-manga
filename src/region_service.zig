@@ -20,6 +20,7 @@ pub const Request = struct {
 };
 pub const Result = struct {
     request: Request,
+    ready_at: ?std.Io.Timestamp = null,
     value: union(enum) { frame: cache.Frame, failure: []const u8, prefetched },
 };
 const Adapter = struct {
@@ -65,6 +66,7 @@ fn checkpoint(context: ?*anyopaque) !void {
 
 pub fn render(task: *app.Task, service: *Service, request: Request, on_frame: app.Handler(anyerror!Result)) anyerror!Result {
     try task.checkCancel();
+    const started = std.Io.Clock.boot.now(task.io);
     if (!tachi.library.safePath(request.relative)) return error.UnsafePagePath;
     const path = if (request.engine) |engine|
         try engine.pagePath(task.gpa, request.relative)
@@ -79,10 +81,11 @@ pub fn render(task: *app.Task, service: *Service, request: Request, on_frame: ap
         return .{ .request = request, .value = .{ .failure = failure } };
     };
     try task.checkCancel();
-    std.log.info("Reader region {s}: {d},{d} {d}x{d} ready", .{ request.relative, frame.rect.x, frame.rect.y, frame.rect.width, frame.rect.height });
+    const ready_at = std.Io.Clock.boot.now(task.io);
+    std.log.info("Reader region {s}: {d},{d} {d}x{d} ready decode_ms={d}", .{ request.relative, frame.rect.x, frame.rect.y, frame.rect.width, frame.rect.height, started.durationTo(ready_at).toMilliseconds() });
     // Publish the viewport before speculative work; borrowed task pixels stay
     // alive until message delivery, and canceled generations are discarded.
-    try task.post(on_frame, @as(anyerror!Result, .{ .request = request, .value = .{ .frame = frame } }));
+    try task.post(on_frame, @as(anyerror!Result, .{ .request = request, .ready_at = ready_at, .value = .{ .frame = frame } }));
     service.tiles.prefetch(task.io, frame.geometry, frame.rect, .{ .context = task, .check = checkpoint }) catch |err| {
         if (err == error.Canceled) return err;
         // A failed speculative neighbor must not replace the visible viewport.
