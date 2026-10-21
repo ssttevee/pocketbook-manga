@@ -20,8 +20,12 @@ pub const Guard = struct {
             .ban = library.lookup(Ban, "BanSleep"),
         };
     }
+    /// A paired preventor remains active until stopped; BanSleep expires.
+    pub fn persistent(self: Guard) bool {
+        return self.start != null and self.stop != null;
+    }
     pub fn update(self: *Guard, active: bool, now: u64) void {
-        const paired = self.start != null and self.stop != null;
+        const paired = self.persistent();
         if (active != self.active) {
             self.active = active;
             if (paired) {

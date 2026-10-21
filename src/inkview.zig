@@ -136,6 +136,9 @@ pub fn main(init: std.process.Init) !void {
     try ink.App(Root).run(gpa, io, api, .{}, .{
         .library = library_name,
         .task_activity = updateTaskPower,
+        // The PB629 preventor holds until stopped. Older expiring sleep bans
+        // still need fallback ticks to renew protection during long decodes.
+        .task_poll_interval_ms = if (power_guard.guard.persistent()) null else 100,
         .fonts = &.{.{ .name = "Go", .data = @embedFile("fonts/Go-Regular.ttf") }},
         .provide = &.{f.app.RootValue.of(&session)},
         // Back is routed through fabrum: chapter list -> library -> exit.

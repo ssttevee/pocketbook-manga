@@ -1,7 +1,16 @@
 # Reader completion wake verification
 
-The production app keeps the 100 ms pending-task fallback and task sleep
-protection. This investigation does not establish that both are required.
+PocketManga disables periodic task polling on the PB629 and keeps task sleep
+protection until results are delivered and task cleanup completes. Physical
+testing on this reader supports completion-driven delivery while protected.
+The platform library retains its conservative 100 ms default for other hosts.
+PocketManga also retains fallback ticks on firmware without paired sleep
+preventors, because its alternative `BanSleep(10)` protection expires and must
+be renewed during long decodes. The tested PB629 reports both preventor symbols.
+
+The firmware's named preventor maintains its own three-second timer while a
+token is active. That keeps the normal event loop awake; it is retained. The
+removed timer is PocketManga's additional 100 ms task-completion poll.
 
 ## Verified firmware behavior
 
@@ -27,6 +36,31 @@ outstanding sleep request. It does not measure physical suspend or demonstrate
 that the existing local queue is insufficient while sleep protection is held.
 The transport harness and logs are temporary development artifacts under
 `/tmp/pocketmanga-ipc-wake/`; proprietary firmware is not part of the repository.
+
+## Physical PB629 results, 2026-10-21
+
+The valid run reported `GetSleepmode=1`, `IsUSBconnected=0`, and
+`QueryNetwork=2`: Wi-Fi hardware was present, with `NET_CONNECTED` clear.
+The first Wi-Fi-on attempt was replaced by this disconnected run.
+
+| Sleep protection | Trial | Worker elapsed | Completion delivery | Total | Host hard timers | Input |
+|---|---:|---:|---:|---:|---:|---|
+| Enabled | 1 | 3000 ms | 1 ms | 3001 ms | 0 | None |
+| Enabled | 2 | 3000 ms | 4 ms | 3005 ms | 0 | None |
+| Enabled | 3 | 3000 ms | 7 ms | 3007 ms | 0 | None |
+| Disabled | 1 | 27547 ms | 8 ms | 27556 ms | 1 | Yes |
+
+The protected run passed all three trials with ordinary `SendEvent` and no
+host periodic or safety hard timer. The unprotected control failed after user input;
+its three-second awake-clock wait consumed 27.5 seconds of boot-clock time,
+consistent with CPU suspension during the work. The immediate frame timer
+recorded after that intervention does not constitute an untouched completion.
+
+These results justify disabling PocketManga's periodic fallback while retaining
+the sleep guard. They do not establish that every firmware version or power
+state behaves the same way. Keep the guard active through result processing and
+cleanup: completion notifications cannot help while the worker itself is
+suspended.
 
 ## Physical test with polling disabled
 
@@ -62,6 +96,5 @@ timers that the sleep preventor itself may use.
 The optional **pocketmanga-wake-control** launcher repeats the test with the
 sleep guard disabled, logging to `wake-control.log`. It may require Back after
 fifteen seconds. Compare the guard-on and guard-off results with the logged
-sleep/USB/network state. Success in the guarded test would support removing
-periodic polling for this device/firmware; it does not prove behavior across all
-firmware versions or device power states.
+sleep/USB/network state. The guarded/control comparison should be repeated after changes to firmware
+or power handling; the recorded result applies to the tested device/firmware.

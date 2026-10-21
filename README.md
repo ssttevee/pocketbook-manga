@@ -50,7 +50,7 @@ zig-tachi/
 
 libtachi's bundled-CA option (`ca_file`, recorded in `patches/libtachi-ca-file.patch` and part of zig-tachi since `0406ed7`) keeps repository HTTPS verification independent of the device's system certificate paths.
 
-The region reader requires fabrum commit `4ff5f21` or later, which schedules frames when task cleanup can unblock a pending page, and libtachi commit `06d670c` or later for explicit region completion. Use fabrum-platform-inkview commit `ff23232` or later for the pending-task hard timer and activity callback. The app combines decoder and online activity to prevent sleep until background work finishes.
+The region reader requires fabrum commit `4ff5f21` or later, which schedules frames when task cleanup can unblock a pending page, and libtachi commit `06d670c` or later for explicit region completion. Use fabrum-platform-inkview commit `ff23232` or later for the pending-task hard timer and activity callback. The app combines decoder and online activity to prevent sleep until background work finishes. PB629 tests verified prompt completion delivery with that protection and no periodic polling, so PocketManga disables the fallback timer when paired sleep preventors are available; see [the measured results](docs/reader-wake.md).
 
 `build.zig.zon` points at `../zig-tachi`. Build its `tachi-host.jar` first with `zig build host` in that repository; the tools read it from `../zig-tachi/zig-out/lib`. On this workspace, use `/Users/steve/Programs/Zig/v0.17.0/zig`; the `zig` on PATH is 0.16.
 
