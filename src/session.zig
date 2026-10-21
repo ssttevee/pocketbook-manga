@@ -35,6 +35,14 @@ pub const Session = struct {
     covers: Covers = .{},
     /// Optional artwork never owns the foreground busy/status presentation.
     cover_job: ?*tachi.Job = null,
+    /// A persistent chapter download continues after its first page is shown.
+    read_download: ?*tachi.Job = null,
+    starting_read_download: bool = false,
+    queued_read: ?[]const u8 = null,
+    queued_read_pending: bool = false,
+    reader_download_done: usize = 0,
+    reader_download_total: usize = 0,
+    reader_download_failed: bool = false,
     /// Optional platform gate for background artwork requests.
     can_fetch_cover: ?*const fn (*Session) bool = null,
     cover_attempts: [64]?u64 = @splat(null),
@@ -291,9 +299,15 @@ pub const Session = struct {
     }
     pub fn updateActivity(self: *Session) void {
         const queue_running = if (self.browser.engine) |engine| engine.queue.running() else false;
-        if (self.activity) |activity| activity(queue_running or self.browser.loading_sources != null or (if (self.browser.busy) |job| !job.done.load(.acquire) else if (self.cover_job) |job| !job.done.load(.acquire) else false));
+        if (self.activity) |activity| activity(queue_running or self.read_download != null or self.browser.loading_sources != null or (if (self.browser.busy) |job| !job.done.load(.acquire) else if (self.cover_job) |job| !job.done.load(.acquire) else false));
     }
     pub fn start(self: *Session, request: tachi.engine.Request) void {
+        if (request == .download) if (self.read_download) |job| {
+            if (std.mem.eql(u8, job.request.download, request.download)) {
+                self.notify("This chapter is already downloading");
+                return;
+            }
+        };
         self.cancelCoverJob();
         // A new foreground operation can restore connectivity or source
         // credentials. Retry failed artwork after that explicit user action.
@@ -323,6 +337,7 @@ pub const Session = struct {
     pub fn poll(self: *Session) !void {
         defer self.updateActivity();
         self.pollCover();
+        try self.pollReadingDownload();
         if (self.browser.busy == null) if (self.browser.loading_sources) |job| {
             if (job.done.load(.acquire)) {
                 self.browser.busy = job;
@@ -330,11 +345,24 @@ pub const Session = struct {
             }
         };
         // Background downloads may have kept the worker alive when reading began.
-        if (self.model.screen == .reader and self.browser.busy == null and self.browser.loading_sources == null) if (self.browser.engine) |engine| {
+        if (self.model.screen == .reader and self.browser.busy == null and self.read_download == null and self.queued_read == null and self.browser.loading_sources == null) if (self.browser.engine) |engine| {
             if (!engine.queue.running() and engine.backend.warm()) engine.backend.release();
         };
         if (self.model.screen == .queue and self.browser.busy == null) try self.refreshFeed();
         const job = self.browser.busy orelse return;
+        if (job.request == .download and self.browser.pending_chapter != null) {
+            var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+            defer arena.deinit();
+            const states = try job.pageStates(arena.allocator());
+            if (try self.acceptDownloadPages(job.request.download, states, true)) {
+                self.read_download = job;
+                if (self.browser.pending_chapter) |id| self.model.gpa.free(id);
+                self.browser.pending_chapter = null;
+                self.browser.busy = null;
+                try self.pollReadingDownload();
+                return;
+            }
+        }
         if (!job.done.load(.acquire)) return;
         job.join();
         self.browser.busy = null;
@@ -555,6 +583,179 @@ pub const Session = struct {
         self.pending_add = null;
     }
 
+    /// Reuses a queued transfer rather than starting a second writer for its files.
+    pub fn startChapterReading(self: *Session, chapter: []const u8) !void {
+        self.starting_read_download = true;
+        defer self.starting_read_download = false;
+        if (self.queued_read) |old| self.model.gpa.free(old);
+        self.queued_read = null;
+        self.queued_read_pending = false;
+        self.reader_download_failed = false;
+        if (self.read_download) |job| {
+            if (std.mem.eql(u8, job.request.download, chapter)) {
+                var snapshot: std.heap.ArenaAllocator = .init(self.model.gpa);
+                defer snapshot.deinit();
+                _ = try self.acceptDownloadPages(chapter, try job.pageStates(snapshot.allocator()), true);
+                return;
+            }
+        }
+        const engine = self.browser.engine orelse return error.RuntimeNotConfigured;
+        var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+        defer arena.deinit();
+        for (try engine.queue.snapshot(engine, arena.allocator())) |entry| {
+            if (!std.mem.eql(u8, entry.chapter_id, chapter)) continue;
+            if (entry.failure) |failure| if (browserVerificationRequired(failure)) {
+                self.setStatus(verification_explanation ++ " " ++ verification_alternative);
+                return;
+            };
+            const opened = try self.openSavedDownload(arena.allocator(), chapter);
+            self.connectForDownloads() catch |err| {
+                if (!opened) return err;
+                self.reader_download_failed = true;
+                try self.formatStatus("Download paused: {s}", .{@errorName(err)});
+                return;
+            };
+            const id = try self.model.gpa.dupe(u8, chapter);
+            errdefer self.model.gpa.free(id);
+            try engine.queue.start(engine);
+            self.queued_read = id;
+            self.queued_read_pending = !opened;
+            if (!opened) self.setStatus("Waiting for chapter download…");
+            try self.pollReadingDownload();
+            return;
+        }
+        if (self.read_download != null) {
+            try self.connectForDownloads();
+            _ = try engine.queue.enqueue(engine, &.{chapter}, false);
+            try engine.queue.start(engine);
+            self.queued_read = try self.model.gpa.dupe(u8, chapter);
+            self.queued_read_pending = true;
+            self.setStatus("Waiting for chapter download…");
+            return;
+        }
+        const opened = try self.openSavedDownload(arena.allocator(), chapter);
+        if (!opened) try self.browser.setPendingChapter(self.model.gpa, chapter);
+        self.start(.{ .download = chapter });
+        if (opened) {
+            self.read_download = self.browser.busy;
+            self.browser.busy = null;
+            if (self.read_download == null) self.reader_download_failed = true;
+        }
+    }
+
+    fn openSavedDownload(self: *Session, a: std.mem.Allocator, chapter: []const u8) !bool {
+        const engine = self.browser.engine orelse return false;
+        const target = try engine.downloadTarget(a, chapter);
+        const pages = try tachi.downloads.resumePages(a, self.io, target.dir, "downloads", chapter) orelse return false;
+        const states = try a.alloc(tachi.Job.PageState, pages.len);
+        for (pages, states) |page, *state| state.* = if (page.len == 0) .loading else .{ .ready = if (target.sd_card) try std.fmt.allocPrint(a, "sdcard/{s}", .{page}) else page };
+        return self.acceptDownloadPages(chapter, states, true);
+    }
+
+    fn acceptDownloadPages(self: *Session, chapter_id: []const u8, states: []const tachi.Job.PageState, open: bool) !bool {
+        if (states.len == 0 or self.model.manga >= self.model.library.manga.len) return false;
+        var chapter_index: ?usize = null;
+        for (self.model.library.manga[self.model.manga].chapters, 0..) |chapter, index| {
+            if (std.mem.eql(u8, chapter.id, chapter_id)) {
+                chapter_index = index;
+                break;
+            }
+        }
+        const index = chapter_index orelse return false;
+        const chapter = self.model.library.manga[self.model.manga].chapters[index];
+        const target = @min(self.model.readState(chapter).page, states.len - 1);
+        if (open and states[target] != .ready) return false;
+        const reading = self.model.screen == .reader and self.model.current() != null and std.mem.eql(u8, self.model.current().?.id, chapter_id);
+        if (!open and !reading) return false;
+        var changed = self.model.online_pages.len != states.len or self.model.online_chapter == null or !std.mem.eql(u8, self.model.online_chapter.?, chapter_id);
+        if (!changed) for (states, self.model.online_pages) |state, old| {
+            const path = if (state == .ready) state.ready else "";
+            if (!std.mem.eql(u8, path, old)) {
+                changed = true;
+                break;
+            }
+        };
+        if (changed) {
+            var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+            errdefer arena.deinit();
+            const a = arena.allocator();
+            const pages = try a.alloc([]const u8, states.len);
+            for (states, pages) |state, *page| page.* = try a.dupe(u8, if (state == .ready) state.ready else "");
+            const id = try a.dupe(u8, chapter_id);
+            const newly_ready = reading and self.model.page < pages.len and pages[self.model.page].len > 0 and (self.model.page >= self.model.online_pages.len or self.model.online_pages[self.model.page].len == 0);
+            if (self.online_arena) |*old| old.deinit();
+            self.online_arena = arena;
+            self.model.online_chapter = id;
+            self.model.online_pages = pages;
+            if (newly_ready) {
+                self.region_epoch +%= 1;
+                self.clearRegionImage();
+                if (self.load_image) |load| try load(self, pages[self.model.page]);
+            }
+        }
+        self.reader_download_failed = false;
+        self.reader_download_total = states.len;
+        self.reader_download_done = 0;
+        for (states) |state| if (state == .ready) {
+            self.reader_download_done += 1;
+        };
+        if (open) try self.act(.{ .read = index });
+        return true;
+    }
+
+    fn pollReadingDownload(self: *Session) !void {
+        if (self.read_download) |job| {
+            var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+            defer arena.deinit();
+            _ = try self.acceptDownloadPages(job.request.download, try job.pageStates(arena.allocator()), false);
+            if (job.done.load(.acquire)) {
+                job.join();
+                self.read_download = null;
+                defer job.deinit();
+                if (job.result.library_changed) try self.reloadLibrary() else try self.refreshRows();
+                if (job.failure) |failure| {
+                    self.reader_download_failed = true;
+                    if (browserVerificationRequired(failure)) self.setStatus(verification_explanation ++ " " ++ verification_alternative) else try self.formatStatus("Download stopped: {s}", .{failure});
+                }
+            }
+        }
+        if (self.queued_read) |id| {
+            const engine = self.browser.engine orelse return;
+            var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
+            defer arena.deinit();
+            const a = arena.allocator();
+            if (try engine.queue.chapterPages(engine, a, id)) |states| {
+                if (try self.acceptDownloadPages(id, states, self.queued_read_pending)) self.queued_read_pending = false;
+            } else {
+                const entries = try engine.queue.snapshot(engine, a);
+                for (entries) |entry| if (std.mem.eql(u8, entry.chapter_id, id)) {
+                    self.reader_download_done = entry.pages_done;
+                    self.reader_download_total = entry.pages_total;
+                    if (entry.status != .failed and engine.queue.running()) return;
+                    self.reader_download_failed = true;
+                    if (entry.failure) |failure| {
+                        if (browserVerificationRequired(failure)) self.setStatus(verification_explanation ++ " " ++ verification_alternative) else try self.formatStatus("Download stopped: {s}", .{failure});
+                    }
+                    self.model.gpa.free(id);
+                    self.queued_read = null;
+                    self.queued_read_pending = false;
+                    return;
+                };
+                // Queue completion commits permanent paths before removing the entry.
+                try self.reloadLibrary();
+                if (self.queued_read_pending) {
+                    for (self.model.library.manga[self.model.manga].chapters, 0..) |chapter, index| if (std.mem.eql(u8, chapter.id, id)) {
+                        try self.act(.{ .read = index });
+                        break;
+                    };
+                }
+                self.model.gpa.free(id);
+                self.queued_read = null;
+                self.queued_read_pending = false;
+            }
+        }
+    }
+
     /// Opens a chapter read online with the pages libtachi loaded.
     fn openOnline(self: *Session, chapter_id: []const u8, pages: []const []const u8) !void {
         const model = self.model;
@@ -698,6 +899,10 @@ pub const Session = struct {
             .bookmark => _ = try engine.setBookmark(one, true),
             .unbookmark => _ = try engine.setBookmark(one, false),
             .download => {
+                if (self.read_download) |job| if (std.mem.eql(u8, job.request.download, chapter_id)) {
+                    self.notify("This chapter is already downloading");
+                    return;
+                };
                 try self.connectForDownloads();
                 _ = try engine.queue.enqueue(engine, one, true);
             },
@@ -900,7 +1105,10 @@ pub const Session = struct {
         if (model.manga >= model.library.manga.len) return;
         var ids: std.ArrayList([]const u8) = .empty;
         defer ids.deinit(model.gpa);
-        for (model.library.manga[model.manga].chapters) |ch| if (!model.readState(ch).read and ch.pages.len == 0) try ids.append(model.gpa, ch.id);
+        for (model.library.manga[model.manga].chapters) |ch| {
+            if (self.read_download) |job| if (std.mem.eql(u8, job.request.download, ch.id)) continue;
+            if (!model.readState(ch).read and ch.pages.len == 0) try ids.append(model.gpa, ch.id);
+        }
         try self.connectForDownloads();
         const added = try engine.queue.enqueue(engine, ids.items, true);
         try self.formatStatus("{d} chapters queued", .{added});
@@ -982,6 +1190,11 @@ pub const Session = struct {
         self.covers.deinit(self.model.gpa);
         if (self.owned_status) |owned| self.model.gpa.free(owned);
         self.clearDownloadIdentity();
+        if (self.read_download) |job| {
+            job.cancel();
+            job.deinit();
+        }
+        if (self.queued_read) |id| self.model.gpa.free(id);
         self.browser.deinit(self.model.gpa);
         if (self.activity) |activity| activity(false);
         if (self.library_arena) |*arena| arena.deinit();
@@ -1079,6 +1292,10 @@ pub const Session = struct {
         return .decode(self.settings.library.sort);
     }
     pub fn act(self: *Session, action: lib.Action) !void {
+        switch (action) {
+            .back, .feed, .help, .settings, .open, .open_chapter, .menu => self.queued_read_pending = false,
+            else => {},
+        }
         const before = self.model.current();
         const old_page = self.model.page;
         const old_screen = self.model.screen;
@@ -1119,12 +1336,15 @@ pub const Session = struct {
             self.download_error = false;
             self.clearDownloadIdentity();
             // Reading needs no extensions: let a worker give its memory back.
-            if (self.browser.busy == null and self.browser.loading_sources == null) if (self.browser.engine) |engine| {
+            if (!self.starting_read_download and self.browser.busy == null and self.read_download == null and self.queued_read == null and self.browser.loading_sources == null) if (self.browser.engine) |engine| {
                 if (!engine.queue.running()) engine.backend.release();
             };
             if (self.load_image) |load| {
                 const path = self.model.current().?.pages[self.model.page];
-                load(self, path) catch |err| {
+                if (path.len == 0) {
+                    self.clearRegionImage();
+                    self.image = null;
+                } else load(self, path) catch |err| {
                     self.image = null;
                     try self.formatStatus("Cannot open page: {s}", .{@errorName(err)});
                 };

@@ -211,7 +211,7 @@ pub const Model = struct {
     /// Marks the page now shown, completing the chapter only at the final edge.
     fn remember(self: *Model) !void {
         const ch = self.current() orelse return;
-        if (ch.pages.len == 0) return;
+        if (ch.pages.len == 0 or ch.pages[self.page].len == 0) return;
         const old = self.readState(ch);
         const state: ReadState = .{ .page = @intCast(self.page), .read = old.read or (self.page + 1 == ch.pages.len and self.readerAtEnd() and (!self.reader_requires_presentation or self.reader_presented)), .started = true };
         if (old.page == state.page and old.read == state.read and old.started) return;
@@ -291,7 +291,7 @@ pub const Model = struct {
                 if (self.screen != .reader) return;
                 const ch = self.current() orelse return;
                 if (ch.pages.len == 0) return;
-                if (self.region_reader) {
+                if (self.region_reader and ch.pages[self.page].len > 0) {
                     const geometry = self.reader_geometry orelse return;
                     if (geometry.step(self.reader_position, delta)) |position| {
                         if (position != self.reader_position) self.reader_presented = false;

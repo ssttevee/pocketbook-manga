@@ -272,15 +272,17 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                 .open_chapter => |p| p,
                 else => null,
             };
-            // A chapter not downloaded yet is downloaded first, then opened.
+            // Start reading saved pages while the remaining download continues.
             if (pick) |p| if (p.manga < session.model.library.manga.len) {
                 const book = session.model.library.manga[p.manga];
                 if (p.chapter < book.chapters.len) {
                     const chapter = book.chapters[p.chapter];
                     if (chapter.pages.len == 0 and chapter.remote != null) {
                         session.model.manga = p.manga;
-                        try session.browser.setPendingChapter(session.model.gpa, chapter.id);
-                        session.start(.{ .download = chapter.id });
+                        session.startChapterReading(chapter.id) catch |err| {
+                            session.reader_download_failed = true;
+                            if (err == error.StorageUnavailable) session.setStatus("Insert the SD card holding this chapter to resume its download.") else try session.formatStatus("Cannot start chapter: {s}", .{@errorName(err)});
+                        };
                         return;
                     }
                 }
@@ -546,7 +548,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
     session.beginCoverFrame();
     const model = session.model;
     const on = ui.messages(Root);
-    if (session.browser.busy != null or session.browser.loading_sources != null) try ui.every("network-poll", .fromMilliseconds(200), on.bind(.poll)) else if (model.screen == .queue or (if (session.browser.engine) |engine| engine.queue.running() else false)) try ui.every("queue-poll", .fromMilliseconds(2000), on.bind(.poll));
+    if (session.browser.busy != null or session.read_download != null or session.queued_read != null or session.browser.loading_sources != null) try ui.every("network-poll", .fromMilliseconds(200), on.bind(.poll)) else if (model.screen == .queue or (if (session.browser.engine) |engine| engine.queue.running() else false)) try ui.every("queue-poll", .fromMilliseconds(2000), on.bind(.poll));
     if (!state.focused) try ui.after("initial-focus", .fromMilliseconds(0), on.bind(.focus));
     try ui.open("screen", .{
         .layout = .{ .sizing = .grow(.{}), .axis = .y },
@@ -1448,7 +1450,7 @@ fn reader(ui: *app.Ui, session: *const Session) !void {
     const model = session.model;
     const ch = model.current() orelse return;
     const on = ui.messages(Root);
-    if (session.region_service) |service| {
+    if (session.region_service) |service| if (ch.pages[model.page].len > 0) {
         const mutable = @constCast(session);
         // Controls overlay the page, so revealing them never resizes or decodes it again.
         const viewport: lib.viewport.Size = .{
@@ -1474,7 +1476,7 @@ fn reader(ui: *app.Ui, session: *const Session) !void {
             .next_pages = ch.pages[model.page + 1 .. @min(ch.pages.len, model.page + 3)],
         };
         try ui.task("reader-region", .{ .restart = .{ request.relative, request.chapter, request.page, request.epoch, viewport, @as(u64, @bitCast(request.position)), request.backward, request.rtl } }, regions.render, .{ service, request, on.handler(.region_frame) }, on.handler(.region_frame));
-    }
+    };
     {
         try ui.open("page", .{ .layout = .{ .sizing = .grow(.{}), .child_alignment = .center }, .background_color = .white, .on_pointer = on.handler(.pointer) });
         defer ui.close();
@@ -1504,6 +1506,8 @@ fn reader(ui: *app.Ui, session: *const Session) !void {
                 } else try ui.print(.{ .font_size = 12 }, "{d} / {d}", .{ model.page + 1, ch.pages.len });
             } else try ui.print(.{ .font_size = 12 }, "{d} / {d}", .{ model.page + 1, ch.pages.len });
         }
+        if (session.reader_download_total > 0 and session.reader_download_done < session.reader_download_total and session.model.online_chapter != null and std.mem.eql(u8, session.model.online_chapter.?, ch.id))
+            try ui.print(.{ .font_size = 10 }, "{s} {d}/{d}", .{ if (session.reader_download_failed) "Paused" else "DL", session.reader_download_done, session.reader_download_total });
         ui.spacer();
         try button(ui, "right-page", if (model.prefs.rtl) "Prev" else "Next", .{ .turn = if (model.prefs.rtl) -1 else 1 });
         if (model.page + 1 == ch.pages.len and model.readerAtEnd() and (session.region_service == null or session.regionCurrent()) and session.next_chapter != null)
