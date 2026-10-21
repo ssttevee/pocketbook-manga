@@ -13,7 +13,7 @@ pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const Navigation = enum { library, updates, history, browse, more };
 pub const State = struct { storage_snapshot: ?storage.Snapshot = null, storage_revision: u32 = 0, storage_clearing: bool = false, more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, pointer_start: ?f.Vec2 = null, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage, series }, jump_chapter, jump_page, page_target: ?[]const u8, dismiss_error, dismiss_status: u64, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage, series }, jump_chapter, jump_page, page_target: ?[]const u8, dismiss_error, dismiss_status: u64, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, library_sort, library_sort_choice: ?usize, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
@@ -120,6 +120,18 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
             if (session.browser.busy == null) ctx.focus("screen");
         },
         .library_grid => try session.act(.library_grid),
+        .library_sort => if (session.browser.busy == null) {
+            var items: [library_sort_modes.len]app.platform.MenuItem = undefined;
+            for (library_sort_modes, &items, 0..) |mode, *item, i| item.* = .{ .title = sortLabel(mode), .id = i };
+            try ctx.menu(.{ .items = &items, .at = .init(12, 90) }, ctx.handler(.library_sort_choice));
+        },
+        .library_sort_choice => |choice| if (choice) |i| {
+            if (session.browser.busy == null and i < library_sort_modes.len) {
+                session.setLibrarySort(library_sort_modes[i]) catch |err| {
+                    try session.formatStatus("Sort not saved: {s}", .{@errorName(err)});
+                };
+            }
+        },
         .reading_settings => {
             state.more_root = false;
             state.reading_from_more = true;
@@ -411,7 +423,7 @@ fn rootNavigation(screen: lib.Screen, more_root: bool) ?Navigation {
 
 fn navigationBar(ui: *app.Ui, selected: Navigation, enabled: bool) !void {
     try ui.open("bottom-navigation", .{
-        .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(58) }, .padding = .init(4, 4, 4, 4), .child_alignment = .center },
+        .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fit(.{ .min = 58, .max = 58 }) }, .padding = .init(4, 4, 4, 4), .child_alignment = .center },
         .background_color = .gray(247),
         .border = .{ .color = .gray(220), .widths = .{ .top = 1 } },
     });
@@ -419,7 +431,7 @@ fn navigationBar(ui: *app.Ui, selected: Navigation, enabled: bool) !void {
     inline for (std.meta.tags(Navigation)) |destination| {
         const active = destination == selected;
         try ui.open(@tagName(destination), .{
-            .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .grow(.{}) }, .axis = .y, .child_gap = 3, .child_alignment = .center },
+            .layout = .{ .sizing = .{ .width = .fixed(@max(0, ui.core.viewport.x - 8) / 5), .height = .fixed(50) }, .axis = .y, .child_gap = 3, .child_alignment = .center },
             .on_click = if (enabled) ui.messages(Root).bind(.{ .navigate = destination }) else null,
             .focusable = enabled,
         });
@@ -511,7 +523,7 @@ fn moreView(ui: *app.Ui) !void {
 
 fn moreRow(ui: *app.Ui, key: anytype, label: []const u8, action: app.Action) !void {
     try ui.open(key, .{
-        .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(32) }, .padding = .init(8, 8, 0, 0), .child_alignment = .center_left },
+        .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .grow(.{ .min = 24, .max = 32 }) }, .padding = .init(8, 8, 0, 0), .child_alignment = .center_left },
         .background_color = if (ui.pressed(key)) .gray(218) else .white,
         .on_click = action,
         .focusable = true,
@@ -696,6 +708,10 @@ fn toolbar(ui: *app.Ui, session: *const Session, navigation: ?Navigation) !void 
             .upcoming => "Upcoming",
         }, 22, 0);
         ui.spacer();
+        if (model.screen == .library and !session.storage_managing) {
+            if (model.library.manga.len > 0) try onlineButton(ui, "update-library", "Update", .update_all);
+            try app.widgets.searchField(ui, "query", .{ .text = model.query_text, .placeholder = "Search library", .on_change = ui.messages(Root).handler(.query), .sizing = .{ .width = .fixed(140) } });
+        }
         if (navigation == null and model.screen != .settings and session.browser.busy == null) try button(ui, "settings", "Aa", .settings);
     }
 }
@@ -735,6 +751,8 @@ fn storageView(ui: *app.Ui, session: *const Session, state: *const State) !void 
     try app.widgets.button(ui, "storage-clear-cache", .{ .label = if (state.storage_clearing) "Clearing cache..." else "Clear online reading cache", .enabled = !state.storage_clearing and !engine.queue.running(), .on_click = on.bind(.{ .storage_action = .clear_cache }) });
 }
 
+const library_sort_modes = [_]tachi.views.SortMode{ .alphabetical, .last_read, .date_added, .unread_count, .total_chapters, .latest_chapter };
+
 fn sortLabel(mode: tachi.views.SortMode) []const u8 {
     return switch (mode) {
         .alphabetical => "Alphabetical",
@@ -759,9 +777,11 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
             {
                 try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 8, .child_alignment = .center_left } });
                 defer ui.close();
-                try app.widgets.searchField(ui, "query", .{ .text = model.query_text, .placeholder = "Search library", .on_change = on.handler(.query), .sizing = .{ .width = .fixed(160) } });
-                if (model.library.manga.len > 0) try onlineButton(ui, "update-library", "Update", .update_all);
-                try app.widgets.button(ui, "library-layout", .{ .label = if (model.prefs.library_grid) "List" else "Grid", .on_click = on.bind(.library_grid) });
+                const sort = ui.use(Session).currentSort();
+                try app.widgets.button(ui, "library-sort", .{ .label = try ui.fmt("Sort: {s}", .{sortLabel(sort.mode)}), .sizing = .{ .height = .fixed(34) }, .on_click = on.bind(.library_sort) });
+                try app.widgets.button(ui, "library-sort-direction", .{ .label = if (sort.ascending) "Asc" else "Desc", .sizing = .{ .width = .fixed(52), .height = .fixed(34) }, .on_click = on.bind(.{ .setting = .sort_ascending }) });
+                ui.spacer();
+                try app.widgets.button(ui, "library-layout", .{ .label = if (model.prefs.library_grid) "List" else "Grid", .sizing = .{ .height = .fixed(34) }, .on_click = on.bind(.library_grid) });
             }
             if (model.categories.len > 1) {
                 try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 12, .child_alignment = .center_left }, .border = .{ .color = .gray(220), .widths = .{ .bottom = 1 } } });
@@ -781,19 +801,6 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
                 }
                 ui.spacer();
                 if (first + 3 < model.categories.len) try app.widgets.button(ui, "next-category", .{ .label = ">", .on_click = on.bind(.{ .act = @as(lib.Action, .{ .category = 1 }) }) });
-            }
-            {
-                const sort = ui.use(Session).currentSort();
-                try ui.open("library-sort-controls", .{ .layout = .{ .child_gap = 10, .child_alignment = .center_left } });
-                defer ui.close();
-                try ui.open("library-sort", .{ .on_click = on.bind(.{ .setting = .sort_mode }) });
-                try ui.print(.{ .font_size = 12 }, "Sort: {s}", .{sortLabel(sort.mode)});
-                ui.close();
-                try ui.open("library-sort-direction", .{ .on_click = on.bind(.{ .setting = .sort_ascending }) });
-                try ui.text(if (sort.ascending) "Asc" else "Desc", .{ .font_size = 12 });
-                ui.close();
-                ui.spacer();
-                try ui.print(.{ .font_size = 11, .color = .gray(90) }, "{d} titles", .{count});
             }
         } else {
             const manga = model.library.manga[model.manga];
@@ -877,14 +884,8 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
             if (is_library) {
                 const manga = model.library.manga[i];
                 const counts = manga.counts();
-                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(30) }, .axis = .y } });
-                const style: f.layout.text.Style = .{ .font_size = 12, .font_weight = .bold, .wrap_mode = .words, .overflow = .ellipsis_end };
-                const lines = try ui.core.make_lines(ui.core, title, style, @max(1, ui.core.viewport.x - 68));
-                if (lines.len > 2) {
-                    const single = style.with(.{ .wrap_mode = .none });
-                    try ui.text(title[0..lines[0].end], single);
-                    try ui.text(title[lines[1].start..], single);
-                } else try ui.text(title, style);
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(15) } } });
+                try text(ui, title, 12, 0);
                 ui.close();
                 try ui.print(.{ .font_size = 10, .color = .gray(90) }, "{d} unread  ·  {s}", .{ counts.unread, manga.author });
             } else {
@@ -967,7 +968,7 @@ fn libraryGrid(ui: *app.Ui, model: *const lib.Model) !void {
                 });
                 defer ui.close();
                 {
-                    try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(148), .height = .fixed(190) }, .child_alignment = .center }, .background_color = .gray(238), .corner_radius = .uniform(4) });
+                    try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(148), .height = .fixed(178) }, .child_alignment = .center }, .background_color = .gray(238), .corner_radius = .uniform(4) });
                     defer ui.close();
                     if (session.coverImage(manga)) |image| ui.content(&image.content) else {
                         try ui.open(null, .{ .layout = .{ .axis = .y, .child_alignment = .center, .child_gap = 4 } });
@@ -992,8 +993,13 @@ fn libraryGrid(ui: *app.Ui, model: *const lib.Model) !void {
                 if (counts.unread > 0) try ui.print(.{ .font_size = 10, .color = .black }, "{d} unread", .{counts.unread});
                 if (counts.downloaded > 0) try ui.print(.{ .font_size = 10, .color = .gray(80) }, "{d} saved", .{counts.downloaded});
                 ui.spacer();
-                try ui.open(.{ .menu = i }, .{
-                    .layout = .{ .sizing = .{ .width = .fixed(24), .height = .fixed(20) }, .child_alignment = .center },
+                const menu_key = .{ .menu = i };
+                try ui.open(menu_key, .{
+                    .layout = .{ .sizing = .{ .width = .fixed(40), .height = .fixed(32) }, .child_alignment = .center },
+                    .background_color = if (ui.pressed(menu_key)) .gray(190) else .gray(245),
+                    .border = .{ .color = .gray(160), .widths = .outside(1) },
+                    .corner_radius = .uniform(4),
+                    .focusable = true,
                     .on_click = on.bind(.{ .act = @as(lib.Action, .{ .menu = i }) }),
                 });
                 try text(ui, "...", 15, 60);

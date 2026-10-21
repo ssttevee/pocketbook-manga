@@ -1049,6 +1049,16 @@ pub const Session = struct {
         self.notify("Download destination updated");
     }
 
+    pub fn setLibrarySort(self: *Session, mode: tachi.views.SortMode) !void {
+        const engine = self.browser.engine orelse return error.RuntimeNotConfigured;
+        var sort = self.currentSort();
+        sort.mode = mode;
+        try engine.setLibrarySort(self.category_id, sort);
+        self.model.offset = 0;
+        try self.reloadLibrary();
+        try self.loadSettings();
+    }
+
     /// The sort of the category the library shows.
     pub fn currentSort(self: *const Session) tachi.views.LibrarySort {
         for (self.model.library.categories) |c| if (c.id == self.category_id) return .decode(c.flags);

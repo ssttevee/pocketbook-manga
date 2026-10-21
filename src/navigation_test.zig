@@ -29,6 +29,14 @@ test "Mihon root destinations stay in the bottom navigation and More returns fro
     const close = h.findText("Close PocketManga").?;
     const more_bar = h.findElement(h.root().element("bottom-navigation")).?;
     try std.testing.expect(close.bbox.y + close.bbox.h <= more_bar.bbox.y);
+    try std.testing.expectEqual(@as(f32, 58), more_bar.bbox.h);
+    try std.testing.expect(more_bar.bbox.y + more_bar.bbox.h <= 464);
+    const reference = h.findElement(h.root().element("library")).?.bbox;
+    inline for (.{ "updates", "history", "browse", "more" }) |name| {
+        const tab = h.findElement(h.root().element(name)).?.bbox;
+        try std.testing.expectApproxEqAbs(reference.w, tab.w, 0.01);
+        try std.testing.expectEqual(reference.h, tab.h);
+    }
     try h.click("Reading settings");
     try h.expectText("Right to left (manga)");
     try std.testing.expect(h.findElement(h.root().element("bottom-navigation")) == null);
