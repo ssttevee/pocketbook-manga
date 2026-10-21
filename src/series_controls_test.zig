@@ -172,4 +172,7 @@ test "confirmation toast expires without moving content and stale dismissals pre
     try h.post(h.root().handler(Root, .dismiss_status), old_revision);
     try h.advance(.fromSeconds(3));
     try h.expectText("Cannot save library");
+    try h.click("Dismiss");
+    try h.expectNoText("Cannot save library");
+    try std.testing.expectEqualStrings("", session.status);
 }

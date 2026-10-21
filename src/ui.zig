@@ -13,11 +13,12 @@ pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const Navigation = enum { library, updates, history, browse, more };
 pub const State = struct { storage_snapshot: ?storage.Snapshot = null, storage_revision: u32 = 0, storage_clearing: bool = false, more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, pointer_start: ?f.Vec2 = null, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage }, jump_chapter, dismiss_status: u64, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage }, jump_chapter, dismiss_error, dismiss_status: u64, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
     switch (msg) {
+        .dismiss_error => session.dismissError(),
         .jump_chapter => try ctx.systemText(.{ .title = "Jump to chapter number", .initial = "", .flags = .{ .numeric = true } }, ctx.handler(.chapter_target)),
         .dismiss_status => |revision| if (session.status_revision == revision and session.status_transient) {
             session.setStatus("");
@@ -357,19 +358,10 @@ fn rowFill(ui: *app.Ui, key: anytype) f.Color {
     return .white;
 }
 fn downloadIdentity(ui: *app.Ui, series: []const u8, chapter: []const u8) !void {
-    const style: f.layout.text.Style = .{ .font_size = 17, .wrap_mode = .words };
-    const width = @max(1, ui.core.viewport.x - 24);
-    const lines = try ui.core.make_lines(ui.core, series, style, width);
-    {
-        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y } });
-        defer ui.close();
-        if (lines.len > 2) {
-            try text(ui, series[0..lines[0].end], 17, 0);
-            try text(ui, try ui.fmt("{s}…", .{series[lines[1].start..]}), 17, 0);
-        } else try ui.text(series, style);
-    }
-    try text(ui, chapter, 14, 0);
+    try ui.text(series, .{ .font_size = 17, .wrap_mode = .words });
+    try ui.text(chapter, .{ .font_size = 14, .wrap_mode = .words });
 }
+
 fn text(ui: *app.Ui, value: []const u8, size: f32, gray: u8) !void {
     const line = if (std.mem.indexOfAny(u8, value, "\r\n") != null) blk: {
         const copy = try ui.arena().dupe(u8, value);
@@ -525,14 +517,22 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         try text(ui, if (session.download_blocked) "Cannot download from this source" else if (session.download_canceled) "Download canceled - tap chapter to resume" else "Download failed - tap chapter to resume", 15, 0);
         if (session.download_identity) |identity| try text(ui, identity.chapter, 14, 0);
         if (session.download_blocked) try ui.text(session.status, .{ .font_size = 13, .wrap_mode = .words }) else try text(ui, session.status, 13, 0);
+        try app.widgets.button(ui, "dismiss-download-error", .{ .label = "Dismiss", .on_click = on.bind(.dismiss_error) });
         ui.close();
     }
     if (session.browser.busy) |job| {
         try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 16 } });
         defer ui.close();
         try text(ui, operationTitle(job.request), 18, 0);
-        if (job.request == .download) if (session.download_identity) |identity| {
+        if (job.request == .download or job.request == .read) if (session.download_identity) |identity| {
             try downloadIdentity(ui, identity.series, identity.chapter);
+        };
+        if (job.request == .add) try ui.text(job.request.add.manga.title, .{ .font_size = 17, .wrap_mode = .words });
+        if (job.request == .refresh) for (model.library.manga) |manga| {
+            if (std.mem.eql(u8, manga.id, job.request.refresh)) {
+                try ui.text(manga.title, .{ .font_size = 17, .wrap_mode = .words });
+                break;
+            }
         };
         const total = job.pages_total.load(.acquire);
         var extension_buf: [64]u8 = undefined;
@@ -621,7 +621,16 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             });
             try ui.text(session.status, .{ .font_size = 13, .wrap_mode = .words });
             ui.close();
-        } else try text(ui, session.status, 11, 0);
+        } else {
+            try ui.open("status-error", .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .child_gap = 6, .padding = .init(12, 12, 0, 0), .child_alignment = .center_left } });
+            try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) } } });
+            try text(ui, session.status, 11, 0);
+            ui.close();
+            try ui.open("dismiss-status-error", .{ .layout = .{ .padding = .init(5, 5, 0, 0) }, .border = .{ .color = .black, .widths = .outside(1) }, .on_click = on.bind(.dismiss_error) });
+            try text(ui, "Dismiss", 11, 0);
+            ui.close();
+            ui.close();
+        }
     }
     if (session.cover_job != null) try ui.every("cover-poll", .fromMilliseconds(200), on.bind(.poll));
     if (navigation) |selected| try navigationBar(ui, selected, session.browser.busy == null);
@@ -742,7 +751,7 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
             const current_session = ui.use(Session);
             const banner_height: f32 = if (current_session.download_error and current_session.browser.busy == null) blk: {
                 const status_lines = if (current_session.download_blocked) (try ui.core.make_lines(ui.core, current_session.status, .{ .font_size = 13, .wrap_mode = .words }, @max(1, ui.core.viewport.x - 20))).len else 1;
-                break :blk 43 + @as(f32, @floatFromInt(status_lines)) * 15.6 + @as(f32, if (current_session.download_identity != null) 22 else 0);
+                break :blk 75 + @as(f32, @floatFromInt(status_lines)) * 15.6 + @as(f32, if (current_session.download_identity != null) 22 else 0);
             } else 0;
             const available_rows = @max(1, @min(lib.Model.rows, @as(usize, @intFromFloat(@max(34, ui.core.viewport.y - 190 - header_height - banner_height) / 34))));
             @constCast(model).chapter_page_rows = available_rows;

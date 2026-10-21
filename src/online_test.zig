@@ -208,6 +208,12 @@ test "download failure stays visible with progress and resume instructions" {
     try std.testing.expect(detail.bbox.y + detail.bbox.h - label.bbox.y < 65);
     try std.testing.expect(harness.findElement(harness.root().element("series-title")) != null);
     try harness.expectText(book.chapters[0].title);
+    try harness.click("Dismiss");
+    try std.testing.expect(!session.download_error);
+    try std.testing.expect(!session.download_blocked);
+    try std.testing.expectEqualStrings("", session.status);
+    try harness.expectNoText("Download failed - tap chapter to resume");
+    try std.testing.expect(session.download_identity == null);
 }
 
 test "online rows use fabrum pressed state and small partial updates" {
@@ -310,6 +316,7 @@ test "worker startup is shown for downloads and browse and remains immediately c
         try harness.expectNoText("Loading libtachi worker... (this may take a minute)");
         try harness.expectText("Loading MangaDex extension...");
         if (request == .download) {
+            try harness.expectText(long_title);
             job.setPhase(.operation);
             try harness.frame();
             try harness.expectNoText("Loading MangaDex extension...");

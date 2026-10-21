@@ -250,6 +250,14 @@ pub const Session = struct {
         self.ownStatus(try std.fmt.allocPrint(self.model.gpa, format, args));
     }
 
+    pub fn dismissError(self: *Session) void {
+        self.download_error = false;
+        self.download_canceled = false;
+        self.download_blocked = false;
+        self.clearDownloadIdentity();
+        self.setStatus("");
+    }
+
     fn clearDownloadIdentity(self: *Session) void {
         if (self.download_identity) |identity| {
             self.model.gpa.free(identity.series);
@@ -289,7 +297,7 @@ pub const Session = struct {
         self.cover_attempts = @splat(null);
         defer self.updateActivity();
         if (request == .download) self.download_blocked = false;
-        if (request == .download and self.browser.busy == null) self.rememberDownload(request.download) catch {
+        if ((request == .download or request == .read) and self.browser.busy == null) self.rememberDownload(if (request == .download) request.download else request.read.chapter) catch {
             self.setStatus("Cannot start download: out of memory");
             self.download_error = true;
             self.download_canceled = false;
