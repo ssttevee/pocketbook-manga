@@ -1334,6 +1334,24 @@ fn feedView(ui: *app.Ui, session: *const Session) !void {
     const model = session.model;
     const artwork = @constCast(session);
     const count = session.feed.len;
+    if (model.screen == .queue) {
+        const blocked = for (session.feed) |item| {
+            if (item.blocked) break true;
+        } else false;
+        const warning_height: f32 = if (blocked) blk: {
+            const width = @max(1, ui.core.viewport.x - 16);
+            const explanation = try ui.core.make_lines(ui.core, @import("session.zig").verification_explanation, .{ .font_size = 12, .wrap_mode = .words }, width);
+            const guidance = try ui.core.make_lines(ui.core, "Tap a blocked title to find another version or source.", .{ .font_size = 12, .wrap_mode = .words }, width);
+            break :blk 40 + @as(f32, @floatFromInt(explanation.len + guidance.len)) * 15;
+        } else 0;
+        // Toolbar (48), queue controls (42), list padding (8) and pager (38).
+        const available = @max(41, ui.core.viewport.y - 136 - warning_height);
+        const rows: usize = @intFromFloat(@floor(available / 41));
+        if (model.queue_page_rows != rows) {
+            model.queue_page_rows = rows;
+            model.offset = model.offset / rows * rows;
+        }
+    }
     const page_rows = model.pageRows();
     const on = ui.messages(Root);
     if (model.screen == .queue) {

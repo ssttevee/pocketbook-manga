@@ -538,8 +538,8 @@ test "blocked queue guidance fits and its title searches alternatives without mi
     engine.execute_fn = fixtureExecutor;
     var book = smoke.fixture.manga[0];
     book.title = "Fixture Story";
-    var model: lib.Model = .{ .gpa = a, .library = .{ .manga = &.{book} }, .screen = .queue, .feed_count = 5 };
-    var feed: [5]@import("session.zig").FeedRow = undefined;
+    var model: lib.Model = .{ .gpa = a, .library = .{ .manga = &.{book} }, .screen = .queue, .feed_count = 20 };
+    var feed: [20]@import("session.zig").FeedRow = undefined;
     for (&feed, 0..) |*row, i| row.* = .{ .pick = .{ .manga = 0, .chapter = 0 }, .title = try std.fmt.allocPrint(a, "Blocked title {d}", .{i}), .detail = "Cannot download: browser verification", .blocked = true };
     var session: Session = .{ .model = &model, .io = std.testing.io, .root = root, .feed = &feed };
     session.browser.engine = &engine;
@@ -550,13 +550,13 @@ test "blocked queue guidance fits and its title searches alternatives without mi
     try h.frame();
     try h.expectText("Some chapters cannot be downloaded");
     try h.expectText(@import("session.zig").verification_explanation);
-    const last = h.findText("Blocked title 3").?;
+    const last = h.findText(try std.fmt.allocPrint(a, "Blocked title {d}", .{model.pageRows() - 1})).?;
     const pager = h.findText("Next").?;
     try std.testing.expect(last.bbox.y + last.bbox.h <= pager.bbox.y);
     try std.testing.expect(pager.bbox.y + pager.bbox.h <= 464);
     // The model and view must advance by the same number of rows.
     try model.dispatch(.{ .list_page = 1 });
-    try std.testing.expectEqual(4, model.offset);
+    try std.testing.expectEqual(model.pageRows(), model.offset);
     model.offset = 0;
     try h.click("Blocked title 0");
     try std.testing.expectEqual(lib.Screen.global_search, model.screen);

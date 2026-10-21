@@ -42,3 +42,33 @@ test "Browse startup allows switching tabs and returning without restarting the 
     try std.testing.expectEqual(lib.Screen.settings, model.screen);
     try std.testing.expect(session.browser.loading_sources == null);
 }
+
+test "download queue uses available viewport rows and reserves warning space" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var model: lib.Model = .{ .gpa = a, .screen = .queue };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = "." };
+    defer session.deinit();
+    var rows: [30]@import("session.zig").FeedRow = undefined;
+    for (&rows, 0..) |*row, i| row.* = .{ .pick = .{ .manga = 0, .chapter = 0 }, .title = try std.fmt.allocPrint(a, "Queued {d}", .{i}), .detail = "Chapter / Queued" };
+    session.feed = &rows;
+    model.feed_count = rows.len;
+    var h: Harness = try .init(.{}, .{ .viewport = .init(343, 700), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    const roomy = model.pageRows();
+    try std.testing.expect(roomy > 4);
+    const last = h.findText(rows[roomy - 1].title).?;
+    const pager = h.findElement(h.root().element("next-feed")).?;
+    try std.testing.expect(last.bbox.y + last.bbox.h <= pager.bbox.y);
+    // Measure the full row, including its detail line and padding.
+    const units = h.runtime.context().units.items;
+    const last_row = units[units[last.parent].parent].bbox;
+    try std.testing.expect(pager.bbox.y - (last_row.y + last_row.h) < 41);
+    rows[0].blocked = true;
+    try h.frame();
+    try std.testing.expect(model.pageRows() < roomy);
+    const next = h.findElement(h.root().element("next-feed")).?;
+    try std.testing.expect(next.bbox.y + next.bbox.h <= 700);
+}

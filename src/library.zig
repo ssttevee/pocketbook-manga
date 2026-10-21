@@ -82,6 +82,7 @@ pub const Model = struct {
     category: usize = 0,
     /// Rows in the updates, history or queue list the session shows.
     feed_count: usize = 0,
+    queue_page_rows: usize = 4,
     /// The chapter the chapter menu is for.
     menu_chapter: usize = 0,
     /// A chapter being read online, and its pages in libtachi's chapter
@@ -94,8 +95,7 @@ pub const Model = struct {
         return switch (self.screen) {
             .library => if (self.prefs.library_grid) 2 else 5,
             .chapters => self.chapter_page_rows,
-            // Leave room to explain blocked sources above the queue.
-            .queue => 4,
+            .queue => self.queue_page_rows,
             else => rows,
         };
     }
