@@ -220,6 +220,10 @@ test "production codecs drive vertical and horizontal reader tasks and reject st
     try h.runTasks();
     try std.testing.expect(session.regionCurrent());
     try std.testing.expectEqual(lib.viewport.Axis.vertical, model.reader_geometry.?.axis);
+    // The visible vertical frame survives while its following horizontal page
+    // is prepared by the same task, with the RTL entry region already cached.
+    try std.testing.expectEqual(lib.viewport.Axis.horizontal, service.tiles.geometry.?.axis);
+    try std.testing.expect(service.tiles.geometry.?.rtl);
     try std.testing.expectEqual(@as(usize, 343), session.image.?.width);
     try std.testing.expectEqual(@as(usize, 464), session.image.?.height);
     const old_pixels = try arena.allocator().dupe(u8, session.region_pixels.?);
@@ -235,6 +239,9 @@ test "production codecs drive vertical and horizontal reader tasks and reject st
         .rtl = model.prefs.rtl,
     };
     const old_geometry = model.reader_geometry.?;
+    // A future file disappearing during speculation must not replace the
+    // current frame with a failure or publish that future page as progress.
+    try tmp.dir.rename("horizontal.png", tmp.dir, "held.png", std.testing.io);
     try h.clickAt(.init(25, 230));
     try std.testing.expect(!session.regionCurrent());
     try std.testing.expect(!try session.acceptRegion(.{ .request = stale_request, .value = .{ .frame = .{
@@ -249,6 +256,8 @@ test "production codecs drive vertical and horizontal reader tasks and reject st
     try std.testing.expect(session.regionCurrent());
     try std.testing.expect(model.reader_position > 0);
     try std.testing.expectEqual(@as(usize, 0), model.page);
+    try std.testing.expectEqualStrings("", session.status);
+    try tmp.dir.rename("held.png", tmp.dir, "horizontal.png", std.testing.io);
 
     // A superseded queued task must not decode or publish its previous region.
     try session.act(.{ .pan = 1 });

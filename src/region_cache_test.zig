@@ -278,3 +278,47 @@ test "tile LRU evicts old regions without retaining more than its capacity" {
     _ = try service.frame(arena.allocator(), io, p.image, view, 0, false, false, .{});
     try std.testing.expectEqual(after, fake.reads);
 }
+
+test "prepared following pages reuse tiles in both axes after other pages and validate file changes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const p = try paths(arena.allocator(), tmp.dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "next", .data = "next fixture" });
+    const next = try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/../next", .{p.disk}, 0);
+    for ([_]cache.Size{ .{ .width = 1000, .height = 10000 }, .{ .width = 10000, .height = 1000 } }) |source| {
+        for ([_]bool{ false, true }) |rtl| {
+            var fake: Fake = .{ .source = source };
+            var service = cache.Service.init(std.testing.allocator, fake.backend(), p.disk);
+            defer service.deinit();
+            const view: cache.Size = .{ .width = 613, .height = 709 };
+            const current = try service.frame(arena.allocator(), io, p.image, view, 0, false, rtl, .{});
+            const snapshot = try arena.allocator().dupe(u8, current.pixels);
+            const position = current.geometry.step(0, 1).?;
+            try service.prepare(io, p.image, view, position, rtl, .{});
+            const region_reads = fake.reads;
+            const region = try service.frame(arena.allocator(), io, p.image, view, position, false, rtl, .{});
+            try std.testing.expectEqual(region_reads, fake.reads);
+            try expectPixels(region);
+            try service.prepare(io, next, view, 0, rtl, .{});
+            // Moving back to the old page evicts the prepared page from RAM.
+            _ = try service.frame(arena.allocator(), io, p.image, view, 0, false, rtl, .{});
+            const reads = fake.reads;
+            const prepared = try service.frame(arena.allocator(), io, next, view, 0, false, rtl, .{});
+            try std.testing.expectEqual(reads, fake.reads);
+            try expectPixels(prepared);
+            try std.testing.expectEqualSlices(u8, snapshot, current.pixels);
+            if (prepared.geometry.axis == .horizontal) try std.testing.expectEqual(rtl, prepared.rect.x > 0);
+            // Changed files must not use previously prepared pixels.
+            try tmp.dir.writeFile(io, .{ .sub_path = "next", .data = "replacement fixture with a different size" });
+            try service.prepare(io, next, view, 0, rtl, .{});
+            try std.testing.expect(fake.reads > reads);
+            fake.canceled = true;
+            const before_cancel = fake.reads;
+            try std.testing.expectError(error.Canceled, service.prepare(io, next, view, 0, rtl, fake.checkpoint()));
+            try std.testing.expectEqual(before_cancel, fake.reads);
+            try tmp.dir.writeFile(io, .{ .sub_path = "next", .data = "next fixture" });
+        }
+    }
+}

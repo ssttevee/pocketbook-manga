@@ -1395,6 +1395,7 @@ fn reader(ui: *app.Ui, session: *const Session) !void {
             .backward = model.reader_pending_end,
             .rtl = model.prefs.rtl,
             .engine = session.browser.engine,
+            .next_pages = ch.pages[model.page + 1 .. @min(ch.pages.len, model.page + 3)],
         };
         try ui.task("reader-region", .{ .restart = .{ request.relative, request.chapter, request.page, request.epoch, viewport, @as(u64, @bitCast(request.position)), request.backward, request.rtl } }, regions.render, .{ service, request, on.handler(.region_frame) }, on.handler(.region_frame));
     }

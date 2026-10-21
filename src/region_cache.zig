@@ -128,6 +128,14 @@ pub const Service = struct {
         return .{ .source = self.source, .geometry = geometry, .position = position, .rect = rect, .pixels = pixels, .revision = std.hash.Wyhash.hash(key, std.mem.asBytes(&rect)) };
     }
 
+    /// Prepare one viewport in the shared bounded tile cache without retaining
+    /// another frame. Switching files drops RAM tiles; their disk copies remain
+    /// reusable on navigation, with the same stat/viewport/pipeline validation.
+    pub fn prepare(self: *Service, io: std.Io, path: [:0]const u8, view: Size, progress: f64, rtl: bool, checkpoint: Checkpoint) !void {
+        const prepared = try self.frame(self.gpa, io, path, view, progress, false, rtl, checkpoint);
+        defer self.gpa.free(prepared.pixels);
+    }
+
     /// Warm one adjacent tile band after the visible frame has been published.
     pub fn prefetch(self: *Service, io: std.Io, geometry: vp.Geometry, rect: Rect, checkpoint: Checkpoint) !void {
         if (self.key == null or self.geometry == null) return;

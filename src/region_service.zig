@@ -17,6 +17,8 @@ pub const Request = struct {
     backward: bool,
     rtl: bool,
     engine: ?*tachi.Engine = null,
+    /// At most two following source pages, copied into the task arena.
+    next_pages: []const []const u8 = &.{},
 };
 pub const Result = struct {
     request: Request,
@@ -91,5 +93,35 @@ pub fn render(task: *app.Task, service: *Service, request: Request, on_frame: ap
         // A failed speculative neighbor must not replace the visible viewport.
         std.log.debug("Region prefetch: {s}", .{@errorName(err)});
     };
+    // Finish the next screenful of a long image before opening other files.
+    // The same geometry handles vertical webtoons and horizontal RTL/LTR pans.
+    if (frame.geometry.step(frame.position, 1)) |position| {
+        service.tiles.prepare(task.io, terminated, request.viewport, position, request.rtl, .{ .context = task, .check = checkpoint }) catch |err| {
+            if (err == error.Canceled) return err;
+            std.log.debug("Next region preparation: {s}", .{@errorName(err)});
+        };
+    }
+    for (request.next_pages[0..@min(request.next_pages.len, 2)]) |relative| {
+        try task.checkCancel();
+        preparePage(task, service, request, relative) catch |err| {
+            if (err == error.Canceled) return err;
+            // A missing/corrupt future page cannot spoil the visible page.
+            std.log.debug("Page preparation {s}: {s}", .{ relative, @errorName(err) });
+        };
+    }
     return .{ .request = request, .value = .prefetched };
+}
+
+fn preparePage(task: *app.Task, service: *Service, request: Request, relative: []const u8) !void {
+    if (!tachi.library.safePath(relative)) return error.UnsafePagePath;
+    var arena: std.heap.ArenaAllocator = .init(task.gpa);
+    defer arena.deinit();
+    const path = if (request.engine) |engine|
+        try engine.pagePath(arena.allocator(), relative)
+    else
+        try std.fs.path.join(arena.allocator(), &.{ request.root, relative });
+    const terminated = try arena.allocator().dupeSentinel(u8, path, 0);
+    const started = std.Io.Clock.boot.now(task.io);
+    try service.tiles.prepare(task.io, terminated, request.viewport, 0, request.rtl, .{ .context = task, .check = checkpoint });
+    std.log.info("Reader prepared {s}: {d} ms", .{ relative, started.durationTo(std.Io.Clock.boot.now(task.io)).toMilliseconds() });
 }
