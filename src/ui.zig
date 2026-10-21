@@ -12,11 +12,18 @@ pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const Navigation = enum { library, updates, history, browse, more };
 pub const State = struct { more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, pointer_start: ?f.Vec2 = null, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { jump_chapter, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
     switch (msg) {
+        .jump_chapter => try ctx.systemText(.{ .title = "Jump to chapter number or exact title", .initial = "" }, ctx.handler(.chapter_target)),
+        .chapter_target => |target| if (target) |value| {
+            session.act(.{ .jump_chapter = value }) catch |err| {
+                if (err == error.ChapterNotFound) session.setStatus("Chapter not found in this list") else return err;
+            };
+        },
+
         .region_frame => |outcome| {
             const result = outcome catch |err| {
                 if (err != error.Canceled) try session.formatStatus("Cannot render page: {s}", .{@errorName(err)});
@@ -579,7 +586,6 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
 fn list(ui: *app.Ui, model: *const lib.Model) !void {
     const is_library = model.screen == .library;
     const count = if (is_library) model.titleCount() else model.chapterCount();
-    const page_rows = model.pageRows();
     const on = ui.messages(Root);
     {
         try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .init(12, 12, 4, 6), .child_gap = 5 } });
@@ -613,8 +619,21 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
             } else try ui.print(.{ .font_size = 11, .color = .gray(90) }, "{d} {s}", .{ count, if (count == 1) "title" else "titles" });
         } else {
             const manga = model.library.manga[model.manga];
+            const title_style: f.layout.text.Style = .{ .font_size = 17, .font_weight = .bold, .wrap_mode = .words, .overflow = .ellipsis_end };
+            const title_lines = try ui.core.make_lines(ui.core, manga.title, title_style, @max(1, ui.core.viewport.x - 84));
+            const shown_lines = if (model.title_expanded) title_lines.len else @min(2, title_lines.len);
+            const title_height: f32 = @floatFromInt(@max(1, shown_lines) * 21);
+            const header_height = @max(72, title_height + 30);
+            // Keep pagination in step with the space the expanded title consumes.
+            const current_session = ui.use(Session);
+            const banner_height: f32 = if (current_session.download_error and current_session.browser.busy == null) blk: {
+                const status_lines = if (current_session.download_blocked) (try ui.core.make_lines(ui.core, current_session.status, .{ .font_size = 13, .wrap_mode = .words }, @max(1, ui.core.viewport.x - 20))).len else 1;
+                break :blk 43 + @as(f32, @floatFromInt(status_lines)) * 15.6 + @as(f32, if (current_session.download_identity != null) 22 else 0);
+            } else 0;
+            const available_rows = @max(1, @min(lib.Model.rows, @as(usize, @intFromFloat(@max(34, ui.core.viewport.y - 190 - header_height - banner_height) / 34))));
+            @constCast(model).chapter_page_rows = available_rows;
             {
-                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(72) }, .child_gap = 12 } });
+                try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(header_height) }, .child_gap = 12 } });
                 defer ui.close();
                 {
                     try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(48), .height = .fixed(72) }, .child_alignment = .center }, .background_color = .gray(238), .corner_radius = .uniform(3) });
@@ -625,8 +644,12 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
                 {
                     try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .fixed(@max(1, ui.core.viewport.x - 84)) }, .axis = .y, .child_gap = 3 } });
                     defer ui.close();
-                    try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(42) } } });
-                    try ui.text(manga.title, .{ .font_size = 17, .font_weight = .bold, .wrap_mode = .words, .overflow = .ellipsis_end });
+                    try ui.open("series-title", .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(title_height) }, .axis = .y }, .on_click = on.bind(.{ .act = .toggle_title }) });
+                    if (!model.title_expanded and title_lines.len > 2) {
+                        const line_style = title_style.with(.{ .wrap_mode = .none });
+                        try ui.text(manga.title[0..title_lines[0].end], line_style);
+                        try ui.text(manga.title[title_lines[1].start..], line_style);
+                    } else try ui.text(manga.title, title_style);
                     ui.close();
                     if (manga.author.len > 0) try text(ui, manga.author, 12, 80);
                     try text(ui, if (manga.local()) "Local manga" else if (manga.favorite) "In library" else "Online manga", 10, 90);
@@ -637,13 +660,19 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
                 defer ui.close();
                 try ui.print(.{ .font_size = 12, .color = .gray(70) }, "{d} {s}", .{ count, if (count == 1) "chapter" else "chapters" });
                 ui.spacer();
-                if (manga.source_id != null) {
-                    try onlineButton(ui, "refresh-chapters", "Refresh chapters", .refresh_book);
-                    try onlineButton(ui, "queue-unread", "Queue unread", .queue_unread);
-                }
+                const flags: tachi.views.ChapterFlags = .decode(manga.chapter_flags);
+                try app.widgets.button(ui, "chapter-direction", .{ .label = if (flags.ascending) "Oldest first" else "Newest first", .on_click = on.bind(.{ .edit = .chapter_direction }) });
+                try app.widgets.button(ui, "jump-chapter", .{ .label = "Jump", .enabled = count > 0, .on_click = on.bind(.jump_chapter) });
+            }
+            if (manga.source_id != null) {
+                try ui.open(null, .{ .layout = .{ .child_gap = 8 } });
+                defer ui.close();
+                try onlineButton(ui, "refresh-chapters", "Refresh chapters", .refresh_book);
+                try onlineButton(ui, "queue-unread", "Queue unread", .queue_unread);
             }
         }
     }
+    const page_rows = model.pageRows();
     {
         try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .x(12), .child_gap = 1 } });
         defer ui.close();
@@ -676,10 +705,16 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
                 const ch = model.library.manga[model.manga].chapters[i];
                 const state = model.readState(ch);
                 const gray: u8 = if (state.read) 120 else 0;
+                const session = ui.use(Session);
+                const saved = if (i < session.chapter_downloads.len) session.chapter_downloads[i] else null;
+                const total = if (ch.pages.len > 0) ch.pages.len else if (saved) |p| p.total else if (model.online_chapter != null and std.mem.eql(u8, model.online_chapter.?, ch.id)) model.online_pages.len else @as(usize, ch.page_count);
+                const reading = if (state.started and !state.read) (if (total > 0) try ui.fmt("Reading {d}/{d}", .{ @min(@as(usize, state.page) + 1, total), total }) else try ui.fmt("Reading {d}/?", .{@as(usize, state.page) + 1})) else if (state.read) "Read" else "";
+                const downloaded = if (saved) |p| try ui.fmt("Resume {d}/{d}", .{ p.done, p.total }) else if (ch.downloaded()) "Downloaded" else "Not downloaded";
+                const progress = if (reading.len > 0) (if (saved != null) try ui.fmt("{s} · {s}", .{ reading, downloaded }) else reading) else downloaded;
                 try text(ui, title, 14, gray);
                 try ui.print(.{ .font_size = 10, .color = .gray(if (state.read) 130 else 90), .overflow = .ellipsis_end, .wrap_mode = .none }, "{s}{s}{s}{s}", .{
                     if (ch.bookmark) "Bookmarked · " else "",
-                    if (ch.downloaded()) "Downloaded" else if (state.started and !state.read) "Reading" else if (state.read) "Read" else "Not downloaded",
+                    progress,
                     if (ch.scanlator != null) " · " else "",
                     ch.scanlator orelse "",
                 });

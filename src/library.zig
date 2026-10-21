@@ -38,7 +38,7 @@ pub const Screen = enum { library, chapters, reader, settings, sources, extensio
 /// libtachi settings the settings screen changes.
 pub const Setting = enum { skip_completed, skip_unread, skip_not_started, skip_not_due, update_details, download_new, delete_marked_read, delete_bookmarked, delete_after_reading, download_ahead, skip_read, skip_filtered, skip_duplicates, incognito, downloaded_only, sort_mode, sort_ascending };
 pub const Pick = struct { manga: usize, chapter: usize };
-pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, open_chapter: Pick, turn: i32, pan: f64, next_chapter, list_page: i32, category: i32, feed: Screen, menu: usize, settings, help, rtl, refresh, library_grid };
+pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, open_chapter: Pick, turn: i32, pan: f64, next_chapter, list_page: i32, category: i32, feed: Screen, menu: usize, settings, help, rtl, refresh, library_grid, toggle_title, jump_chapter: []const u8 };
 pub const Model = struct {
     gpa: std.mem.Allocator,
     library: Library = .{},
@@ -58,6 +58,8 @@ pub const Model = struct {
     reader_position: f64 = 0,
     reader_pending_end: bool = false,
     offset: usize = 0,
+    title_expanded: bool = false,
+    chapter_page_rows: usize = rows,
     /// Display preferences changed and should be saved.
     dirty: bool = false,
     /// The reader's page or a chapter's read state changed and should be
@@ -90,6 +92,7 @@ pub const Model = struct {
     pub fn pageRows(self: *const Model) usize {
         return switch (self.screen) {
             .library => if (self.prefs.library_grid) 2 else rows,
+            .chapters => self.chapter_page_rows,
             // Leave room to explain blocked sources above the queue.
             .queue => 4,
             else => rows,
@@ -220,6 +223,24 @@ pub const Model = struct {
     }
     pub fn dispatch(self: *Model, action: Action) !void {
         switch (action) {
+            .toggle_title => {
+                self.title_expanded = !self.title_expanded;
+                self.offset = 0;
+            },
+            .jump_chapter => |query| {
+                const target = std.mem.trim(u8, query, " \t\r\n");
+                if (target.len == 0 or self.manga >= self.library.manga.len) return;
+                const number = std.fmt.parseFloat(f64, target) catch null;
+                const chapters = self.library.manga[self.manga].chapters;
+                for (0..self.chapterCount()) |row| {
+                    const ch = chapters[self.chapterIndex(row)];
+                    if ((number != null and ch.number == number.?) or std.ascii.eqlIgnoreCase(ch.title, target)) {
+                        self.offset = row / self.pageRows() * self.pageRows();
+                        return;
+                    }
+                }
+                return error.ChapterNotFound;
+            },
             .search => |query| {
                 const copy = if (query.len == 0) "" else try self.gpa.dupe(u8, query);
                 if (self.query_text.len > 0) self.gpa.free(self.query_text);
@@ -228,6 +249,8 @@ pub const Model = struct {
             },
             .open => |i| if (i < self.library.manga.len) {
                 self.manga = i;
+                self.title_expanded = false;
+                self.chapter_page_rows = rows;
                 self.offset = 0;
                 self.screen = .chapters;
             },
@@ -300,7 +323,7 @@ pub const Model = struct {
             .back => switch (self.screen) {
                 .reader => {
                     self.screen = .chapters;
-                    self.offset = self.chapterRow(self.chapter) / rows * rows;
+                    self.offset = self.chapterRow(self.chapter) / self.pageRows() * self.pageRows();
                 },
                 .settings => self.screen = self.return_screen,
                 .chapter_menu => self.screen = .chapters,

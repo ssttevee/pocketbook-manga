@@ -157,6 +157,7 @@ test "page bounds and stale progress are clamped" {
     try std.testing.expect(model.readState(library.manga[0].chapters[0]).read);
 }
 test {
+    _ = @import("series_controls_test.zig");
     _ = @import("smoke.zig");
     _ = @import("online_test.zig");
     _ = @import("navigation_test.zig");
@@ -542,7 +543,7 @@ test "library pagination clamps both layouts and preserves filters when switchin
     try std.testing.expectEqualStrings("Story", model.query_text);
 }
 
-test "title header and seven chapter rows fit with a real cover and long metadata" {
+test "title header and chapter controls fit with a real cover and long metadata" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -569,11 +570,11 @@ test "title header and seven chapter rows fit with a real cover and long metadat
     var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
     defer h.deinit();
     try h.frame();
-    const title = h.findText(manga.title).?;
+    const title = h.findElement(h.root().element("series-title")).?;
     try std.testing.expect(title.bbox.x + title.bbox.w <= 343);
     const queue = h.findText("Queue unread").?;
     try std.testing.expect(queue.bbox.x + queue.bbox.w <= 343);
-    const last = h.findText("Chapter 7").?;
+    const last = h.findText(try std.fmt.allocPrint(a, "Chapter {d}", .{model.pageRows()})).?;
     const pager = h.findText("Previous").?;
     try std.testing.expect(last.bbox.y + last.bbox.h <= pager.bbox.y);
     try std.testing.expect(pager.bbox.y + pager.bbox.h <= 464);

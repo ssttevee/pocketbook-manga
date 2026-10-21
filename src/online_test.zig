@@ -204,7 +204,7 @@ test "download failure stays visible with progress and resume instructions" {
     const label = harness.findText("Download failed - tap chapter to resume").?;
     const detail = harness.findText(session.status).?;
     try std.testing.expect(detail.bbox.y + detail.bbox.h - label.bbox.y < 65);
-    try harness.expectText(book.title);
+    try std.testing.expect(harness.findElement(harness.root().element("series-title")) != null);
     try harness.expectText(book.chapters[0].title);
 }
 

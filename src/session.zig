@@ -53,6 +53,8 @@ pub const Session = struct {
     last_progress_ms: ?u64 = null,
     /// Owns the model's rows and category names.
     rows_arena: ?std.heap.ArenaAllocator = null,
+    /// Saved pages for resumable downloads, indexed into the current title.
+    chapter_downloads: []const ?tachi.downloads.ResumeProgress = &.{},
     /// Owns the model's online chapter and pages.
     online_arena: ?std.heap.ArenaAllocator = null,
     /// libtachi's trackers: who is logged in, and score formats.
@@ -672,7 +674,7 @@ pub const Session = struct {
                     else => flags.bookmarked = next.tri(flags.bookmarked),
                 }
                 try engine.setChapterFlags(manga.id, flags.encode(manga.chapter_flags));
-                back = .title_options;
+                back = if (model.screen == .chapters) .chapters else .title_options;
             },
             .toggle_scanlator => |index| {
                 var arena: std.heap.ArenaAllocator = .init(model.gpa);
@@ -858,8 +860,20 @@ pub const Session = struct {
             try titles.append(a, (@intFromPtr(entry.manga) - @intFromPtr(model.library.manga.ptr)) / @sizeOf(lib.Manga));
         };
         var chapters: ?[]const usize = null;
+        var chapter_downloads: []const ?tachi.downloads.ResumeProgress = &.{};
         if (model.manga < model.library.manga.len) {
             const manga = model.library.manga[model.manga];
+            const progress = try a.alloc(?tachi.downloads.ResumeProgress, manga.chapters.len);
+            for (manga.chapters, progress) |ch, *saved| {
+                saved.* = null;
+                if (!ch.downloaded()) if (self.browser.engine) |engine| {
+                    saved.* = engine.downloadProgress(a, ch.id) catch |err| blk: {
+                        std.log.warn("Cannot inspect saved download {s}: {s}", .{ ch.id, @errorName(err) });
+                        break :blk null;
+                    };
+                };
+            }
+            chapter_downloads = progress;
             var index: std.StringHashMapUnmanaged(usize) = .empty;
             for (manga.chapters, 0..) |ch, i| try index.put(a, ch.id, i);
             const shown = try tachi.views.chapterList(a, manga, settings.library.downloaded_only);
@@ -869,6 +883,7 @@ pub const Session = struct {
         }
         model.title_rows = titles.items;
         model.chapter_rows = chapters;
+        self.chapter_downloads = chapter_downloads;
         model.categories = names;
         if (self.rows_arena) |*old| old.deinit();
         self.rows_arena = arena;
