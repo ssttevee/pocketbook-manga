@@ -130,7 +130,7 @@ test "device UI installs a source, searches, adds and downloads a chapter, reads
     try std.testing.expect(model.library.manga[0].chapters[0].read);
     try smoke.tapText("Back");
     try smoke.tapText("Browse");
-    try finish(&session);
+    if (session.browser.busy != null) try finish(&session);
     try smoke.tapText("Fixture Source");
     try finish(&session);
     try smoke.tapText("Source settings");
@@ -404,7 +404,7 @@ test "device UI asks before adding a title the library may already have" {
     try smoke.start(std.testing.allocator, std.testing.io, &session);
     defer smoke.stop();
     try smoke.tapText("Browse");
-    try finish(&session);
+    if (session.browser.busy != null) try finish(&session);
     try smoke.tapText("Fixture Source");
     try finish(&session);
     try smoke.tapText("Fixture Story");

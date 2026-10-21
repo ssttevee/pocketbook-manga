@@ -5,6 +5,8 @@ pub const Language = struct { code: []const u8, enabled: bool };
 pub const Browser = struct {
     engine: ?*tachi.Engine = null,
     busy: ?*tachi.Job = null,
+    /// Browse startup may finish while another tab remains interactive.
+    loading_sources: ?*tachi.Job = null,
     sources: ?*tachi.Job = null,
     extensions: ?*tachi.Job = null,
     titles: ?*tachi.Job = null,
@@ -145,6 +147,10 @@ pub const Browser = struct {
 
     pub fn setQuery(self: *Browser, gpa: std.mem.Allocator, query: []const u8) !void {
         const copy = try gpa.dupe(u8, query);
+        if (self.loading_sources) |job| {
+            job.cancel();
+            job.deinit();
+        }
         if (self.query.len > 0) gpa.free(self.query);
         self.query = copy;
         self.offset = 0;

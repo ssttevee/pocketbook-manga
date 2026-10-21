@@ -92,12 +92,16 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
             if (try session.acceptRegion(result)) refreshReader(state, session, ctx);
         },
         .navigate => |destination| {
-            if (session.browser.busy != null) return;
+            if (!session.detachBrowseStartup()) return;
             const was_managing = session.storage_managing;
             session.storage_managing = false;
             if (was_managing) try session.refreshRows();
             // Reselecting Browse preserves its active tab, filter and list page.
             if (destination == .browse and (session.model.screen == .sources or session.model.screen == .extensions)) {
+                if (session.browser.loading_sources) |job| {
+                    session.browser.busy = job;
+                    session.browser.loading_sources = null;
+                }
                 ctx.focus("screen");
                 return;
             }
@@ -112,7 +116,12 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                 .more => .settings,
             };
             try session.act(action);
-            if (destination == .browse) session.start(.sources);
+            if (destination == .browse) {
+                if (session.browser.loading_sources) |job| {
+                    session.browser.busy = job;
+                    session.browser.loading_sources = null;
+                } else if (session.browser.sources == null) session.start(.sources);
+            }
             ctx.focus("screen");
         },
         .poll => {
@@ -537,7 +546,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
     session.beginCoverFrame();
     const model = session.model;
     const on = ui.messages(Root);
-    if (session.browser.busy != null) try ui.every("network-poll", .fromMilliseconds(200), on.bind(.poll)) else if (model.screen == .queue or (if (session.browser.engine) |engine| engine.queue.running() else false)) try ui.every("queue-poll", .fromMilliseconds(2000), on.bind(.poll));
+    if (session.browser.busy != null or session.browser.loading_sources != null) try ui.every("network-poll", .fromMilliseconds(200), on.bind(.poll)) else if (model.screen == .queue or (if (session.browser.engine) |engine| engine.queue.running() else false)) try ui.every("queue-poll", .fromMilliseconds(2000), on.bind(.poll));
     if (!state.focused) try ui.after("initial-focus", .fromMilliseconds(0), on.bind(.focus));
     try ui.open("screen", .{
         .layout = .{ .sizing = .grow(.{}), .axis = .y },
@@ -669,7 +678,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         }
     }
     if (session.cover_job != null) try ui.every("cover-poll", .fromMilliseconds(200), on.bind(.poll));
-    if (navigation) |selected| try navigationBar(ui, selected, session.browser.busy == null);
+    if (navigation) |selected| try navigationBar(ui, selected, session.browser.busy == null or session.browser.busy.?.request == .sources);
 }
 fn toolbar(ui: *app.Ui, session: *const Session, navigation: ?Navigation) !void {
     const model = session.model;
