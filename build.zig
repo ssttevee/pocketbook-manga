@@ -17,7 +17,8 @@ fn uiModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
     const fabrum = b.dependency("fabrum", .{ .target = target, .optimize = optimize, .platform = .none }).module("fabrum");
     const platform = b.dependency("inkview", .{ .target = target, .optimize = optimize }).module("fabrum-platform-inkview");
     @import("inkview").addFabrum(platform, fabrum);
-    const base = platform.import_table.get("fabrum-renderer-z2d").?;
+    const base = b.dependency("renderer", .{ .target = target, .optimize = optimize }).module("fabrum-renderer-z2d");
+    base.addImport("fabrum", fabrum);
     const image = b.createModule(.{ .root_source_file = b.path("src/image.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "fabrum", .module = fabrum }} });
     const renderer = b.createModule(.{ .root_source_file = b.path("src/renderer.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "fabrum", .module = fabrum }, .{ .name = "base", .module = base }, .{ .name = "reader-image", .module = image } } });
     platform.addImport("fabrum-renderer-z2d", renderer);

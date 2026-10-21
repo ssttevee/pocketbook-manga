@@ -262,3 +262,33 @@ test "native region pixels bypass resampling at panel scale with damage and padd
         };
     }
 }
+
+test "image content respects later controls and scissor clipping on full and damaged redraws" {
+    var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture };
+    defer model.deinit();
+    var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io };
+    defer session.deinit();
+    try start(std.testing.allocator, std.testing.io, &session);
+    defer stop();
+    var source: [100]u8 = @splat(30);
+    var image: @import("reader-image") = .{ .width = 10, .height = 10, .pixels = &source, .revision = 1 };
+    const commands: [5]f.layout.RenderCommand = .{
+        .{ .bbox = .init(2, 2, 6, 6), .data = .{ .scissor_start = .{ .horizontal = true, .vertical = true } } },
+        .{ .bbox = .init(0, 0, 10, 10), .data = .{ .content = &image.content } },
+        .{ .bbox = .init(0, 0, 0, 0), .data = .scissor_end },
+        .{ .bbox = .init(0, 0, 10, 3), .data = .{ .rectangle = .{ .color = .white, .corner_radius = .{} } } },
+        .{ .bbox = .init(0, 7, 10, 3), .data = .{ .rectangle = .{ .color = .black, .corner_radius = .{} } } },
+    };
+    var target: [100]u8 = undefined;
+    const surface: f.layout.Surface = .{ .pixels = .{ .data = &target, .width = 10, .height = 10, .stride = 10, .format = .gray8, .scale = 1 } };
+    const damage: [1]f.Rect = .{.init(1, 1, 8, 8)};
+    for ([_]bool{ false, true }) |partial| {
+        @memset(&target, 165);
+        try Host.instance.renderer.render(&commands, surface, if (partial) &damage else null);
+        for (0..10) |y| for (0..10) |x| {
+            const changed = !partial or (x >= 1 and x < 9 and y >= 1 and y < 9);
+            const expected: u8 = if (!changed) 165 else if (y >= 7) 0 else if (y >= 3 and x >= 2 and x < 8) 30 else 255;
+            try std.testing.expectEqual(expected, target[y * 10 + x]);
+        };
+    }
+}

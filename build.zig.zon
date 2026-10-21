@@ -4,6 +4,7 @@
     .fingerprint = 0xa463f8e578d6a6d6,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
+        .renderer = .{ .path = "../zig-fabrum-renderer-z2d" },
         .fabrum = .{ .path = "../zig-layout" },
         .inkview = .{ .path = "../zig-fabrum-platform-inkview" },
         .tachi = .{ .path = "../zig-tachi" },
