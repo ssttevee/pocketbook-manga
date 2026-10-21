@@ -84,7 +84,7 @@ test "interrupted chapters show saved page counts and jump dialog selects their 
     try h.click("Jump");
     try h.enterText("9");
     try h.expectText("Chapter 9");
-    try h.expectText("Resume 3/12");
+    try h.expectText("Unread · Resume 3/12");
     try h.click("Jump");
     try h.enterText("100");
     try h.expectText("Chapter not found in this list");
@@ -136,7 +136,7 @@ test "chapter pagination leaves room for a wrapped download failure" {
     var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
     defer h.deinit();
     try h.frame();
-    try h.expectText("Resume 0/15");
+    try h.expectText("Unread · Resume 0/15");
     const last = h.findText(chapters[model.pageRows() - 1].title).?;
     const pager = h.findText("Previous").?;
     try std.testing.expect(last.bbox.y + last.bbox.h <= pager.bbox.y);
@@ -175,4 +175,17 @@ test "confirmation toast expires without moving content and stale dismissals pre
     try h.click("Dismiss");
     try h.expectNoText("Cannot save library");
     try std.testing.expectEqualStrings("", session.status);
+}
+
+test "opening a first page does not label an unread chapter as reading" {
+    for ([_]i64{ 0, 1234 }) |last_read| {
+        var model: lib.Model = .{ .gpa = std.testing.allocator, .screen = .chapters, .library = .{ .manga = &.{.{ .id = "s", .title = "Story", .chapters = &.{.{ .id = "c", .title = "Chapter 1", .last_read = last_read, .last_page_read = 0, .page_count = 20 }} }} } };
+        var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io };
+        defer session.deinit();
+        var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+        defer h.deinit();
+        try h.frame();
+        try h.expectText("Unread · Not downloaded");
+        try h.expectNoText("Reading 1/20");
+    }
 }

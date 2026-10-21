@@ -168,6 +168,7 @@ test {
     _ = @import("reader_navigation_test.zig");
     _ = @import("series_controls_test.zig");
     _ = @import("storage_test.zig");
+    _ = @import("reader_page_jump_test.zig");
     _ = @import("region_cache_test.zig");
     _ = @import("region_integration_test.zig");
     _ = @import("reader_gesture_test.zig");
@@ -697,10 +698,10 @@ test "chapter queue snapshots reflect paused queue additions and removals" {
     var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
     defer h.deinit();
     try h.frame();
-    try h.expectText("Queued");
+    try h.expectText("Unread · Queued");
     try h.expectNoText("Not downloaded");
     try engine.queue.remove(&engine, "c");
     try std.testing.expectEqual(0, (try session.queuedChapters(a)).len);
     try h.frame();
-    try h.expectText("Not downloaded");
+    try h.expectText("Unread · Not downloaded");
 }

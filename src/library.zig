@@ -38,7 +38,7 @@ pub const Screen = enum { library, chapters, reader, settings, sources, extensio
 /// libtachi settings the settings screen changes.
 pub const Setting = enum { skip_completed, skip_unread, skip_not_started, skip_not_due, update_details, download_new, delete_marked_read, delete_bookmarked, delete_after_reading, download_ahead, skip_read, skip_filtered, skip_duplicates, incognito, downloaded_only, sort_mode, sort_ascending };
 pub const Pick = struct { manga: usize, chapter: usize };
-pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, open_chapter: Pick, turn: i32, pan: f64, next_chapter, list_page: i32, category: i32, feed: Screen, menu: usize, settings, help, rtl, refresh, library_grid, toggle_title, jump_chapter: []const u8 };
+pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, open_chapter: Pick, turn: i32, jump_page: usize, pan: f64, next_chapter, list_page: i32, category: i32, feed: Screen, menu: usize, settings, help, rtl, refresh, library_grid, toggle_title, jump_chapter: []const u8 };
 pub const Model = struct {
     gpa: std.mem.Allocator,
     library: Library = .{},
@@ -311,6 +311,18 @@ pub const Model = struct {
                     self.reader_pending_end = delta < 0;
                 }
                 try self.remember();
+            },
+            .jump_page => |page| {
+                if (self.screen != .reader) return;
+                const ch = self.current() orelse return;
+                if (page >= ch.pages.len) return error.PageOutOfRange;
+                self.page = page;
+                self.reader_presented = false;
+                self.reader_geometry = null;
+                self.reader_position = 0;
+                self.reader_pending_end = false;
+                try self.remember();
+                try self.rememberRegion();
             },
             .pan => |delta| {
                 if (self.screen != .reader or !self.region_reader or self.reader_geometry == null) return;
