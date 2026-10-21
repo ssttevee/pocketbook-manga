@@ -79,6 +79,7 @@ pub fn render(task: *app.Task, service: *Service, request: Request, on_frame: ap
         return .{ .request = request, .value = .{ .failure = failure } };
     };
     try task.checkCancel();
+    std.log.info("Reader region {s}: {d},{d} {d}x{d} ready", .{ request.relative, frame.rect.x, frame.rect.y, frame.rect.width, frame.rect.height });
     // Publish the viewport before speculative work; borrowed task pixels stay
     // alive until message delivery, and canceled generations are discarded.
     try task.post(on_frame, @as(anyerror!Result, .{ .request = request, .value = .{ .frame = frame } }));

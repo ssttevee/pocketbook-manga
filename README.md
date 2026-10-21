@@ -50,6 +50,8 @@ zig-tachi/
 
 libtachi's bundled-CA option (`ca_file`, recorded in `patches/libtachi-ca-file.patch` and part of zig-tachi since `0406ed7`) keeps repository HTTPS verification independent of the device's system certificate paths.
 
+The region reader requires fabrum commit `4ff5f21` or later, which schedules frames when task cleanup can unblock a pending page, and libtachi commit `06d670c` or later for explicit region completion.
+
 `build.zig.zon` points at `../zig-tachi`. Build its `tachi-host.jar` first with `zig build host` in that repository; the tools read it from `../zig-tachi/zig-out/lib`. On this workspace, use `/Users/steve/Programs/Zig/v0.17.0/zig`; the `zig` on PATH is 0.16.
 
 The worker's Java runtime is built from source in Docker; see [the Java runtime](docs/java-runtime.md). The first build compiles a GCC cross toolchain and OpenJDK, which takes about an hour; later builds reuse Docker's cache:
