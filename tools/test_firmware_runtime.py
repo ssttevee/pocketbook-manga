@@ -13,7 +13,7 @@ def run(*args, **kwargs):
 def fixture(directory):
     classes = directory/'classes'
     classes.mkdir(parents=True, exist_ok=True)
-    jar = ROOT.parent/'zig-tachi/zig-out/lib/tachi-host.jar'
+    jar = ROOT/'zig-out/lib/tachi-host.jar'
     run('javac', '--release', '17', '-classpath', str(jar), '-d', str(classes), *[str(p) for p in sorted((ROOT/'tools/fixture').glob('*.java'))])
     shutil.copy2(ROOT/'tools/fixture/AndroidManifest.xml', classes/'AndroidManifest.xml')
     target = directory/'source.jar'

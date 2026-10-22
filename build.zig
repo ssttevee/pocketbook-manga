@@ -29,6 +29,8 @@ fn uiModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
 }
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
+    const host = b.dependency("tachi", .{});
+    b.step("host", "Build and install the Java extension host for packaging").dependOn(&host.builder.top_level_steps.get("host").?.step);
     const host_ui = uiModules(b, b.graph.host, optimize);
     const host_imports = host_ui.imports();
     const tests = b.addTest(.{ .root_module = b.createModule(.{

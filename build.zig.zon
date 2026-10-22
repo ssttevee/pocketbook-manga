@@ -4,10 +4,22 @@
     .fingerprint = 0xa463f8e578d6a6d6,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
-        .renderer = .{ .path = "../zig-fabrum-renderer-z2d" },
-        .fabrum = .{ .path = "../zig-layout" },
-        .inkview = .{ .path = "../zig-fabrum-platform-inkview" },
-        .tachi = .{ .path = "../zig-tachi" },
+        .renderer = .{
+            .url = "git+https://github.com/ssttevee/fabrum-renderer-z2d#6493c2b7629d3dae094845170633a2e515939812",
+            .hash = "fabrum_renderer_z2d-0.0.0-HsrDainXAgAb-Y1v5Lf9VtV7PFYisxh6-ksNt2XZOWhT",
+        },
+        .fabrum = .{
+            .url = "git+https://github.com/ssttevee/fabrum#1d530e866dc0473424d49c933a0c1e1520d69f82",
+            .hash = "fabrum-0.0.0-qj9rbVDKGQBa_L-vyjXdhkZrEntm-wNooDkGTgK4tinB",
+        },
+        .inkview = .{
+            .url = "git+https://github.com/ssttevee/fabrum-platform-inkview#5d2e6bfb1e3755d2d9e1d67964e207527778b1da",
+            .hash = "fabrum_platform_inkview-0.0.0-CX1sNIYhBQAcS5TlAkRUa6baQPdGFHBBvBSIbVmqAGaz",
+        },
+        .tachi = .{
+            .url = "git+https://github.com/ssttevee/libtachi#69a78ac4fd1c6bfe4356d4545f4d53a4487dca45",
+            .hash = "zig_tachi-0.1.0-f63jBM5tGgBkdge8D8l41QKNGq-ycbZYSvZxcVQATaww",
+        },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "tools", "patches", "README.md" },
 }
