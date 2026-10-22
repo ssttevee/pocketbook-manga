@@ -1,12 +1,19 @@
-# PocketManga for PocketBook Verse
+# PocketManga for PocketBook
 
 Read manga directly on a **PocketBook Verse PB629**. PocketManga lets you browse sources, build a library, download chapters and read offline, with an interface inspired by Mihon / Tachiyomi. Once installed, you only need your reader and Wi-Fi—no desktop companion or server.
 
-**Supported device:** PocketBook Verse PB629 with firmware 6.8 or later. Other PocketBook models have not been verified.
+**Checked on hardware:** PocketBook Verse PB629 with firmware 6.8. Firmware 6.9 and 6.10 have also been checked in emulation. Other models are candidates for testing; see the [compatibility matrix](docs/compatibility.md).
 
 ## Download and install
 
-If you have been supplied a prebuilt **`pocketmanga-verse.tar.gz` installation bundle**, use that file. There is no public release download link for this checkout yet. The source-code archive and individual `.app` files are not enough to install the app.
+Look for an installation bundle on the [GitHub Releases page](https://github.com/ssttevee/pocketbook-manga/releases). If no release is listed yet, a public prebuilt bundle is not available yet. Choose the file matching your firmware under **Settings → About device → Software**:
+
+| Firmware on a compatible reader | Installation bundle |
+| --- | --- |
+| 6.8 or 6.9 | `pocketmanga-armv7-softfp-glibc-2.23.tar.gz` |
+| 6.10 | `pocketmanga-armv7-softfp-glibc-2.39.tar.gz` |
+
+You do not need to update your firmware to use PocketManga. These bundles target the classic ARMv7 PocketBook platform; they do not support every PocketBook model. Check the [compatibility matrix](docs/compatibility.md) before downloading. The source-code archive and individual `.app` files are not enough to install the app.
 
 The complete bundle includes everything needed to run PocketManga, including its Java runtime. Developers can produce it using the [build instructions below](#build-from-source).
 
@@ -80,7 +87,7 @@ Library information, reading progress, settings and the download queue are store
 
 ## Compatibility and limitations
 
-PocketManga is still under development and does not provide every Mihon feature. It has been tested on a physical Verse as well as in firmware emulation; behavior on other models and firmware versions may differ.
+PocketManga is still under development and does not provide every Mihon feature. The [compatibility matrix](docs/compatibility.md) separates checks on a physical reader from firmware emulation and devices that are only expected to work. It also explains how to report testing on another model. Firmware beyond 6.10 and hard-float or Android PocketBook models are not currently supported.
 
 Supported image families are JPEG, PNG/APNG, WebP, GIF, AVIF, HEIF, JPEG XL and JPEG 2000. Animated images show their first frame. Very large images can exceed the decoder's resource limits. CBZ import is not exposed in this interface.
 
@@ -118,7 +125,7 @@ zig build -Doptimize=small
 python3 tools/package_device.py
 ```
 
-`zig build host` installs `zig-out/lib/tachi-host.jar`. The packaging script uses that JAR by default and creates **`dist/pocketmanga-verse.tar.gz`**, ready for installation. The archive contains the application files and runtimes, not your personal library or downloads. `zig build` also supports the default optimization configuration; `-Doptimize=small` is the smaller device build.
+`zig build host` installs `zig-out/lib/tachi-host.jar`. The packaging script uses that JAR by default and creates **`dist/pocketmanga-armv7-softfp-glibc-2.23.tar.gz`**, ready for installation. The archive contains the application files and runtimes, not your personal library or downloads. `zig build` also supports the default optimization configuration; `-Doptimize=small` is the smaller device build.
 
 If Zig is installed somewhere else, use its full path in each command. Packaging verifies the runtime and certificate downloads against the integrity values recorded in `tools/runtime-packages.json`; it does not change your computer's Java installation or the reader's system libraries.
 
@@ -134,6 +141,8 @@ python3 tools/preview_png.py
 ```
 
 These write fake-InkView screenshots under `preview/`. They help check layout, but cannot reproduce the reader's panel refresh, Wi-Fi dialogs or suspend behavior.
+
+See [release builds and container images](docs/releases.md) for firmware-specific packaging and publishing. Use `-Dglibc=2.39` when building for firmware 6.10, and pass `--glibc 2.39` to both runtime builders and the packaging script.
 
 See [development and verification](docs/development.md) for the architecture, image-cache limits, production codec tests, firmware emulation and packaging details. The [reader wake investigation](docs/reader-wake.md) explains how background work is delivered promptly without periodic completion polling.
 

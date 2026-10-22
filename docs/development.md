@@ -75,6 +75,6 @@ The packaging script checks Java and image runtime digests from `tools/runtime-p
 
 `zig build` compiles the worker's libzstd JNI decoder. Set `JAVA_HOME` so it can find `jni.h`. The packaged OpenJDK licenses are under `runtime/jre/legal/`; certificate and GCC runtime licenses are under `runtime/licenses/`. The host JAR path can be overridden with `tools/package_device.py --host-jar FILE`.
 
-Both device executables target Cortex-A7, ARM EABI soft-float and glibc 2.23. They use the reader's loader and C library; the bundle does not replace system libraries. The launcher retains an executable-stack setting needed by some firmware releases.
+Both device executables target Cortex-A7 and ARM EABI soft-float. The default glibc target is 2.23; `-Dglibc=2.39` selects the firmware 6.10 profile. Keep the native binaries, JVM and image runtime on the same profile; [release packaging](releases.md) verifies this. They use the reader's loader and C library; the bundle does not replace system libraries. The launcher retains an executable-stack setting needed by some firmware releases.
 
 See also [Java runtime builds](java-runtime.md), [firmware compatibility](firmware-6.8.md), [Mihon UI comparison](mihon-ui.md), and [device feedback fixes](device-feedback-fixes.md).
