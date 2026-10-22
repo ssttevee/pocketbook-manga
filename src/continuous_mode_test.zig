@@ -263,3 +263,57 @@ test "reader latency ignores ineffective inputs and preserves the pending reques
     try session.act(.back);
     try std.testing.expect(session.reader_requested_at == null);
 }
+
+test "slow retained reader views show delayed feedback without signaling background preparation" {
+    const library_path = std.c.getenv("POCKETMANGA_IMAGE_TEST_LIBRARY") orelse return error.SkipZigTest;
+    var codecs = try Vips.Library.load(std.mem.span(library_path));
+    defer codecs.deinit();
+    for ([_]lib.ReaderMode{ .paged, .vertical }) |mode| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFixtures(tmp.dir);
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", arena.allocator());
+        var service: Regions.Service = undefined;
+        service.init(std.testing.allocator, &codecs, try std.fs.path.join(arena.allocator(), &.{ root, "cache" }));
+        defer service.deinit();
+        var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true, .reader_requires_presentation = true };
+        defer model.deinit();
+        var session: Session = .{ .model = &model, .root = root, .io = std.testing.io, .region_service = &service, .load_image = invalidate };
+        defer session.deinit();
+        try session.act(.{ .reader_mode = mode });
+        try session.act(.{ .read = 0 });
+        var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+        defer h.deinit();
+        try h.frame();
+        try h.runTasks();
+        try std.testing.expect(session.regionCurrent());
+        try h.expectNoText("Preparing view…");
+        // Hold the queued replacement without disk tiles for the UI fast path.
+        try tmp.dir.deleteTree(std.testing.io, "cache");
+        const pixels = session.image.?.pixels.ptr;
+        try session.act(.{ .pan = if (mode == .vertical) 20 else 0.25 });
+        try h.frame();
+        try std.testing.expect(!session.regionCurrent());
+        try std.testing.expectEqual(pixels, session.image.?.pixels.ptr);
+        try h.advance(.fromMilliseconds(299));
+        try h.expectNoText("Preparing view…");
+        try h.advance(.fromMilliseconds(1));
+        try h.expectText("Preparing view…");
+        const stale = h.state().reader_busy.?;
+        try h.runTasks();
+        try std.testing.expect(session.regionCurrent());
+        try h.expectNoText("Preparing view…");
+        // A prepared turn is immediate and never signals its background work.
+        try session.act(.{ .turn = 1 });
+        try h.frame();
+        try std.testing.expect(session.regionCurrent());
+        try h.advance(.fromSeconds(1));
+        try h.expectNoText("Preparing view…");
+        try h.runTasks();
+        try session.act(.back);
+        try h.post(h.root().handler(Root, .reader_busy), stale);
+        try h.expectNoText("Preparing view…");
+    }
+}

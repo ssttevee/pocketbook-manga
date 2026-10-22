@@ -11,9 +11,10 @@ const regions = @import("region_service.zig");
 pub const OnlineCommand = union(enum) { stores, refresh_stores, remove_store: usize, toggle_pin, toggle_hidden, show_hidden, languages, toggle_language: usize, sources, extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear, find_alternative: usize, pick_global: usize };
 pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const Navigation = enum { library, updates, history, browse, more };
-pub const State = struct { storage_snapshot: ?storage.Snapshot = null, storage_revision: u32 = 0, storage_clearing: bool = false, more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, pointer_start: ?f.Vec2 = null, reader_updates: u8 = 0 };
+pub const ReaderBusyKey = struct { epoch: u64, revision: usize, chapter: u64 };
+pub const State = struct { reader_busy: ?ReaderBusyKey = null, storage_snapshot: ?storage.Snapshot = null, storage_revision: u32 = 0, storage_clearing: bool = false, more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, pointer_start: ?f.Vec2 = null, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { reader_mode_menu, reader_mode_choice: ?usize, storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage, series }, jump_chapter, jump_page, page_target: ?[]const u8, dismiss_error, dismiss_status: u64, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, library_sort, library_sort_choice: ?usize, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { reader_busy: ReaderBusyKey, reader_mode_menu, reader_mode_choice: ?usize, storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage, series }, jump_chapter, jump_page, page_target: ?[]const u8, dismiss_error, dismiss_status: u64, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, library_sort, library_sort_choice: ?usize, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
@@ -23,6 +24,10 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
         else => return,
     };
     switch (msg) {
+        .reader_busy => |key| {
+            const pending = readerBusyKey(session) orelse return;
+            if (std.meta.eql(pending, key)) state.reader_busy = key;
+        },
         .dismiss_error => session.dismissError(),
         .jump_page => {
             const ch = session.model.current() orelse return;
@@ -622,7 +627,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
     } else switch (model.screen) {
         .library => if (session.storage_managing) try ui.child(@import("storage_manager.zig"), "storage-manager", .{ .series = session.storage_series }) else try list(ui, model),
         .chapters => try list(ui, model),
-        .reader => try reader(ui, session),
+        .reader => try reader(ui, session, state),
         .settings => if (state.more_root) try moreView(ui) else {
             try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 10 } });
             defer ui.close();
@@ -1470,7 +1475,14 @@ fn readerDrag(geometry: lib.viewport.Geometry, drag: f.Vec2, size: f.Vec2) f64 {
     };
 }
 
-fn reader(ui: *app.Ui, session: *const Session) !void {
+fn readerBusyKey(session: *const Session) ?ReaderBusyKey {
+    if (session.model.screen != .reader or session.region_service == null or session.image == null or
+        session.regionCurrent() or session.status.len > 0) return null;
+    const chapter = session.model.current() orelse return null;
+    return .{ .epoch = session.region_epoch, .revision = session.reader_download_done, .chapter = std.hash.Wyhash.hash(0, chapter.id) };
+}
+
+fn reader(ui: *app.Ui, session: *const Session, state: *const State) !void {
     const model = session.model;
     const ch = model.current() orelse return;
     const on = ui.messages(Root);
@@ -1526,7 +1538,18 @@ fn reader(ui: *app.Ui, session: *const Session) !void {
             try text(ui, if (session.status.len > 0) session.status else if (session.region_service != null) "Loading page…" else if (session.load_image == null) "Page preview" else "Page unavailable", 14, 0);
         }
     }
-    if (model.readingMode() == .vertical and model.reader_waiting and !model.reader_controls) {
+    const pending = readerBusyKey(session);
+    if (pending) |key| {
+        // A one-shot presentation delay avoids flashing on cache hits. This
+        // timer does not poll tasks or participate in completion delivery.
+        try ui.after(.{ .reader_busy = key }, .fromMilliseconds(300), on.bind(.{ .reader_busy = key }));
+        if (state.reader_busy) |shown| if (std.meta.eql(shown, key)) {
+            try ui.open("reader-preparing", .{ .floating = .{ .mode = .root, .parent_point = .right_bottom, .unit_point = .right_bottom, .offset = .init(-12, -48) }, .background_color = .white, .border = .{ .color = .black, .widths = .outside(1) }, .layout = .{ .padding = .all(8) } });
+            try text(ui, "Preparing view…", 12, 0);
+            ui.close();
+        };
+    }
+    if (pending == null and model.readingMode() == .vertical and model.reader_waiting and !model.reader_controls) {
         try ui.open("reader-waiting", .{ .floating = .{ .mode = .root, .parent_point = .left_bottom, .unit_point = .left_bottom }, .background_color = .white, .layout = .{ .padding = .all(6) } });
         try text(ui, "Waiting for next page…", 12, 60);
         ui.close();

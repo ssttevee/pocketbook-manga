@@ -125,3 +125,10 @@ position and pending delta without restarting its still-running prefetch.
 Effective navigation advances the generation and cancels obsolete preparation.
 When the UI has already installed a cached view, the task prepares subsequent
 views without publishing that same frame a second time.
+
+Slow decoder calls log their source dimensions, tile coordinates and elapsed
+milliseconds before the cancellation checkpoint. A completed tile discarded by
+cancellation is logged separately, even if no visible frame timing is emitted.
+A retained old view shows a static “Preparing view…” badge after 300 ms while
+its replacement is pending. This is a single UI presentation timer, canceled
+when no longer needed; it does not poll tasks or wake decoder completion.

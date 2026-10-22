@@ -342,8 +342,15 @@ pub const Service = struct {
             const decoding = std.Io.Clock.boot.now(io);
             try self.backend.read(self.backend.context, .{ .x = x, .y = y, .width = width, .height = height }, pixels, width);
             self.metrics.decoded += 1;
-            self.metrics.decode_us += decoding.durationTo(std.Io.Clock.boot.now(io)).toMicroseconds();
-            try checkpoint.run(io);
+            const decode_time = decoding.durationTo(std.Io.Clock.boot.now(io));
+            self.metrics.decode_us += decode_time.toMicroseconds();
+            // Log before the cancellation checkpoint: otherwise a long
+            // speculative read can vanish from the frame-level timings.
+            if (decode_time.toMilliseconds() >= 250) std.log.info("Reader slow decoder key={x} tile={d},{d} {d}x{d} source={d}x{d} elapsed_ms={d}", .{ self.key.?, x, y, width, height, self.source.width, self.source.height, decode_time.toMilliseconds() });
+            checkpoint.run(io) catch |err| {
+                if (err == error.Canceled) std.log.info("Reader decoded tile canceled key={x} tile={d},{d} elapsed_ms={d}", .{ self.key.?, x, y, decode_time.toMilliseconds() });
+                return err;
+            };
             const writing = std.Io.Clock.boot.now(io);
             defer self.metrics.disk_write_us += writing.durationTo(std.Io.Clock.boot.now(io)).toMicroseconds();
             self.writeDisk(io, path, tile) catch |err| switch (err) {
