@@ -46,6 +46,34 @@ class InstallTreeTests(unittest.TestCase):
                     install(source, destination)
             self.assertEqual(b'old output', (destination / 'keep').read_bytes())
 
+    def test_overlapping_paths_are_rejected_including_parent_aliases(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'output/generated'
+            source.mkdir(parents=True)
+            (source / 'keep').write_bytes(b'generated output')
+            (root / 'alias').symlink_to(root, target_is_directory=True)
+            for destination in (source, source / 'nested', root / 'alias/output'):
+                with self.subTest(destination=destination), self.assertRaisesRegex(ValueError, 'must not overlap'):
+                    install(source, destination)
+                self.assertEqual(b'generated output', (source / 'keep').read_bytes())
+            self.assertFalse((source / 'nested').exists())
+
+    def test_final_destination_symlink_is_replaced_without_modifying_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, previous = root / 'cache', root / 'other-output'
+            source.mkdir()
+            previous.mkdir()
+            (source / 'new').write_bytes(b'new output')
+            (previous / 'keep').write_bytes(b'unrelated data')
+            destination = root / 'installed'
+            destination.symlink_to(previous, target_is_directory=True)
+            install(source, destination)
+            self.assertFalse(destination.is_symlink())
+            self.assertEqual(b'new output', (destination / 'new').read_bytes())
+            self.assertEqual(b'unrelated data', (previous / 'keep').read_bytes())
+
 
 if __name__ == '__main__':
     unittest.main()

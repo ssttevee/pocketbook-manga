@@ -7,9 +7,11 @@ import tempfile
 
 
 def install(source, destination):
-    source, destination = source.resolve(), destination.absolute()
-    if source == destination or source.is_relative_to(destination):
-        raise ValueError('Installation destination must not contain its generated source')
+    source = source.resolve()
+    # Resolve parent aliases but replace a final destination symlink itself.
+    destination = destination.parent.resolve() / destination.name
+    if source.is_relative_to(destination) or destination.is_relative_to(source):
+        raise ValueError('Installation source and destination must not overlap')
     destination.parent.mkdir(parents=True, exist_ok=True)
     # Copy completely before replacing the old output. Each installed subtree
     # is owned by this build step, so stale files from another profile disappear.
