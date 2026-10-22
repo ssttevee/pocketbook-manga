@@ -18,6 +18,7 @@ pub fn browserVerificationRequired(failure: []const u8) bool {
 }
 
 pub const Session = struct {
+    pub const TabRequest = struct { generation: u64, screen: lib.Screen, category: usize, query: []const u8 };
     model: *lib.Model,
     io: std.Io,
     root: []const u8,
@@ -58,6 +59,9 @@ pub const Session = struct {
     download_blocked: bool = false,
     download_identity: ?struct { series: []const u8, chapter: []const u8 } = null,
     browser: Browser = .{},
+    tab_request: ?TabRequest = null,
+    tab_generation: u64 = 0,
+    defer_tab_refresh: bool = false,
     /// Owns `model.library` once loaded through the engine.
     library_arena: ?std.heap.ArenaAllocator = null,
     /// When the reader last recorded progress, for reading time.
@@ -1190,7 +1194,7 @@ pub const Session = struct {
             const progress = try a.alloc(?tachi.downloads.ResumeProgress, manga.chapters.len);
             for (manga.chapters, progress) |ch, *saved| {
                 saved.* = null;
-                if (!ch.downloaded()) if (self.browser.engine) |engine| {
+                if (model.screen == .chapters and !ch.downloaded()) if (self.browser.engine) |engine| {
                     saved.* = engine.downloadProgress(a, ch.id) catch |err| blk: {
                         std.log.warn("Cannot inspect saved download {s}: {s}", .{ ch.id, @errorName(err) });
                         break :blk null;
@@ -1352,7 +1356,26 @@ pub const Session = struct {
         self.reader_requested_at = std.Io.Clock.boot.now(self.io);
     }
 
+    /// Root navigation paints before its database views are built by a task.
+    pub fn navigateTab(self: *Session, action: lib.Action) !void {
+        self.tab_generation +%= 1;
+        self.tab_request = null;
+        self.defer_tab_refresh = true;
+        defer self.defer_tab_refresh = false;
+        try self.act(action);
+        if (self.browser.engine != null) switch (self.model.screen) {
+            .library, .updates, .history => self.tab_request = .{
+                .generation = self.tab_generation,
+                .screen = self.model.screen,
+                .category = self.model.category,
+                .query = self.model.query_text,
+            },
+            else => {},
+        };
+    }
+
     pub fn act(self: *Session, action: lib.Action) !void {
+        if (!self.defer_tab_refresh) self.tab_request = null;
         if (action == .turn and action.turn > 0 and self.model.screen == .reader and
             self.model.readerAtEnd() and (self.region_service == null or self.regionCurrent()))
         {
@@ -1423,9 +1446,9 @@ pub const Session = struct {
         }
         if (self.model.screen == .reader) self.cancelCoverJob();
         const lists = self.model.screen == .library or self.model.screen == .chapters;
-        if (lists and (action == .search or action == .category or old_screen != self.model.screen or old_manga != self.model.manga or self.model.title_rows == null)) try self.refreshRows();
+        if (!self.defer_tab_refresh and lists and (action == .search or action == .category or old_screen != self.model.screen or old_manga != self.model.manga or self.model.title_rows == null)) try self.refreshRows();
         const feed = self.model.screen == .updates or self.model.screen == .history or self.model.screen == .queue or self.model.screen == .upcoming;
-        if (feed and old_screen != self.model.screen) try self.refreshFeed();
+        if (!self.defer_tab_refresh and feed and old_screen != self.model.screen) try self.refreshFeed();
         if ((self.model.screen == .engine_settings or self.model.screen == .storage) and old_screen != self.model.screen) try self.loadSettings();
         if ((self.model.screen == .trackers or self.model.screen == .tracking) and old_screen != self.model.screen) try self.loadTrackers();
         if (self.model.screen == .backup and old_screen != .backup) try self.refreshBackups();

@@ -81,3 +81,59 @@ test "download queue uses available viewport rows and reserves warning space" {
     try h.clickElement(h.root().element("dismiss-download-error"));
     try std.testing.expectEqual(warning_rows, model.pageRows());
 }
+
+test "root tabs paint loading before database tasks and discard superseded views" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var engine: tachi.Engine = .init(a, std.testing.io, tachi.backend.none, .{ .dir = root });
+    defer engine.queue.deinit(&engine);
+    const library: lib.Library = .{ .manga = &.{.{ .id = "story", .title = "Story", .chapters = &.{.{ .id = "chapter", .title = "Chapter", .last_read = 1 }} }} };
+    try engine.store.save(a, library);
+    var model: lib.Model = .{ .gpa = a, .library = library };
+    var session: Session = .{ .model = &model, .io = std.testing.io, .root = root };
+    session.browser.engine = &engine;
+    defer session.deinit();
+    var h: Harness = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try h.clickElement(h.root().element("history"));
+    try std.testing.expectEqual(lib.Screen.history, model.screen);
+    try h.expectText("Loading…");
+    try std.testing.expectEqual(@as(usize, 0), session.feed.len);
+    const first = session.tab_request.?;
+    // A second destination is interactive while the first task is still queued.
+    try h.clickElement(h.root().element("updates"));
+    try std.testing.expectEqual(lib.Screen.updates, model.screen);
+    try h.expectText("Loading…");
+    const current = session.tab_request.?;
+    try @import("tab_data.zig").accept(&session, .{ .request = first, .category = 0, .category_id = 0, .categories = &.{}, .titles = &.{}, .feed = &.{} });
+    try std.testing.expectEqual(current.generation, session.tab_request.?.generation);
+    // A failure already queued before navigation has the same stale-generation
+    // protection as a successful result, independently of task cancellation.
+    try h.post(h.root().handler(Root, .tab_loaded), @import("tab_data.zig").Outcome{ .request = first, .value = error.AccessDenied });
+    try std.testing.expectEqual(current.generation, session.tab_request.?.generation);
+    try std.testing.expectEqualStrings("", session.status);
+    try h.expectText("Loading…");
+    try h.runTasks();
+    try std.testing.expect(session.tab_request == null);
+    try h.expectNoText("Loading…");
+    try h.clickElement(h.root().element("history"));
+    try h.expectText("Loading…");
+    try h.runTasks();
+    try std.testing.expectEqual(@as(usize, 1), session.feed.len);
+    try std.testing.expectEqualStrings("Story", session.feed[0].title);
+    try h.clickElement(h.root().element("library"));
+    try h.expectText("Loading…");
+    try h.runTasks();
+    try h.expectText("Story");
+    try h.clickElement(h.root().element("history"));
+    try h.clickElement(h.root().element("more"));
+    try h.expectText("Download queue");
+    try h.runTasks();
+    try std.testing.expectEqual(lib.Screen.settings, model.screen);
+    try h.expectNoText("Loading…");
+}

@@ -52,6 +52,7 @@ test "drawn UI opens chapters, turns pages, resumes and saves completion" {
     try std.testing.expectEqual(lib.Screen.library, model.screen);
     try h.click("History");
     try std.testing.expectEqual(lib.Screen.history, model.screen);
+    try h.runTasks();
     try std.testing.expectEqual(1, session.feed.len);
     try std.testing.expectEqual(1, session.feed[0].pick.chapter);
     try h.click("Test Story");

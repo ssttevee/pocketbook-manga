@@ -7,6 +7,7 @@ const Root = @This();
 const tachi = @import("tachi");
 const models = tachi.models;
 const storage = @import("storage.zig");
+const tabs = @import("tab_data.zig");
 const regions = @import("region_service.zig");
 pub const OnlineCommand = union(enum) { stores, refresh_stores, remove_store: usize, toggle_pin, toggle_hidden, show_hidden, languages, toggle_language: usize, sources, extensions, reload_sources, pick_source: usize, pick_title: usize, extension: usize, next, previous, search, latest, source_settings, preference: usize, uninstall, refresh_book, update_all, scan, cancel, queue_unread, queue_start, queue_pause, queue_clear, find_alternative: usize, pick_global: usize };
 pub const BackupCommand = enum { create, export_downloads, import_downloads };
@@ -14,7 +15,7 @@ pub const Navigation = enum { library, updates, history, browse, more };
 pub const ReaderBusyKey = struct { epoch: u64, revision: usize, chapter: u64 };
 pub const State = struct { storage_pager: ?@import("storage_manager.zig").Pager = null, reader_busy: ?ReaderBusyKey = null, storage_snapshot: ?storage.Snapshot = null, storage_revision: u32 = 0, storage_clearing: bool = false, more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, pointer_start: ?f.Vec2 = null, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { storage_pager: @import("storage_manager.zig").Pager, reader_zoom, reader_busy: ReaderBusyKey, reader_mode_menu, reader_mode_choice: ?usize, storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage, series }, jump_chapter, jump_page, page_target: ?[]const u8, dismiss_error, dismiss_status: u64, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, library_sort, library_sort_choice: ?usize, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { storage_pager: @import("storage_manager.zig").Pager, tab_loaded: tabs.Outcome, reader_zoom, reader_busy: ReaderBusyKey, reader_mode_menu, reader_mode_choice: ?usize, storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage, series }, jump_chapter, jump_page, page_target: ?[]const u8, dismiss_error, dismiss_status: u64, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, library_sort, library_sort_choice: ?usize, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
@@ -25,6 +26,15 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     };
     switch (msg) {
         .storage_pager => |pager| state.storage_pager = pager,
+        .tab_loaded => |outcome| {
+            if (!tabs.current(session, outcome.request)) return;
+            const result = outcome.value catch |err| {
+                session.tab_request = null;
+                if (err != error.Canceled) try session.formatStatus("Cannot load this tab: {s}", .{@errorName(err)});
+                return;
+            };
+            try tabs.accept(session, result);
+        },
         .reader_zoom => session.toggleReaderZoom(),
         .reader_busy => |key| {
             const pending = readerBusyKey(session) orelse return;
@@ -109,9 +119,8 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
         },
         .navigate => |destination| {
             if (!session.detachBrowseStartup()) return;
-            const was_managing = session.storage_managing;
             session.storage_managing = false;
-            if (was_managing) try session.refreshRows();
+            session.tab_request = null;
             // Reselecting Browse preserves its active tab, filter and list page.
             if (destination == .browse and (session.model.screen == .sources or session.model.screen == .extensions)) {
                 if (session.browser.loading_sources) |job| {
@@ -131,7 +140,7 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                 .browse => .help,
                 .more => .settings,
             };
-            try session.act(action);
+            try session.navigateTab(action);
             if (destination == .browse) {
                 if (session.browser.loading_sources) |job| {
                     session.browser.busy = job;
@@ -596,7 +605,14 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         try app.widgets.button(ui, "dismiss-download-error", .{ .label = "Dismiss", .on_click = on.bind(.dismiss_error) });
         ui.close();
     }
-    if (session.browser.busy) |job| {
+    const pending_tab = if (session.tab_request) |request| request.screen == model.screen else false;
+    if (pending_tab) {
+        const request = session.tab_request.?;
+        try ui.task("tab-data", .{ .restart = request.generation }, tabs.load, .{ session.browser.engine.?, request }, on.handler(.tab_loaded));
+        try ui.open("tab-loading", .{ .layout = .{ .sizing = .grow(.{}), .padding = .all(12) } });
+        try text(ui, "Loading…", 15, 40);
+        ui.close();
+    } else if (session.browser.busy) |job| {
         try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(12), .child_gap = 16 } });
         defer ui.close();
         try text(ui, operationTitle(job.request), 18, 0);
