@@ -1,0 +1,125 @@
+name: Publish runtime builders
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: runtimes-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  runtime:
+    name: ARMv7 / glibc ${{ matrix.glibc }}
+    # Keep the build host architecture consistent with the recorded runtime builds.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        glibc: ['2.23', '2.39']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Make room for cross compiler and OpenJDK builds
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache
+          df -h /
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish cross compiler and JVM build dependencies
+        id: builder
+        uses: docker/build-push-action@v6
+        with:
+          context: tools/jre
+          target: deps
+          platforms: linux/arm64
+          push: true
+          build-args: GLIBC_VERSION=${{ matrix.glibc }}
+          tags: |
+            ghcr.io/ssttevee/pocketmanga-jvm-builder:glibc-${{ matrix.glibc }}-${{ github.sha }}
+            ghcr.io/ssttevee/pocketmanga-jvm-builder:glibc-${{ matrix.glibc }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=builder-${{ matrix.glibc }}
+          cache-to: type=gha,scope=builder-${{ matrix.glibc }},mode=max,ignore-error=true
+      - name: Publish JVM runtime artifacts
+        id: jvm
+        uses: docker/build-push-action@v6
+        with:
+          context: tools/jre
+          target: artifacts
+          platforms: linux/arm64
+          push: true
+          build-args: |
+            GLIBC_VERSION=${{ matrix.glibc }}
+            BUILDER_IMAGE=ghcr.io/ssttevee/pocketmanga-jvm-builder@${{ steps.builder.outputs.digest }}
+          tags: |
+            ghcr.io/ssttevee/pocketmanga-jvm:glibc-${{ matrix.glibc }}-${{ github.sha }}
+            ghcr.io/ssttevee/pocketmanga-jvm:glibc-${{ matrix.glibc }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=jvm-${{ matrix.glibc }}
+          cache-to: type=gha,scope=jvm-${{ matrix.glibc }},mode=max,ignore-error=true
+      - name: Publish image decoder runtime artifacts
+        id: images
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: tools/image/Dockerfile
+          target: artifacts
+          platforms: linux/arm64
+          push: true
+          build-args: |
+            GLIBC_VERSION=${{ matrix.glibc }}
+            TOOLCHAIN_IMAGE=ghcr.io/ssttevee/pocketmanga-jvm-builder@${{ steps.builder.outputs.digest }}
+          tags: |
+            ghcr.io/ssttevee/pocketmanga-images:glibc-${{ matrix.glibc }}-${{ github.sha }}
+            ghcr.io/ssttevee/pocketmanga-images:glibc-${{ matrix.glibc }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=images-${{ matrix.glibc }}
+          cache-to: type=gha,scope=images-${{ matrix.glibc }},mode=max,ignore-error=true
+      - name: Export and record exact release inputs
+        env:
+          GLIBC: ${{ matrix.glibc }}
+          BUILDER: ghcr.io/ssttevee/pocketmanga-jvm-builder@${{ steps.builder.outputs.digest }}
+          JVM: ghcr.io/ssttevee/pocketmanga-jvm@${{ steps.jvm.outputs.digest }}
+          IMAGES: ghcr.io/ssttevee/pocketmanga-images@${{ steps.images.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p runtimes/jre runtimes/images
+          docker pull "$JVM"
+          docker pull "$IMAGES"
+          jvm_container=$(docker create "$JVM" /bin/true)
+          image_container=$(docker create "$IMAGES" /bin/true)
+          trap 'docker rm -f "$jvm_container" "$image_container" >/dev/null' EXIT
+          docker cp "$jvm_container:/artifacts/." runtimes/jre/
+          docker cp "$image_container:/artifacts/." runtimes/images/
+          (cd runtimes/jre && sha256sum --check pocketmanga-jre.tar.sha256)
+          (cd runtimes/images && sha256sum --check pocketmanga-image.tar.sha256)
+          python3 tools/release_manifest.py --glibc "$GLIBC" \
+            --jre runtimes/jre --images runtimes/images --builder "$BUILDER" \
+            --jvm-image "$JVM" --image-runtime-image "$IMAGES" \
+            --output runtimes/runtime-manifest.json
+          {
+            printf '```json\n'
+            cat runtimes/runtime-manifest.json
+            printf '\n```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtimes-glibc-${{ matrix.glibc }}
+          path: runtimes/
+          if-no-files-found: error
+          retention-days: 14

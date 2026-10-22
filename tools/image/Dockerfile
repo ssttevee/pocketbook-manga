@@ -17,6 +17,8 @@ RUN /build/build.sh foundations
 RUN /build/build.sh codecs
 COPY src/vips_bridge.c src/vips_bridge.h tools/image/smoke.c tools/image/decoder_only.py /build/
 RUN /build/build.sh vips
+COPY tools/image/smoke_fixtures.py /build/
+RUN python3 /build/smoke_fixtures.py
 FROM scratch AS export
 COPY --from=image /work/out/ /
 

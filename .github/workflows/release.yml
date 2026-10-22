@@ -1,0 +1,166 @@
+name: Release PocketManga
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag at the selected commit (for retrying a failed release)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate release tag and source commit
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]
+          test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$GITHUB_SHA"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+  runtimes:
+    needs: version
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/runtimes.yml
+
+  bundle:
+    name: Verify and package glibc ${{ matrix.glibc }}
+    needs: runtimes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        glibc: ['2.23', '2.39']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install SDK platform and production decoder test dependencies
+        run: |
+          set -euo pipefail
+          sdkmanager 'platforms;android-35'
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libvips-dev libvips-tools pkg-config
+      - name: Install checksum-verified Zig 0.17.0
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, tarfile, urllib.request
+          with urllib.request.urlopen('https://ziglang.org/download/index.json') as response:
+              release = json.load(response)['0.17.0']['x86_64-linux']
+          archive = pathlib.Path(os.environ['RUNNER_TEMP']) / 'zig.tar.xz'
+          urllib.request.urlretrieve(release['tarball'], archive)
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == release['shasum'], 'Zig checksum mismatch'
+          destination = pathlib.Path(os.environ['RUNNER_TEMP']) / 'zig'
+          destination.mkdir()
+          with tarfile.open(archive) as tar:
+              tar.extractall(destination, filter='data')
+          binary = next(destination.glob('*/zig'))
+          with open(os.environ['GITHUB_PATH'], 'a') as path:
+              path.write(str(binary.parent) + '\n')
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: runtimes-glibc-${{ matrix.glibc }}
+          path: runtimes
+      - name: Test and build both optimization modes
+        env:
+          GLIBC: ${{ matrix.glibc }}
+          POCKETMANGA_IMAGE_TEST_LIBRARY: ${{ github.workspace }}/.runtime-cache/image-host/libpocketmanga-image.so
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          python3 tools/build_images.py --host --output .runtime-cache/image-host
+          python3 tools/test_image_regions.py --library "$POCKETMANGA_IMAGE_TEST_LIBRARY" 2>&1 | tee evidence/decoder-tests.txt
+          python3 -m unittest discover -s tools -p 'test_*.py' 2>&1 | tee evidence/python-tests.txt
+          zig build test -Dglibc="$GLIBC" --summary all 2>&1 | tee evidence/tests.txt
+          zig build -Dglibc="$GLIBC" --summary all 2>&1 | tee evidence/build.txt
+          zig build -Dglibc="$GLIBC" -Doptimize=small --summary all 2>&1 | tee evidence/build-small.txt
+          zig build host --summary all 2>&1 | tee evidence/java-host.txt
+      - name: Package verified runtime inputs
+        env:
+          GLIBC: ${{ matrix.glibc }}
+        run: |
+          set -euo pipefail
+          python3 tools/package_device.py --glibc "$GLIBC" \
+            --runtime-manifest runtimes/runtime-manifest.json \
+            --jre runtimes/jre/pocketmanga-jre.tar \
+            --images runtimes/images/pocketmanga-image.tar --output dist/profile
+          mkdir -p release-assets
+          cp dist/profile/*.tar.gz dist/profile/*.sha256 release-assets/
+          cp runtimes/runtime-manifest.json "release-assets/runtime-manifest-glibc-$GLIBC.json"
+          tar -czf "release-assets/build-evidence-glibc-$GLIBC.tar.gz" -C evidence .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-glibc-${{ matrix.glibc }}
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    # No release is created until every supported profile has passed all checks.
+    needs: [version, bundle]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-glibc-*
+          merge-multiple: true
+          path: release-assets
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # A retry may replace assets on a draft, but never changes a published release.
+          if gh release view "$RELEASE_TAG" --json isDraft >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          else
+            cat > release-notes.md <<'NOTES'
+          Download the package matching your reader's firmware, then extract its `applications` folder onto the reader's internal storage. The source-code archives are for developers.
+
+          | Firmware | Download filename contains |
+          | --- | --- |
+          | 6.8–6.9 | `armv7-softfp-glibc-2.23` |
+          | 6.10 | `armv7-softfp-glibc-2.39` |
+
+          Check the README's hardware compatibility matrix before installing. Automated builds and emulator checks do not establish that an untested reader works on hardware. The accompanying runtime manifests record the exact builder and runtime inputs; build-evidence archives contain the release checks.
+          NOTES
+            gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes \
+              --notes-file release-notes.md --title "PocketManga $RELEASE_TAG"
+          fi
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease
+          else
+            gh release edit "$RELEASE_TAG" --draft=false
+          fi
