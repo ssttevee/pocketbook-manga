@@ -33,6 +33,8 @@ The bundle no longer contains any C library or firmware file.
 
 ## How it is built
 
+For the published builder and JVM artifact images, their contents, and commands to fetch, rebuild or publish them, see [container images](containers.md).
+
 `tools/build_jre.py` runs `docker build` on `tools/jre/Dockerfile` and checks
 the result against the digest pinned in `tools/runtime-packages.json`:
 

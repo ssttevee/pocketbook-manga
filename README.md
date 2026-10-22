@@ -13,6 +13,8 @@ Look for an installation bundle on the [GitHub Releases page](https://github.com
 | 6.8 or 6.9 | `pocketmanga-armv7-softfp-glibc-2.23.tar.gz` |
 | 6.10 | `pocketmanga-armv7-softfp-glibc-2.39.tar.gz` |
 
+The container images under GitHub **Packages** are [developer build tools and runtime artifacts](docs/containers.md). To use PocketManga, download the installation bundle above; Docker is only needed for development.
+
 You do not need to update your firmware to use PocketManga. These bundles target the classic ARMv7 PocketBook platform; they do not support every PocketBook model. Check the [compatibility matrix](docs/compatibility.md) before downloading. The source-code archive and individual `.app` files are not enough to install the app.
 
 The complete bundle includes everything needed to run PocketManga, including its Java runtime. Developers can produce it using the [build instructions below](#build-from-source).
@@ -141,7 +143,7 @@ python3 tools/preview_png.py
 
 These write fake-InkView screenshots under `preview/`. They help check layout, but cannot reproduce the reader's panel refresh, Wi-Fi dialogs or suspend behavior.
 
-See [release builds and container images](docs/releases.md) for firmware-specific packaging and publishing. Use `-Dglibc=2.39` when building for firmware 6.10, and pass `--glibc 2.39` to both runtime builders and the packaging script.
+See [container images](docs/containers.md) for their purpose, usage and build commands, and [release builds](docs/releases.md) for firmware-specific packaging and publishing. Use `-Dglibc=2.39` when building for firmware 6.10, and pass `--glibc 2.39` to both runtime builders and the packaging script.
 
 See [development and verification](docs/development.md) for the architecture, image-cache limits, production codec tests, firmware emulation and packaging details. The [reader wake investigation](docs/reader-wake.md) explains how background work is delivered promptly without periodic completion polling.
 

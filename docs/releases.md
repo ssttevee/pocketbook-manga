@@ -2,21 +2,13 @@
 
 The [firmware and hardware matrix](compatibility.md) determines the supported profiles. Initially these are ARMv7 soft-float glibc 2.23 (firmware 6.8–6.9) and 2.39 (6.10). A firmware number alone cannot establish ABI compatibility on another model. Adding a profile requires investigating its official firmware, checking CPU/loader/calling convention, then running the app and runtime tests before claiming support. Update the target choices in `build.zig`, `PROFILES` in `tools/release_manifest.py`, the runtime pins, both workflow matrices and the compatibility table together.
 
-## Published builder images
+## Runtime container images
 
-Run **Actions → Publish runtime builders → Run workflow** in the public repository. Leave **publish_builders** enabled to rebuild and publish the compiler/dependency images; disable it to reuse the reviewed builder digests from `tools/runtime-packages.json`. Runtime rebuilds use those pinned builders; ordinary app releases fetch the reviewed runtime artifact images from `runtime_images` in the same lock. The workflow builds on Linux ARM64 and publishes these GitHub Container Registry packages, each with `glibc-2.23` and `glibc-2.39` tags:
+The [container image guide](containers.md) explains each GHCR package, its contents, architecture, usage and build commands. These images are developer build inputs. Readers install the complete bundles from [GitHub Releases](https://github.com/ssttevee/pocketbook-manga/releases).
 
-- `ghcr.io/ssttevee/pocketmanga-jvm-builder`: cross compiler, sysroot and OpenJDK build dependencies.
-- `ghcr.io/ssttevee/pocketmanga-jvm`: Java runtime tar, class-data archive and checksum under `/artifacts/`.
-- `ghcr.io/ssttevee/pocketmanga-images`: image decoder runtime tar and checksum under `/artifacts/`.
+Runtime publication and app publication are separate operations. **Actions → Publish runtime builders** builds candidate runtime images; it does not update the reviewed source lock. Ordinary app releases fetch the immutable runtime references from `tools/runtime-packages.json`, verify the archive checksums, and package them with the newly built application.
 
-The container architecture is **Linux ARM64**, while its compiler produces **ARM32 soft-float** applications for the reader. The images contain no proprietary PocketBook firmware or libraries. JVM sources and decoder sources are pinned; builders use a pinned Debian image and package snapshot. JVM startup and decoder region rendering run under ARM emulation during the build.
-
-After changing compiler, sysroot, JVM or decoder inputs, publish candidate runtimes, run the ARM and firmware checks, then update the reviewed archive checksums and immutable image references before tagging an app release. A standalone publication records candidates; it does not silently update the source lock.
-
-Each image also has a tag ending in its source revision. Tags are convenient pointers, but can be moved; releases use registry **digests** to identify exact images. Every profile's `runtime-manifest.json` records its builder/runtime image digests, artifact checksums, class-data archive checksum, CPU/ABI and firmware range. The packaging script verifies those checksums and the native build's `build-target.json` before creating a bundle.
-
-GitHub initially makes new container packages private even when their source repository is public. After the first publication, open each package's **Package settings → Change visibility → Public**, and verify an anonymous pull. Repository access inheritance does not change package visibility. See [GitHub's package visibility instructions](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility). This is a one-time setting per package.
+After changing compiler, sysroot, JVM or decoder inputs, follow the guide's [publication steps](containers.md#publish-images-to-ghcr), run the ARM and firmware checks, then update the reviewed checksums and image references before tagging an app release. Every profile's runtime manifest records its builder/runtime image references, artifact checksums, class-data archive checksum, CPU/ABI and firmware range. Packaging also checks the native build's `build-target.json` to prevent mixing profiles.
 
 For local builds, use the builder by its digest from a successful workflow's manifest:
 

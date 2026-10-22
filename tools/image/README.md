@@ -4,7 +4,9 @@ with `tools/package_device.py`. Sources and SHA-256 checksums are recorded in
 `sources.json`; Docker's Debian packages use the JRE build's snapshot. Pass
 `--glibc 2.39` to build the newer profile. The libjpeg build label is fixed
 to the original reviewed runtime date so identical sources produce the same
-archive on different days. See [release builds](../../docs/releases.md).
+archive on different days. See [container images](../../docs/containers.md)
+for the builder and decoder artifact image, including how to fetch or rebuild
+them, and [release builds](../../docs/releases.md) for packaging.
 
 Enabled image families match Mihon's ImageUtil allowlist and imagedecoder 17:
 JPEG, PNG/APNG, WebP, GIF, AVIF, HEIF, JPEG XL and JPEG 2000. Animated images
