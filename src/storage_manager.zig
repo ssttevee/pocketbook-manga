@@ -6,7 +6,8 @@ const app = f.app;
 const Session = @import("session.zig").Session;
 const tachi = @import("tachi");
 const Self = @This();
-pub const Props = struct { series: bool = false };
+pub const Pager = struct { handler: app.Handler(Page), size: usize };
+pub const Props = struct { series: bool = false, on_pager: ?app.Handler(Pager) = null };
 pub const Row = struct { id: []const u8, series: []const u8, chapter: []const u8, pages: usize, total: usize, chapter_ids: []const []const u8 = &.{} };
 pub const State = struct {
     arena: ?std.heap.ArenaAllocator = null,
@@ -203,7 +204,8 @@ pub fn view(ui: *app.Ui, state: *const State, props: Props) !void {
         try app.widgets.button(ui, "select-all", .{ .label = "Select all", .enabled = state.loaded and !state.busy and state.rows.len > 0, .on_click = on.bind(.all) });
         try app.widgets.button(ui, "clear-selection", .{ .label = "Clear selection", .enabled = !state.busy and state.selected.count() > 0, .on_click = on.bind(.clear) });
     }
-    const size: usize = @max(1, @as(usize, @intFromFloat(@max(0, ui.core.viewport.y - 246))) / 50);
+    const size: usize = @max(1, @as(usize, @intFromFloat(@max(0, ui.core.viewport.y - (if (session.model.prefs.hide_navigation) @as(f32, 208) else 246)))) / 50);
+    if (props.on_pager) |handler| try ui.after(.{ "register-pager", size }, .fromMilliseconds(0), try handler.withAlloc(ui.arena(), .{ .handler = on.handler(.page), .size = size }));
     const start = if (state.loaded) @min(state.offset, state.rows.len) else 0;
     const end = if (state.loaded) @min(start + size, state.rows.len) else 0;
     if (!state.loaded) try ui.text(if (props.series) "Loading downloaded series..." else "Loading downloaded chapters...", .{ .font_size = 15 }) else if (state.rows.len == 0) try ui.text("No downloaded chapters", .{ .font_size = 15 });
@@ -234,7 +236,7 @@ pub fn view(ui: *app.Ui, state: *const State, props: Props) !void {
         try app.widgets.button(ui, "move-sd", .{ .label = "Move to SD", .enabled = enabled and (if (session.browser.engine) |engine| engine.sdAvailable() else false), .on_click = on.bind(.{ .operation = .move_sd }) });
     }
     if (state.busy) try ui.text(if (state.operation == .delete) "Deleting downloads..." else if (state.operation == .move_internal or state.operation == .move_sd) "Moving downloads..." else "Updating reading progress...", .{ .font_size = 13 });
-    {
+    if (!session.model.prefs.hide_navigation) {
         try ui.open("manager-pages", .{ .layout = .{ .child_gap = 8, .child_alignment = .center_left } });
         defer ui.close();
         try app.widgets.button(ui, "previous", .{ .label = "Previous", .enabled = start > 0, .on_click = on.bind(.{ .page = Page{ .delta = -1, .size = size } }) });

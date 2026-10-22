@@ -49,3 +49,112 @@ test "Mihon root destinations stay in the bottom navigation and More returns fro
     try h.clickElement(h.root().element("library"));
     try std.testing.expectEqual(lib.Screen.library, model.screen);
 }
+
+test "hidden pagination is persisted and physical library turns include the extra row" {
+    const t = std.testing;
+    const tachi = @import("tachi");
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(t.io, ".", a);
+    var engine: tachi.Engine = .init(a, t.io, tachi.backend.none, .{ .dir = root });
+    defer engine.queue.deinit(&engine);
+    var titles: [9]lib.Manga = undefined;
+    for (&titles, 0..) |*title, i| title.* = .{ .id = try std.fmt.allocPrint(a, "series-{d}", .{i}), .title = try std.fmt.allocPrint(a, "Series {d}", .{i}) };
+    var model: lib.Model = .{ .gpa = a, .library = .{ .manga = &titles }, .prefs = .{ .library_grid = false } };
+    var session: Session = .{ .model = &model, .io = t.io, .root = "." };
+    defer session.deinit();
+    var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    const sort = h.findElement(h.root().element("library-sort")).?.bbox;
+    const toolbar = h.findElement(h.root().element("toolbar")).?.bbox;
+    try t.expect(sort.y >= toolbar.y + toolbar.h + 8);
+    try model.dispatch(.navigation_buttons);
+    try h.frame();
+    try h.expectNoText("Previous");
+    try h.expectNoText("Next");
+    try h.expectText("Series 5");
+    try h.press(.page_down, .{});
+    try h.expectText("Series 6");
+    try t.expectEqual(6, model.offset);
+    try h.press(.page_down, .{});
+    try t.expectEqual(6, model.offset);
+    try h.press(.page_up, .{});
+    try t.expectEqual(0, model.offset);
+    const bytes = try std.json.Stringify.valueAlloc(a, model.prefs, .{});
+    const saved = try std.json.parseFromSlice(lib.Preferences, a, bytes, .{});
+    defer saved.deinit();
+    try t.expect(saved.value.hide_navigation);
+    const legacy = try std.json.parseFromSlice(lib.Preferences, a, "{}", .{});
+    defer legacy.deinit();
+    try t.expect(!legacy.value.hide_navigation);
+    session.browser.engine = &engine;
+    model.screen = .engine_settings;
+    try h.frame();
+    const eighth_setting = h.findText("[ ] Allow deleting bookmarked").?.bbox;
+    try t.expect(eighth_setting.y + eighth_setting.h <= 464);
+    try h.press(.page_down, .{});
+    try t.expectEqual(8, model.offset);
+    try h.press(.page_up, .{});
+    try t.expectEqual(0, model.offset);
+    model.screen = .categories;
+    try t.expectEqual(7, model.pageRows());
+}
+
+test "partially read chapters offer both Mark read and Mark unread" {
+    const t = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    var model: lib.Model = .{ .gpa = arena.allocator(), .screen = .chapter_menu, .library = .{ .manga = &.{.{ .id = "series", .title = "Series", .chapters = &.{.{ .id = "chapter", .title = "Chapter", .last_page_read = 2, .last_read = 1 }} }} } };
+    var session: Session = .{ .model = &model, .io = t.io, .root = "." };
+    defer session.deinit();
+    var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try h.expectText("Mark read");
+    try h.expectText("Mark unread");
+}
+
+test "hidden storage pager still accepts physical turns and does not replay on reopening" {
+    const t = std.testing;
+    const tachi = @import("tachi");
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(t.io, ".", a);
+    var chapters: [9]lib.Chapter = undefined;
+    for (&chapters, 0..) |*chapter, i| chapter.* = .{ .id = try std.fmt.allocPrint(a, "chapter-{d}", .{i}), .title = try std.fmt.allocPrint(a, "Chapter {d}", .{i}), .pages = &.{"downloads/test.png"} };
+    const library: lib.Library = .{ .manga = &.{.{ .id = "series", .title = "Series", .source_id = 1, .chapters = &chapters }} };
+    var engine: tachi.Engine = .init(a, t.io, tachi.backend.none, .{ .dir = root });
+    defer engine.queue.deinit(&engine);
+    try engine.store.save(a, library);
+    var model: lib.Model = .{ .gpa = a, .library = library, .prefs = .{ .hide_navigation = true } };
+    var session: Session = .{ .model = &model, .io = t.io, .root = root, .storage_managing = true };
+    defer session.deinit();
+    session.browser.engine = &engine;
+    var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try h.runTasks();
+    try h.advance(.fromMilliseconds(0));
+    try h.expectText("Chapter 0 · 1/1");
+    try h.expectNoText("Previous");
+    try h.expectNoText("Next");
+    try h.press(.page_down, .{});
+    try h.expectNoText("Chapter 0 · 1/1");
+    try h.press(.page_up, .{});
+    try h.expectText("Chapter 0 · 1/1");
+    try h.press(.page_down, .{});
+    session.storage_managing = false;
+    try h.frame();
+    session.storage_managing = true;
+    try h.frame();
+    try h.runTasks();
+    try h.advance(.fromMilliseconds(0));
+    try h.expectText("Chapter 0 · 1/1");
+}

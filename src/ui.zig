@@ -12,9 +12,9 @@ pub const OnlineCommand = union(enum) { stores, refresh_stores, remove_store: us
 pub const BackupCommand = enum { create, export_downloads, import_downloads };
 pub const Navigation = enum { library, updates, history, browse, more };
 pub const ReaderBusyKey = struct { epoch: u64, revision: usize, chapter: u64 };
-pub const State = struct { reader_busy: ?ReaderBusyKey = null, storage_snapshot: ?storage.Snapshot = null, storage_revision: u32 = 0, storage_clearing: bool = false, more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, pointer_start: ?f.Vec2 = null, reader_updates: u8 = 0 };
+pub const State = struct { storage_pager: ?@import("storage_manager.zig").Pager = null, reader_busy: ?ReaderBusyKey = null, storage_snapshot: ?storage.Snapshot = null, storage_revision: u32 = 0, storage_clearing: bool = false, more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, pointer_start: ?f.Vec2 = null, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { reader_zoom, reader_busy: ReaderBusyKey, reader_mode_menu, reader_mode_choice: ?usize, storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage, series }, jump_chapter, jump_page, page_target: ?[]const u8, dismiss_error, dismiss_status: u64, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, library_sort, library_sort_choice: ?usize, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { storage_pager: @import("storage_manager.zig").Pager, reader_zoom, reader_busy: ReaderBusyKey, reader_mode_menu, reader_mode_choice: ?usize, storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage, series }, jump_chapter, jump_page, page_target: ?[]const u8, dismiss_error, dismiss_status: u64, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, library_sort, library_sort_choice: ?usize, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
@@ -24,6 +24,7 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
         else => return,
     };
     switch (msg) {
+        .storage_pager => |pager| state.storage_pager = pager,
         .reader_zoom => session.toggleReaderZoom(),
         .reader_busy => |key| {
             const pending = readerBusyKey(session) orelse return;
@@ -366,7 +367,18 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
                 }
                 return;
             }
-            if (model.screen == .sources or model.screen == .extensions or model.screen == .catalog or model.screen == .source_settings) {
+            if (session.storage_managing and model.screen == .library) {
+                const delta: i32 = switch (event.key) {
+                    .page_down, .right => 1,
+                    .page_up, .left => -1,
+                    else => 0,
+                };
+                if (delta != 0) {
+                    if (state.storage_pager) |pager| try ctx.emit(pager.handler, @import("storage_manager.zig").Page{ .delta = delta, .size = pager.size });
+                    return;
+                }
+            }
+            if (model.screen == .sources or model.screen == .extensions or model.screen == .catalog or model.screen == .source_settings or model.screen == .global_search or model.screen == .languages) {
                 if (event.key == .page_down or event.key == .right) {
                     try onlineUpdate(session, .next, ctx);
                     return;
@@ -626,7 +638,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
         if (total > 0) try ui.print(.{ .font_size = 14 }, "{d} / {d} pages", .{ job.pages_done.load(.acquire), total });
         try onlineButton(ui, "cancel-job", "Cancel", .cancel);
     } else switch (model.screen) {
-        .library => if (session.storage_managing) try ui.child(@import("storage_manager.zig"), "storage-manager", .{ .series = session.storage_series }) else try list(ui, model),
+        .library => if (session.storage_managing) try ui.child(@import("storage_manager.zig"), "storage-manager", .{ .series = session.storage_series, .on_pager = on.handler(.storage_pager) }) else try list(ui, model),
         .chapters => try list(ui, model),
         .reader => try reader(ui, session, state),
         .settings => if (state.more_root) try moreView(ui) else {
@@ -639,6 +651,7 @@ pub fn view(ui: *app.Ui, state: *const State, _: Props) !void {
             }
             try text(ui, "Reading direction", 15, 0);
             try button(ui, "direction", if (model.prefs.rtl) "Right to left (manga)" else "Left to right", .rtl);
+            try button(ui, "navigation-buttons", if (model.prefs.hide_navigation) "[x] Hide on-screen Next / Prev buttons" else "[ ] Hide on-screen Next / Prev buttons", .navigation_buttons);
             try text(ui, "Page refresh", 15, 0);
             try button(ui, "refresh", if (model.prefs.full_refresh) "Full refresh on each page" else "Partial (periodic cleaning)", .refresh);
             try text(ui, if (model.readingMode() == .vertical) "Next moves down with overlapping screenfuls." else "Physical Next always advances a page.", 12, 60);
@@ -809,7 +822,7 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
     const queued = if (is_library) &.{} else try @constCast(ui.use(Session)).queuedChapters(ui.arena());
     const on = ui.messages(Root);
     {
-        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = if (is_library) .init(12, 12, 0, 0) else .init(12, 12, 4, 6), .child_gap = if (is_library) 3 else 5 } });
+        try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = if (is_library) .init(12, 12, 8, 0) else .init(12, 12, 4, 6), .child_gap = if (is_library) 3 else 5 } });
         defer ui.close();
         if (is_library) {
             {
@@ -850,7 +863,7 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
             // Keep pagination in step with the space the expanded title consumes.
             const current_session = ui.use(Session);
             const banner_height = try downloadBannerHeight(ui, current_session);
-            const available_rows = @max(1, @min(lib.Model.rows, @as(usize, @intFromFloat(@max(34, ui.core.viewport.y - 190 - header_height - banner_height) / 34))));
+            const available_rows = @max(1, @min(model.controlledRows(), @as(usize, @intFromFloat(@max(34, ui.core.viewport.y - (if (model.prefs.hide_navigation) @as(f32, 152) else 190) - header_height - banner_height) / 34))));
             @constCast(model).chapter_page_rows = available_rows;
             {
                 try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(header_height) }, .child_gap = 12 } });
@@ -964,7 +977,7 @@ fn list(ui: *app.Ui, model: *const lib.Model) !void {
         }
         if (!(is_library and model.prefs.library_grid and count > 0)) ui.spacer();
     }
-    {
+    if (!model.prefs.hide_navigation) {
         try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .init(12, 12, 4, 4), .child_gap = 8, .child_alignment = .center_left } });
         defer ui.close();
         try app.widgets.button(ui, "previous-list", .{ .label = "Previous", .enabled = model.offset > 0, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = -1 }) }) });
@@ -1052,7 +1065,7 @@ fn settingsView(ui: *app.Ui, session: *const Session) !void {
     {
         try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .all(10), .child_gap = 8 } });
         defer ui.close();
-        for (settings[@min(model.offset, settings.len)..@min(model.offset + lib.Model.rows, settings.len)]) |which| {
+        for (settings[@min(model.offset, settings.len)..@min(model.offset + model.pageRows(), settings.len)]) |which| {
             const check = struct {
                 fn mark(on_: bool) []const u8 {
                     return if (on_) "[x]" else "[ ]";
@@ -1086,12 +1099,12 @@ fn settingsView(ui: *app.Ui, session: *const Session) !void {
         }
         ui.spacer();
     }
-    {
+    if (!model.prefs.hide_navigation) {
         try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .all(8), .child_gap = 8, .child_alignment = .center_left } });
         defer ui.close();
         try app.widgets.button(ui, "previous-settings", .{ .label = "Previous", .enabled = model.offset > 0, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = -1 }) }) });
         ui.spacer();
-        try app.widgets.button(ui, "next-settings", .{ .label = "Next", .enabled = model.offset + lib.Model.rows < settings.len, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = 1 }) }) });
+        try app.widgets.button(ui, "next-settings", .{ .label = "Next", .enabled = model.offset + model.pageRows() < settings.len, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = 1 }) }) });
     }
 }
 
@@ -1318,6 +1331,7 @@ fn menuView(ui: *app.Ui, model: *const lib.Model) !void {
         const ch = manga.chapters[model.menu_chapter];
         try text(ui, ch.title, 14, 60);
         const state = model.readState(ch);
+        if ((state.started or state.page > 0) and !state.read) try app.widgets.button(ui, "mark-partial-unread", .{ .label = "Mark unread", .on_click = on.bind(.{ .edit = .mark_unread }) });
         const choices = [_]Choice{
             if (state.read) .{ .label = "Mark unread", .edit = .mark_unread } else .{ .label = "Mark read", .edit = .mark_read },
             .{ .label = "Mark previous read", .edit = .mark_previous },
@@ -1379,7 +1393,7 @@ fn feedView(ui: *app.Ui, session: *const Session) !void {
         // Toolbar (48), queue controls (42), list padding (8) and pager (38).
         const feedback_height = try downloadBannerHeight(ui, session);
         const status_height: f32 = if (session.status.len > 0 and !session.status_transient and !session.download_error) 16 else 0;
-        const available = @max(41, ui.core.viewport.y - 136 - warning_height - feedback_height - status_height);
+        const available = @max(41, ui.core.viewport.y - (if (model.prefs.hide_navigation) @as(f32, 98) else 136) - warning_height - feedback_height - status_height);
         const rows: usize = @intFromFloat(@floor(available / 41));
         if (model.queue_page_rows != rows) {
             model.queue_page_rows = rows;
@@ -1452,7 +1466,7 @@ fn feedView(ui: *app.Ui, session: *const Session) !void {
         }
         ui.spacer();
     }
-    {
+    if (!model.prefs.hide_navigation) {
         try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .padding = .all(8), .child_gap = 8, .child_alignment = .center_left } });
         defer ui.close();
         try app.widgets.button(ui, "previous-feed", .{ .label = "Previous", .enabled = model.offset > 0, .on_click = on.bind(.{ .act = @as(lib.Action, .{ .list_page = -1 }) }) });
@@ -1578,7 +1592,7 @@ fn reader(ui: *app.Ui, session: *const Session, state: *const State) !void {
     if (model.reader_controls) {
         try ui.open("reader-footer", .{ .floating = .{ .mode = .root, .parent_point = .left_bottom, .unit_point = .left_bottom }, .background_color = .white, .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(36) }, .padding = .init(6, 6, 0, 0), .child_gap = 6, .child_alignment = .center_left }, .border = .{ .color = .black, .widths = .{ .top = 1 } } });
         defer ui.close();
-        try button(ui, "left-page", if (model.prefs.rtl) "Next" else "Prev", .{ .turn = if (model.prefs.rtl) 1 else -1 });
+        if (!model.prefs.hide_navigation) try button(ui, "left-page", if (model.prefs.rtl) "Next" else "Prev", .{ .turn = if (model.prefs.rtl) 1 else -1 });
         ui.spacer();
         {
             try ui.open("reader-progress", .{ .layout = .{ .sizing = .{ .height = .grow(.{}) }, .child_alignment = .center }, .on_click = on.bind(.jump_page) });
@@ -1599,7 +1613,7 @@ fn reader(ui: *app.Ui, session: *const Session, state: *const State) !void {
         if (session.reader_download_total > 0 and session.reader_download_done < session.reader_download_total and session.model.online_chapter != null and std.mem.eql(u8, session.model.online_chapter.?, ch.id))
             try ui.print(.{ .font_size = 10 }, "{s} {d}/{d}", .{ if (session.reader_download_failed) "Paused" else "DL", session.reader_download_done, session.reader_download_total });
         ui.spacer();
-        try button(ui, "right-page", if (model.prefs.rtl) "Prev" else "Next", .{ .turn = if (model.prefs.rtl) -1 else 1 });
+        if (!model.prefs.hide_navigation) try button(ui, "right-page", if (model.prefs.rtl) "Prev" else "Next", .{ .turn = if (model.prefs.rtl) -1 else 1 });
         if ((model.readingMode() == .vertical or model.page + 1 == ch.pages.len) and model.readerAtEnd() and (session.region_service == null or session.regionCurrent()) and session.next_chapter != null)
             try app.widgets.button(ui, "next-chapter", .{ .label = "Chapter >", .on_click = on.bind(.{ .act = .next_chapter }) });
     }
@@ -1696,13 +1710,13 @@ fn onlineUpdate(session: *Session, command: OnlineCommand, ctx: *app.Update(Root
             startTitles(session);
         },
         .previous => {
-            if (b.offset > 0) b.offset -|= lib.Model.rows else if (model.screen == .catalog and b.page > 1) {
+            if (b.offset > 0) b.offset -|= model.controlledRows() else if (model.screen == .catalog and b.page > 1) {
                 b.page -= 1;
                 startTitles(session);
             }
         },
         .next => {
-            if (b.offset + lib.Model.rows < b.count(model.screen)) b.offset += lib.Model.rows else if (model.screen == .catalog and b.titles != null and b.titles.?.result.page.?.hasNextPage) {
+            if (b.offset + model.controlledRows() < b.count(model.screen)) b.offset += model.controlledRows() else if (model.screen == .catalog and b.titles != null and b.titles.?.result.page.?.hasNextPage) {
                 b.page += 1;
                 b.offset = 0;
                 startTitles(session);
@@ -1837,6 +1851,7 @@ fn sourceInitial(ui: *app.Ui, label: []const u8) !void {
 }
 
 fn browserView(ui: *app.Ui, session: *const Session) !void {
+    const model = session.model;
     const b = &session.browser;
     const screen = session.model.screen;
     const root = screen == .sources or screen == .extensions;
@@ -1889,7 +1904,7 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
             .source_settings => "No source preferences.",
             else => "No results. Try a different search.",
         }, 13, 40);
-        for (@min(b.offset, count)..@min(b.offset + lib.Model.rows, count)) |row| {
+        for (@min(b.offset, count)..@min(b.offset + model.controlledRows(), count)) |row| {
             const i = if (screen == .extensions) b.extensionIndex(row) else row;
             const label: []const u8 = switch (screen) {
                 .sources => b.source_rows[i].name,
@@ -1945,7 +1960,7 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
         }
         ui.spacer();
     }
-    {
+    if (!model.prefs.hide_navigation) {
         try ui.open(null, .{ .layout = .{ .sizing = .{ .width = .grow(.{}), .height = .fixed(32) }, .padding = .x(8), .child_gap = 8, .child_alignment = .center_left } });
         defer ui.close();
         try browseControl(ui, "online-prev", "Previous", .previous, b.offset > 0 or (screen == .catalog and b.page > 1));
@@ -1953,7 +1968,7 @@ fn browserView(ui: *app.Ui, session: *const Session) !void {
         try ui.print(.{ .font_size = 11 }, "{d} {s}", .{ count, if (count == 1) "result" else "results" });
         ui.spacer();
         const more_source_pages = screen == .catalog and b.titles != null and b.titles.?.result.page.?.hasNextPage;
-        try browseControl(ui, "online-next", "Next", .next, b.offset + lib.Model.rows < count or more_source_pages);
+        try browseControl(ui, "online-next", "Next", .next, b.offset + model.controlledRows() < count or more_source_pages);
     }
 }
 

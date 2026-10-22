@@ -11,7 +11,7 @@ pub const safePath = tachi.library.safePath;
 /// read once to migrate it into libtachi's reading state.
 pub const ReaderMode = enum { paged, vertical };
 pub const ReaderModeOverride = struct { series_key: [16]u8, mode: ReaderMode };
-pub const Preferences = struct { reader_modes: [128]?ReaderModeOverride = @splat(null), reader_mode_next: u8 = 0, rtl: bool = true, full_refresh: bool = true, library_grid: bool = true, progress: []const LegacyProgress = &.{}, reader_positions: [32]?ReaderAnchor = @splat(null), reader_position_next: u8 = 0 };
+pub const Preferences = struct { reader_modes: [128]?ReaderModeOverride = @splat(null), reader_mode_next: u8 = 0, rtl: bool = true, full_refresh: bool = true, library_grid: bool = true, hide_navigation: bool = false, progress: []const LegacyProgress = &.{}, reader_positions: [32]?ReaderAnchor = @splat(null), reader_position_next: u8 = 0 };
 /// Bounded display-only positions; libtachi still owns chapter/page progress.
 pub const ReaderAnchor = struct { mode: ReaderMode = .paged, chapter_key: [16]u8, page: usize, progress: u32 };
 pub const LegacyProgress = struct { id: []const u8, page: usize = 0, completed: bool = false };
@@ -40,7 +40,7 @@ pub const Screen = enum { library, chapters, reader, settings, sources, extensio
 /// libtachi settings the settings screen changes.
 pub const Setting = enum { skip_completed, skip_unread, skip_not_started, skip_not_due, update_details, download_new, delete_marked_read, delete_bookmarked, delete_after_reading, download_ahead, skip_read, skip_filtered, skip_duplicates, incognito, downloaded_only, sort_mode, sort_ascending };
 pub const Pick = struct { manga: usize, chapter: usize };
-pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, open_chapter: Pick, turn: i32, jump_page: usize, pan: f64, next_chapter, list_page: i32, category: i32, feed: Screen, menu: usize, settings, help, reader_mode: ReaderMode, rtl, refresh, library_grid, toggle_title, jump_chapter: []const u8 };
+pub const Action = union(enum) { back, search: []const u8, open: usize, read: usize, open_chapter: Pick, turn: i32, jump_page: usize, pan: f64, next_chapter, list_page: i32, category: i32, feed: Screen, menu: usize, settings, help, reader_mode: ReaderMode, rtl, refresh, library_grid, navigation_buttons, toggle_title, jump_chapter: []const u8 };
 pub const Model = struct {
     gpa: std.mem.Allocator,
     library: Library = .{},
@@ -103,11 +103,15 @@ pub const Model = struct {
     /// Rows that fit the current screen, including its controls and guidance.
     pub fn pageRows(self: *const Model) usize {
         return switch (self.screen) {
-            .library => if (self.prefs.library_grid) 2 else 5,
+            .library => if (self.prefs.library_grid) 2 else if (self.prefs.hide_navigation) 6 else 5,
             .chapters => self.chapter_page_rows,
             .queue => self.queue_page_rows,
+            .engine_settings, .updates, .history, .upcoming => self.controlledRows(),
             else => rows,
         };
+    }
+    pub fn controlledRows(self: *const Model) usize {
+        return rows + @as(usize, @intFromBool(self.prefs.hide_navigation));
     }
     pub const ReadState = struct { page: u32, read: bool, started: bool };
 
@@ -492,6 +496,11 @@ pub const Model = struct {
             .rtl => {
                 self.prefs.rtl = !self.prefs.rtl;
                 if (self.reader_geometry) |*geometry| geometry.rtl = self.prefs.rtl;
+                self.dirty = true;
+            },
+            .navigation_buttons => {
+                self.prefs.hide_navigation = !self.prefs.hide_navigation;
+                self.offset = 0;
                 self.dirty = true;
             },
             .refresh => {
