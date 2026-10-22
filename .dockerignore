@@ -1,0 +1,16 @@
+.git
+.agents
+.codex
+.aws
+.env
+.env.*
+.runtime-cache
+.zig-cache
+zig-out
+zig-pkg
+dist
+preview
+.tachi-data
+library
+**/__pycache__
+**/.DS_Store
