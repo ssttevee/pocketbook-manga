@@ -27,7 +27,7 @@ fn uiModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
     const tachi = b.dependency("tachi", .{ .target = target, .optimize = optimize }).module("tachi");
     return .{ .fabrum = fabrum, .platform = platform, .image = image, .tachi = tachi };
 }
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) error{LazyDependencyNeeded}!void {
     const optimize = b.standardOptimizeOption(.{});
     const glibc = b.option(enum { @"2.23", @"2.39" }, "glibc", "PocketBook firmware glibc (2.23 for 6.8–6.9, 2.39 for 6.10)") orelse .@"2.23";
     const glibc_minor: u32 = switch (glibc) {
@@ -109,6 +109,10 @@ pub fn build(b: *std.Build) void {
     // libzstd source for the Verse's ARMv7 with strict alignment.
     const zstd_target = b.resolveTargetQuery(.{ .cpu_arch = .arm, .os_tag = .linux, .abi = .gnueabi, .cpu_model = .{ .explicit = &std.Target.arm.cpu.cortex_a7 }, .cpu_features_add = std.Target.arm.featureSet(&.{.strict_align}), .glibc_version = .{ .major = 2, .minor = 17, .patch = 0 } });
     const zstd = b.dependency("tachi", .{ .target = zstd_target, .optimize = .ReleaseFast });
+    // A dependency can return before registering its named exports while
+    // discovering lazy packages. Let Zig fetch them and rerun configuration
+    // before requiring those exports, including for later target instances.
+    if (b.graph.needed_lazy_dependencies.count() != 0) return error.LazyDependencyNeeded;
     device_step.dependOn(&b.addInstallLibFile(zstd.namedLazyPath("pocketmanga-zstd"), "libpocketmanga-zstd.so").step);
     device_step.dependOn(&b.addInstallFile(zstd.namedLazyPath("zstd-license"), "share/licenses/zstd-LICENSE.txt").step);
     b.getInstallStep().dependOn(device_step);
