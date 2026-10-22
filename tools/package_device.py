@@ -67,7 +67,11 @@ def main():
     parser.add_argument('--cache', type=pathlib.Path, default=ROOT / '.runtime-cache')
     parser.add_argument('--output', type=pathlib.Path, default=ROOT / 'dist')
     parser.add_argument('--host-jar', type=pathlib.Path, default=ROOT / 'zig-out/lib/tachi-host.jar')
+    parser.add_argument('--ui-binary', type=pathlib.Path, default=ROOT / 'zig-out/bin/pocketmanga.app')
+    parser.add_argument('--worker-binary', type=pathlib.Path, default=ROOT / 'zig-out/bin/pocketmanga-worker')
+    parser.add_argument('--target-metadata', type=pathlib.Path, default=ROOT / 'zig-out/share/pocketmanga/build-target.json')
     parser.add_argument('--zstd-library', type=pathlib.Path, help='Source-built JNI decoder (default: zig-out/lib from zig build device)')
+    parser.add_argument('--zstd-license', type=pathlib.Path, help='License accompanying the source-built JNI decoder')
     parser.add_argument('--images', type=pathlib.Path, help='Decoder runtime from tools/build_images.py')
     parser.add_argument('--jre', type=pathlib.Path, help='Java runtime from tools/build_jre.py')
     args=parser.parse_args()
@@ -76,7 +80,7 @@ def main():
     args.jre = args.jre or ROOT / ('.runtime-cache/jre' + suffix) / 'pocketmanga-jre.tar'
     try:
         lock = runtime_lock(args.glibc, args.runtime_manifest)
-        target = json.loads((ROOT / 'zig-out/share/pocketmanga/build-target.json').read_text())
+        target = json.loads(args.target_metadata.read_text())
         validate_profile(args.glibc, lock, target)
     except (ValueError, OSError, KeyError) as error:
         raise SystemExit(str(error))
@@ -121,15 +125,16 @@ def main():
         shutil.copytree(ROOT / 'tools/runtime-licenses', runtime / 'licenses/gcc-runtime')
     shutil.copy2(args.host_jar,runtime/'tachi-host.jar')
     shutil.copy2(zstd, runtime/'lib/libpocketmanga-zstd.so')
-    shutil.copy2(zstd.parent.parent/'share/licenses/zstd-LICENSE.txt', runtime/'licenses/zstd-LICENSE.txt')
-    binary=ROOT/'zig-out/bin/pocketmanga.app'
+    shutil.copy2(args.zstd_license or zstd.parent.parent/'share/licenses/zstd-LICENSE.txt', runtime/'licenses/zstd-LICENSE.txt')
+    binary=args.ui_binary
     if not binary.is_file(): raise SystemExit('Run zig build device -Doptimize=ReleaseSmall first')
     (app/'bin').mkdir(exist_ok=True)
     shutil.copy2(binary, app/'bin/pocketmanga')
-    shutil.copy2(ROOT/'zig-out/bin/pocketmanga-worker', app/'bin/pocketmanga-worker')
+    shutil.copy2(args.worker_binary, app/'bin/pocketmanga-worker')
     shutil.copy2(ROOT/'tools/pocketmanga.app',args.output/'applications/pocketmanga.app')
     shutil.copy2(ROOT/'tools/pocketmanga-log.app',args.output/'applications/pocketmanga-log.app')
     (runtime/'packages.json').write_text(json.dumps(lock,indent=2)+'\n')
+    (args.output/'runtime-manifest.json').write_text(json.dumps(lock,indent=2)+'\n')
     archive=args.output/f'pocketmanga-armv7-softfp-glibc-{args.glibc}.tar.gz'
     write_archive(args.output, archive)
     checksum = digest(archive)

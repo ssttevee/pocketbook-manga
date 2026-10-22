@@ -95,10 +95,6 @@ RUN build/*/buildjdk/jdk/bin/jlink \
 RUN qemu-arm -L "$(arm-pocketbook-linux-gnueabi-gcc -print-sysroot)" /work/out/jre/bin/java \
       -Xshare:dump -XX:SharedArchiveFile=/work/out/classes.jsa -Xlog:cds=off
 
-# Published runtime images use this target. It keeps a shell for docker run/cp
-# and exposes exactly the artifacts consumed by the packaging scripts.
-FROM debian:bookworm-20261005-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS artifacts
-COPY --from=runtime /work/out/pocketmanga-jre.tar /work/out/pocketmanga-jre.tar.sha256 /work/out/classes.jsa /artifacts/
-
+# Runtime files are exported into Zig's local build cache, not registry images.
 FROM scratch AS export
 COPY --from=runtime /work/out/pocketmanga-jre.tar /work/out/pocketmanga-jre.tar.sha256 /work/out/classes.jsa /

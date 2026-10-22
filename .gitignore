@@ -8,3 +8,4 @@ preview/
 .runtime-cache/
 dist/
 __pycache__/
+.zig-global-cache/
