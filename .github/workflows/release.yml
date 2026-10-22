@@ -36,18 +36,9 @@ jobs:
           test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$GITHUB_SHA"
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
-  runtimes:
-    needs: version
-    permissions:
-      contents: read
-      packages: write
-    uses: ./.github/workflows/runtimes.yml
-    with:
-      publish_builders: false
-
   bundle:
     name: Verify and package glibc ${{ matrix.glibc }}
-    needs: runtimes
+    needs: version
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -87,10 +78,10 @@ jobs:
           with open(os.environ['GITHUB_PATH'], 'a') as path:
               path.write(str(binary.parent) + '\n')
           PY
-      - uses: actions/download-artifact@v4
-        with:
-          name: runtimes-glibc-${{ matrix.glibc }}
-          path: runtimes
+      - name: Fetch reviewed runtimes from immutable public images
+        env:
+          GLIBC: ${{ matrix.glibc }}
+        run: python3 tools/fetch_runtimes.py --glibc "$GLIBC" --output runtimes
       - name: Verify runtime archives against reviewed build pins
         env:
           GLIBC: ${{ matrix.glibc }}

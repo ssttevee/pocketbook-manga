@@ -105,25 +105,24 @@ Install:
 - **JDK 17**, with `JAVA_HOME` set to its installation directory. The Java host requests a JDK 17 toolchain.
 - **An Android SDK platform**, providing `android.jar`. Set `ANDROID_HOME` to the SDK directory (or use the standard macOS SDK location, `~/Library/Android/sdk`). No Android device is needed.
 - **Python 3.12 or later**.
-- **Docker**, to build the reader's Java and image runtimes from source.
+- **Docker**, to fetch the reviewed runtime images or build them from source.
 
-From the project directory, first build the runtimes:
-
-```sh
-python3 tools/build_jre.py
-python3 tools/build_images.py
-```
-
-The first Java runtime build compiles a cross-toolchain and OpenJDK and can take about an hour. Later builds reuse Docker's cache. Runtime outputs are kept in the ignored `.runtime-cache/` directory.
-
-Then build the extension host, run tests and package the device application:
+From the project directory, fetch the reviewed runtime artifacts, then build the application and extension host:
 
 ```sh
+python3 tools/fetch_runtimes.py --glibc 2.23 --output .runtime-cache/release
 zig build host
 zig build test
 zig build -Doptimize=small
-python3 tools/package_device.py
+python3 tools/package_device.py \
+  --runtime-manifest .runtime-cache/release/runtime-manifest.json \
+  --jre .runtime-cache/release/jre/pocketmanga-jre.tar \
+  --images .runtime-cache/release/images/pocketmanga-image.tar
 ```
+
+The runtime fetcher downloads immutable public container images and checks the artifacts against reviewed integrity values. It copies files from stopped containers, so it can run on an Intel/AMD computer without executing ARM code. For firmware 6.10, use `--glibc 2.39` when fetching and packaging, and `-Dglibc=2.39` when building the app.
+
+To rebuild the third-party runtimes yourself, run `python3 tools/build_jre.py` and `python3 tools/build_images.py` instead, then use the packaging script's default runtime paths. The first source build compiles a cross-toolchain and OpenJDK and can take about an hour. See [runtime and release builds](docs/releases.md) for all profile options. Outputs stay in the ignored `.runtime-cache/` directory.
 
 `zig build host` installs `zig-out/lib/tachi-host.jar`. The packaging script uses that JAR by default and creates **`dist/pocketmanga-armv7-softfp-glibc-2.23.tar.gz`**, ready for installation. The archive contains the application files and runtimes, not your personal library or downloads. `zig build` also supports the default optimization configuration; `-Doptimize=small` is the smaller device build.
 

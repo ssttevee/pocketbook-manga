@@ -4,13 +4,15 @@ The [firmware and hardware matrix](compatibility.md) determines the supported pr
 
 ## Published builder images
 
-Run **Actions → Publish runtime builders → Run workflow** in the public repository. Leave **publish_builders** enabled to rebuild and publish the compiler/dependency images; disable it to reuse the reviewed builder digests from `tools/runtime-packages.json`. Release builds always use those pinned builders. The workflow builds on Linux ARM64 and publishes these GitHub Container Registry packages, each with `glibc-2.23` and `glibc-2.39` tags:
+Run **Actions → Publish runtime builders → Run workflow** in the public repository. Leave **publish_builders** enabled to rebuild and publish the compiler/dependency images; disable it to reuse the reviewed builder digests from `tools/runtime-packages.json`. Runtime rebuilds use those pinned builders; ordinary app releases fetch the reviewed runtime artifact images from `runtime_images` in the same lock. The workflow builds on Linux ARM64 and publishes these GitHub Container Registry packages, each with `glibc-2.23` and `glibc-2.39` tags:
 
 - `ghcr.io/ssttevee/pocketmanga-jvm-builder`: cross compiler, sysroot and OpenJDK build dependencies.
 - `ghcr.io/ssttevee/pocketmanga-jvm`: Java runtime tar, class-data archive and checksum under `/artifacts/`.
 - `ghcr.io/ssttevee/pocketmanga-images`: image decoder runtime tar and checksum under `/artifacts/`.
 
 The container architecture is **Linux ARM64**, while its compiler produces **ARM32 soft-float** applications for the reader. The images contain no proprietary PocketBook firmware or libraries. JVM sources and decoder sources are pinned; builders use a pinned Debian image and package snapshot. JVM startup and decoder region rendering run under ARM emulation during the build.
+
+After changing compiler, sysroot, JVM or decoder inputs, publish candidate runtimes, run the ARM and firmware checks, then update the reviewed archive checksums and immutable image references before tagging an app release. A standalone publication records candidates; it does not silently update the source lock.
 
 Each image also has a tag ending in its source revision. Tags are convenient pointers, but can be moved; releases use registry **digests** to identify exact images. Every profile's `runtime-manifest.json` records its builder/runtime image digests, artifact checksums, class-data archive checksum, CPU/ABI and firmware range. The packaging script verifies those checksums and the native build's `build-target.json` before creating a bundle.
 
@@ -38,8 +40,8 @@ python3 tools/package_device.py --glibc 2.39 \
 
 1. Run the normal tests and both optimization builds for **each** supported glibc target, plus firmware/runtime checks from [development](development.md). Keep official root filesystems outside Git. Physical checks remain separate from emulation; do not update a hardware matrix entry without an actual report.
 2. Update the compatibility matrix and release notes if the evidence changed. Commit everything being released.
-3. Create and push a version tag, such as `v0.1.0-alpha.1`. A hyphenated version is marked as a prerelease.
-4. The release workflow reuses the reviewed public builder images, publishes the version's runtime images, builds the Java host, runs Python/codec/Zig tests, cross-builds default and small optimization modes, and packages the small build for every profile.
+3. Create and push a version tag, such as `v0.1.0-alpha.2`. A hyphenated version is marked as a prerelease.
+4. The release workflow fetches the reviewed public runtime images by digest, verifies their archive checksums, builds the Java host, runs Python/codec/Zig tests, cross-builds default and small optimization modes, and packages the small build for every profile.
 5. Only after all profiles pass does it create a draft, upload all bundles, checksums, manifests and build evidence, then publish it. A failure leaves no partially published release. Check the workflow and downloads before announcing it.
 
 Each release has two independently installable bundles:

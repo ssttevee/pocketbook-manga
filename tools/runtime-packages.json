@@ -41,5 +41,15 @@
  "builders": {
   "2.23": "ghcr.io/ssttevee/pocketmanga-jvm-builder@sha256:e977722c33b59ffb8602b766d7300d487d9f1d032f54a3524d07fe4353a8f6fb",
   "2.39": "ghcr.io/ssttevee/pocketmanga-jvm-builder@sha256:3713fa01ef8063392967847da32a1f5bb397521c6837582991acdd94aa4b2d89"
+ },
+ "runtime_images": {
+  "2.23": {
+   "jre": "ghcr.io/ssttevee/pocketmanga-jvm@sha256:38c4a137655452752b17c2de666982a8de1d066c056f70275f0bf41becdd3bee",
+   "images": "ghcr.io/ssttevee/pocketmanga-images@sha256:755262e6d480cc9cfb5c5b981362d750ea0a467a17a970b54a66a784ba68cb2f"
+  },
+  "2.39": {
+   "jre": "ghcr.io/ssttevee/pocketmanga-jvm@sha256:84d1f6ccc87aa0f67707c664fffd8949f36e6efdf12ef4559755a694be4cf672",
+   "images": "ghcr.io/ssttevee/pocketmanga-images@sha256:068347d20162607343b91854faccc2ce06d297425fe54b56aa9ba7c5b998b4b8"
+  }
  }
 }
