@@ -1337,6 +1337,19 @@ pub const Session = struct {
         return .decode(self.settings.library.sort);
     }
     pub fn act(self: *Session, action: lib.Action) !void {
+        if (self.model.screen == .reader and self.region_service != null) switch (action) {
+            .turn, .pan, .jump_page => {
+                // Keep one navigation request in flight. Repeated input must
+                // neither accumulate motion nor restart the pending render.
+                if (!self.regionCurrent()) return;
+                if (self.model.reader_waiting) switch (action) {
+                    .turn => |delta| if (delta > 0) return,
+                    .pan => |delta| if (delta > 0) return,
+                    else => {},
+                };
+            },
+            else => {},
+        };
         const input_at = std.Io.Clock.boot.now(self.io);
         const old_position = self.model.reader_position;
         const old_delta = self.model.reader_scroll_delta;

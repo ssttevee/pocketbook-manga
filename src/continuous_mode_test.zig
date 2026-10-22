@@ -229,6 +229,15 @@ test "continuous reader refreshes missing footer pages when background downloads
     try std.testing.expect(session.regionCurrent());
     try std.testing.expect(model.reader_waiting);
     try std.testing.expect(!model.readerAtEnd());
+    const waiting_epoch = session.region_epoch;
+    const waiting_position = model.reader_position;
+    for (0..5) |_| {
+        try session.act(.{ .turn = 1 });
+        try session.act(.{ .pan = 100 });
+    }
+    try std.testing.expectEqual(waiting_epoch, session.region_epoch);
+    try std.testing.expectEqual(waiting_position, model.reader_position);
+    try std.testing.expectEqual(@as(f64, 0), model.reader_scroll_delta);
     try std.testing.expectEqual(@as(u8, 0), session.image.?.pixels[0]);
     try std.testing.expectEqual(@as(u8, 255), session.image.?.pixels[343 * 200]);
     const stale_request: Regions.Request = .{ .mode = .vertical, .revision = 1, .pages = model.online_pages, .root = root, .relative = "first.png", .chapter = "chapter", .page = model.page, .epoch = session.region_epoch, .viewport = session.region_viewport, .position = model.reader_position, .backward = false, .rtl = model.prefs.rtl };
@@ -297,6 +306,23 @@ test "slow retained reader views show delayed feedback without signaling backgro
         try h.frame();
         try std.testing.expect(!session.regionCurrent());
         try std.testing.expectEqual(pixels, session.image.?.pixels.ptr);
+        const epoch = session.region_epoch;
+        const requested_at = session.reader_requested_at;
+        const page = model.page;
+        const position = model.reader_position;
+        const delta = model.reader_scroll_delta;
+        // Physical buttons, gestures and page jumps all share this gate.
+        for (0..5) |_| {
+            try session.act(.{ .turn = 1 });
+            try session.act(.{ .turn = -1 });
+            try session.act(.{ .pan = 100 });
+            try session.act(.{ .jump_page = 2 });
+        }
+        try std.testing.expectEqual(epoch, session.region_epoch);
+        try std.testing.expectEqual(requested_at, session.reader_requested_at);
+        try std.testing.expectEqual(page, model.page);
+        try std.testing.expectEqual(position, model.reader_position);
+        try std.testing.expectEqual(delta, model.reader_scroll_delta);
         try h.advance(.fromMilliseconds(299));
         try h.expectNoText("Preparing view…");
         try h.advance(.fromMilliseconds(1));
@@ -307,6 +333,7 @@ test "slow retained reader views show delayed feedback without signaling backgro
         try h.expectNoText("Preparing view…");
         // A prepared turn is immediate and never signals its background work.
         try session.act(.{ .turn = 1 });
+        try std.testing.expectEqual(epoch + 1, session.region_epoch);
         try h.frame();
         try std.testing.expect(session.regionCurrent());
         try h.advance(.fromSeconds(1));

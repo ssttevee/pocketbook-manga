@@ -110,8 +110,7 @@ fn expectReaderReplacement(different_chapter: bool) !void {
     if (different_chapter) {
         try session.act(.{ .open_chapter = .{ .manga = 0, .chapter = 1 } });
     } else {
-        try session.act(.{ .pan = 1 });
-        try session.act(.{ .turn = 1 });
+        try session.act(.{ .jump_page = 1 });
     }
     try h.frame(); // Cancel the old prefetch; replacement waits for its exit.
     try std.testing.expectEqual(@as(usize, if (different_chapter) 0 else 1), model.page);
@@ -267,9 +266,11 @@ test "production codecs drive vertical and horizontal reader tasks and reject st
     try std.testing.expectEqualStrings("", session.status);
     try tmp.dir.rename("held.png", tmp.dir, "horizontal.png", std.testing.io);
 
-    // A superseded queued task must not decode or publish its previous region.
+    // Reach the current page's edge before accepting another page turn.
     try session.act(.{ .pan = 1 });
     try h.frame();
+    try h.runTasks();
+    try std.testing.expect(session.regionCurrent());
     try session.act(.{ .turn = 1 });
     try h.frame();
     try std.testing.expectEqual(@as(usize, 1), model.page);
@@ -329,7 +330,9 @@ test "accepting a normalized vertical anchor keeps its next viewport preparation
     try session.act(.{ .read = 0 });
     const view: Cache.Size = .{ .width = 343, .height = 464 };
     try model.presentContinuous(0, 0, lib.viewport.Geometry.init(view, view, false), false, false);
-    try session.act(.{ .turn = 1 });
+    // Seed a nonzero request directly: this fixture has synthetic geometry
+    // without a presented image, so Session correctly rejects user input.
+    try model.dispatch(.{ .turn = 1 });
     try std.testing.expect(model.reader_scroll_delta > 0);
     var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
     defer h.deinit();
