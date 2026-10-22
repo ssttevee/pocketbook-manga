@@ -1,12 +1,8 @@
-The image runtime is built with the same pinned ARM soft-float GCC/sysroot
-profile as the Java runtime: glibc 2.23 for firmware 6.8–6.9, or 2.39 for 6.10. Run `python3 tools/build_images.py`, then package
-with `tools/package_device.py`. Sources and SHA-256 checksums are recorded in
-`sources.json`; Docker's Debian packages use the JRE build's snapshot. Pass
-`--glibc 2.39` to build the newer profile. The libjpeg build label is fixed
-to the original reviewed runtime date so identical sources produce the same
-archive on different days. See [container images](../../docs/containers.md)
-for the builder and decoder artifact image, including how to fetch or rebuild
-them, and [release builds](../../docs/releases.md) for packaging.
+The image runtime uses the same pinned ARM soft-float GCC/sysroot profile as the Java runtime: glibc 2.23 for firmware 6.8–6.9, or 2.39 for 6.10.
+
+Run `zig build runtimes -Dglibc=2.39` from the repository root to build and cache both runtimes using the public JVM builder container. The decoder archive is installed at `zig-out/runtimes/images/pocketmanga-image.tar`. `zig build package -Dglibc=2.39 -Doptimize=small` also builds the application and creates the full installation bundle in `zig-out/release/`.
+
+Sources and SHA-256 checksums are recorded in `sources.json`; Docker's Debian packages use the JRE build's snapshot. The libjpeg build label is fixed to the original reviewed runtime date so identical sources produce the same archive on different days. See [container builds and caching](../../docs/containers.md) and [release builds](../../docs/releases.md). Only the builder is a published container input; the decoder archive is generated locally. For deliberate source changes, `tools/build_images.py --glibc 2.39 --record-digest` remains an advanced candidate-build path, described in the container guide.
 
 Enabled image families match Mihon's ImageUtil allowlist and imagedecoder 17:
 JPEG, PNG/APNG, WebP, GIF, AVIF, HEIF, JPEG XL and JPEG 2000. Animated images

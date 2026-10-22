@@ -33,10 +33,9 @@ The bundle no longer contains any C library or firmware file.
 
 ## How it is built
 
-For the published builder and JVM artifact images, their contents, and commands to fetch, rebuild or publish them, see [container images](containers.md).
+Run `zig build runtimes` (or add `-Dglibc=2.39`) to compile and cache the JVM and decoder runtimes. Only the compiler/dependency builder is published on GHCR; compiled runtime files are generated locally. See [container builds and caching](containers.md) for architecture requirements, cache inputs and builder publication.
 
-`tools/build_jre.py` runs `docker build` on `tools/jre/Dockerfile` and checks
-the result against the digest pinned in `tools/runtime-packages.json`:
+The build runs `tools/build_jre.py` with the pinned builder digest, checks the JVM archive against `tools/runtime-packages.json`, and installs `pocketmanga-jre.tar` and `classes.jsa` under `zig-out/runtimes/jre/`. The following stages describe the complete source build; the published builder supplies the already-built compiler and dependencies:
 
 1. **base**: Debian bookworm pinned by image digest, with packages from
    snapshot.debian.org at a fixed date (build tools and the boot JDK).

@@ -1,0 +1,134 @@
+name: Build firmware profiles
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: Test and package the application as well as building its runtimes
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    name: ARMv7 / glibc ${{ matrix.glibc }}
+    # The published builders and reviewed runtime digests use an ARM64 build host.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        glibc: ['2.23', '2.39']
+    env:
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+      ANDROID_HOME: ${{ github.workspace }}/.runtime-cache/android-sdk
+    steps:
+      - uses: actions/checkout@v4
+      - name: Make room for runtime builds
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache
+          df -h /
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install checksum-verified Zig 0.17.0
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, tarfile, urllib.request
+          with urllib.request.urlopen('https://ziglang.org/download/index.json') as response:
+              release = json.load(response)['0.17.0']['aarch64-linux']
+          archive = pathlib.Path(os.environ['RUNNER_TEMP']) / 'zig.tar.xz'
+          urllib.request.urlretrieve(release['tarball'], archive)
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == release['shasum'], 'Zig checksum mismatch'
+          destination = pathlib.Path(os.environ['RUNNER_TEMP']) / 'zig'
+          destination.mkdir()
+          with tarfile.open(archive) as tar:
+              tar.extractall(destination, filter='data')
+          binary = next(destination.glob('*/zig'))
+          with open(os.environ['GITHUB_PATH'], 'a') as path:
+              path.write(str(binary.parent) + '\n')
+          PY
+      - name: Restore Zig build outputs and downloaded dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache
+            .zig-global-cache
+            zig-pkg
+          # Default-branch warmups and tag releases share this exact key. Zig
+          # validates individual step inputs when a partial cache is restored.
+          key: pocketmanga-zig017-v1-${{ runner.os }}-${{ runner.arch }}-glibc-${{ matrix.glibc }}-${{ hashFiles('.dockerignore', 'build.zig', 'build.zig.zon', 'tools/**', 'src/vips_bridge.c', 'src/vips_bridge.h', '.github/workflows/build-profile.yml', '.github/workflows/cache-runtimes.yml') }}
+          restore-keys: |
+            pocketmanga-zig017-v1-${{ runner.os }}-${{ runner.arch }}-glibc-${{ matrix.glibc }}-
+      - name: Build and verify cached runtime outputs
+        env:
+          GLIBC: ${{ matrix.glibc }}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          zig build runtimes -Dglibc="$GLIBC" -Djdk="$JAVA_HOME" --summary all 2>&1 | tee evidence/runtimes.txt
+      - name: Restore Android API stubs
+        if: ${{ inputs.package }}
+        id: android
+        uses: actions/cache@v4
+        with:
+          path: .runtime-cache/android-sdk/platforms/android-35/android.jar
+          key: android-platform-35-r2-0988cacad01b38a18a47bac14a0695f246bc76c1b06c0eeb8eb0dc825ab0c8e0
+      - name: Install verified Android API stubs
+        if: ${{ inputs.package && steps.android.outputs.cache-hit != 'true' }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, pathlib, urllib.request, zipfile
+          archive = pathlib.Path(os.environ['RUNNER_TEMP']) / 'android-platform.zip'
+          urllib.request.urlretrieve('https://dl.google.com/android/repository/platform-35_r02.zip', archive)
+          expected = '0988cacad01b38a18a47bac14a0695f246bc76c1b06c0eeb8eb0dc825ab0c8e0'
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == expected, 'Android platform checksum mismatch'
+          destination = pathlib.Path(os.environ['ANDROID_HOME']) / 'platforms/android-35/android.jar'
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(archive) as source:
+              destination.write_bytes(source.read('android-35/android.jar'))
+          PY
+      - name: Install production decoder test dependencies
+        if: ${{ inputs.package }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libvips-dev libvips-tools pkg-config \
+            libheif-plugin-x265 libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
+      - name: Test and build both optimization modes
+        if: ${{ inputs.package }}
+        env:
+          GLIBC: ${{ matrix.glibc }}
+          POCKETMANGA_IMAGE_TEST_LIBRARY: ${{ github.workspace }}/.runtime-cache/image-host/libpocketmanga-image.so
+        run: |
+          set -euo pipefail
+          python3 tools/build_images.py --host --output .runtime-cache/image-host
+          python3 tools/test_image_regions.py --library "$POCKETMANGA_IMAGE_TEST_LIBRARY" 2>&1 | tee evidence/decoder-tests.txt
+          POCKETMANGA_ZIG_CACHE_TEST="$(command -v zig)" python3 -m unittest discover -s tools -p 'test_*.py' 2>&1 | tee evidence/python-tests.txt
+          zig build test -Dglibc="$GLIBC" -Djdk="$JAVA_HOME" --summary all 2>&1 | tee evidence/tests.txt
+          zig build -Dglibc="$GLIBC" -Djdk="$JAVA_HOME" --summary all 2>&1 | tee evidence/build.txt
+          zig build -Dglibc="$GLIBC" -Djdk="$JAVA_HOME" -Doptimize=small --summary all 2>&1 | tee evidence/build-small.txt
+          zig build host -Dglibc="$GLIBC" -Djdk="$JAVA_HOME" --summary all 2>&1 | tee evidence/java-host.txt
+      - name: Build the complete installation bundle
+        if: ${{ inputs.package }}
+        env:
+          GLIBC: ${{ matrix.glibc }}
+        run: |
+          set -euo pipefail
+          zig build package -Dglibc="$GLIBC" -Djdk="$JAVA_HOME" -Doptimize=small --summary all 2>&1 | tee evidence/package.txt
+          mkdir -p release-assets
+          cp zig-out/release/*.tar.gz zig-out/release/*.sha256 release-assets/
+          cp zig-out/runtimes/runtime-manifest.json "release-assets/runtime-manifest-glibc-$GLIBC.json"
+          tar -czf "release-assets/build-evidence-glibc-$GLIBC.tar.gz" -C evidence .
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.package }}
+        with:
+          name: release-glibc-${{ matrix.glibc }}
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,35 @@
+name: Cache runtime builds
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .dockerignore
+      - build.zig
+      - build.zig.zon
+      - tools/**
+      - src/vips_bridge.c
+      - src/vips_bridge.h
+      - .github/workflows/build-profile.yml
+      - .github/workflows/cache-runtimes.yml
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Also test and package the application for both firmware profiles
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-cache-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  runtimes:
+    # GitHub allows releases to restore caches from the default branch. Caches
+    # created only on a release tag cannot be reused by later sibling tags.
+    uses: ./.github/workflows/build-profile.yml
+    with:
+      package: ${{ github.event_name == 'workflow_dispatch' && inputs.package }}

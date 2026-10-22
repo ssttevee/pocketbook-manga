@@ -1,175 +1,110 @@
-# PocketManga developer container images
+# PocketManga developer container builds
 
-The images in GitHub's **Packages** area are build tools and supporting runtime artifacts for developers. Run them on a development computer or CI runner.
+The public container is a compiler/dependency **builder**, used on a development computer or CI runner. Readers install complete bundles from [GitHub Releases](https://github.com/ssttevee/pocketbook-manga/releases); [installing PocketManga](../README.md#download-and-install) does not require Docker.
 
-To install PocketManga on a reader, download an installation bundle from [GitHub Releases](https://github.com/ssttevee/pocketbook-manga/releases) and follow the [installation instructions](../README.md#download-and-install). The release bundle includes the app and its runtimes; using PocketManga does not require Docker.
+## Published builder and firmware profiles
 
-## What each image is for
+[`ghcr.io/ssttevee/pocketmanga-jvm-builder`](https://github.com/users/ssttevee/packages/container/package/pocketmanga-jvm-builder) contains the GCC cross compiler, target sysroot, boot JDK and OpenJDK build dependencies. Both the JVM and image-decoder Dockerfiles use it, keeping their compiler and C-library target consistent.
 
-All three packages are public on GitHub Container Registry (GHCR):
-
-| Image | Purpose | Contents and consumer |
-| --- | --- | --- |
-| [`ghcr.io/ssttevee/pocketmanga-jvm-builder`](https://github.com/users/ssttevee/packages/container/package/pocketmanga-jvm-builder) | Compile native runtimes for the reader | GCC cross compiler, target sysroot, boot JDK and OpenJDK build dependencies. Used by both runtime Dockerfiles. |
-| [`ghcr.io/ssttevee/pocketmanga-jvm`](https://github.com/users/ssttevee/packages/container/package/pocketmanga-jvm) | Distribute the compiled Java runtime used by the extension worker | `/artifacts/pocketmanga-jre.tar`, its `.sha256` file and `classes.jsa` (the JVM's class-data-sharing archive). Copied out for packaging. |
-| [`ghcr.io/ssttevee/pocketmanga-images`](https://github.com/users/ssttevee/packages/container/package/pocketmanga-images) | Distribute the compiled image-decoding runtime | `/artifacts/pocketmanga-image.tar` and its `.sha256` file. Contains the libvips bridge and required codec libraries, copied out for packaging. Here, “images” means manga image decoding. |
-
-The two artifact images have a small Debian filesystem for extracting files. They contain supporting runtimes rather than the PocketManga application, UI or a ready-to-install bundle. The builder contains compilers and build dependencies; the runtime images contain their outputs.
-
-The build flow is:
-
-```text
-JVM builder ── OpenJDK sources ──────── JVM artifact image ──────┐
-            └─ libvips/codec sources ─ Decoder artifact image ─┤
-                                                             ├─ Installation bundle
-Zig app + native worker + Java extension host ─────────────────┘
-```
-
-The builder is shared by both runtimes to keep their compiler and C-library target consistent. Zig builds the application separately. The Java extension-host JAR is also built separately with the development tools listed in the [README](../README.md#build-from-source).
-
-## Firmware profiles, tags and architecture
-
-Every package has these profile tags:
-
-| Tag | Target runtime | Firmware on compatible ARMv7 readers |
+| Builder tag | Target runtime | Firmware on compatible ARMv7 readers |
 | --- | --- | --- |
 | `glibc-2.23` | ARM32 soft-float, glibc 2.23 | 6.8–6.9 |
 | `glibc-2.39` | ARM32 soft-float, glibc 2.39 | 6.10 |
 
-For example, `ghcr.io/ssttevee/pocketmanga-jvm-builder:glibc-2.39` is the builder for the newer profile. Select the same profile for the app, JVM and decoders. Consult the [hardware matrix](compatibility.md) before assuming another reader is compatible.
+The containers execute on **Linux ARM64** and produce **ARM32 soft-float** reader binaries. These are different architectures. Apple Silicon Docker hosts can run the builder directly. An Intel/AMD host needs ARM64 execution support through emulation or a suitable remote Docker host. Runtime smoke checks also use QEMU inside the build to execute ARM32 outputs.
 
-Published containers run on **Linux ARM64**; the compiler's output runs on the reader's **ARM32 soft-float** userspace. These are different architectures. An Intel/AMD computer can download and extract the artifact images without running them. Executing the published builder requires an ARM64 Docker host or configured ARM64 emulation. Runtime builds also use QEMU inside the build to check ARM32 outputs.
+Profile tags are convenient, movable names. Reviewed builds use the immutable builder digests in `tools/runtime-packages.json`, so an updated tag cannot silently change a release's inputs. Public pulls need no GHCR login. The target sysroot is built from public source; installation bundles use the reader's own glibc. Proprietary firmware is never included in the public builder or releases.
 
-Profile tags are convenient, movable names. Publication also creates tags ending in the source revision. Reviewed builds use immutable registry digests from `tools/runtime-packages.json`, so an updated tag cannot silently change a release's inputs. Commands below read the current references from that file instead of copying specific hashes into documentation.
+Only the builder is a published input for current builds. JVM and decoder archives are generated locally by the Zig build graph; there are no separate runtime-image downloads in this workflow. Previously published runtime artifact images are historical inputs for earlier releases and are not required by current builds.
 
-The containers include a source-built target sysroot for compilation. Installation bundles use the reader's own glibc; proprietary PocketBook firmware is kept outside the containers and releases.
+## Build and cache the runtimes
 
-## Use the published runtimes to build PocketManga
-
-This is the usual path for application development: reuse the compiled runtimes and build your app changes. You need Docker, Python 3.12 or newer, and the [application build prerequisites](../README.md#build-from-source). Run commands from the repository root, with Zig 0.17.0 configured as `zig`.
+Install the [development prerequisites](../README.md#build-from-source), start Docker and run from the repository root:
 
 ```sh
-GLIBC=2.39  # Use 2.23 for firmware 6.8–6.9.
-RUNTIMES=".runtime-cache/release-$GLIBC"
-python3 tools/fetch_runtimes.py --glibc "$GLIBC" --output "$RUNTIMES"
-zig build host
-zig build test -Dglibc="$GLIBC"
-zig build -Dglibc="$GLIBC" -Doptimize=small
-python3 tools/package_device.py --glibc "$GLIBC" \
-  --runtime-manifest "$RUNTIMES/runtime-manifest.json" \
-  --jre "$RUNTIMES/jre/pocketmanga-jre.tar" \
-  --images "$RUNTIMES/images/pocketmanga-image.tar"
+zig build runtimes -Dglibc=2.39
 ```
 
-The fetcher pulls reviewed images by digest, copies `/artifacts/` from stopped containers and checks both runtime archives against the source lock. It removes the temporary containers. Its output includes the archives, JVM class-data archive and a `runtime-manifest.json` recording the exact inputs.
+Use `2.23` for firmware 6.8–6.9, or omit the option for that default. The build compiles OpenJDK and the image decoders using the reviewed builder, verifies the resulting runtime archive checksums against the source lock, then installs:
 
-The final installation archive is `dist/pocketmanga-armv7-softfp-glibc-2.39.tar.gz` (or `2.23` for the older profile), with a checksum alongside it. Build outputs and runtime caches remain in ignored directories.
+```text
+zig-out/runtimes/
+  jre/pocketmanga-jre.tar
+  jre/classes.jsa
+  images/pocketmanga-image.tar
+  runtime-manifest.json
+```
 
-### Inspect an artifact image manually
+The manifest records the selected profile, builder and artifact identities for packaging. The class-data archive is separate because its bytes are not reproducible; the JVM validates it when loading it. See [the JVM notes](java-runtime.md#class-data-sharing).
 
-For example, extract the reviewed JVM image without executing any container code:
+An initial runtime build can be slow: it compiles OpenJDK and the codec libraries even though the compiler is already available. Zig stores successful runtime steps in `.zig-cache/` and reuses them on later builds. CI persists the Zig cache between runs. Docker can also reuse its layers, but the Zig cache determines whether a runtime build command needs to run at all.
+
+Tracked inputs include build scripts, Dockerfiles, source locks, the decoder bridge, glibc profile, immutable builder digest and the `linux/arm64` build platform. A relevant input change invalidates that runtime step. Changing app-only code can reuse both native runtime outputs. Removing the cache makes the next build compile them again; `zig-out/` contains installed results rather than the cache itself.
+
+A lightweight verifier runs even when runtime generation is cached. It checks reviewed archive hashes and the original manifest snapshot, including the separate CDS checksum. If cached files are damaged, clear the Zig cache and rebuild; regenerating a manifest must not approve the damaged files.
+
+The **Cache runtime builds** workflow warms both profiles on the default branch when runtime inputs change. Release tags can restore those caches. Its manual **package** option also runs the full tests and packaging without publishing a release. Cache eviction is safe: the next build regenerates missing outputs with the pinned builder.
+
+For a complete installation bundle:
 
 ```sh
-GLIBC=2.39
-IMAGE=$(python3 -c 'import json,sys; print(json.load(open("tools/runtime-packages.json"))["runtime_images"][sys.argv[1]]["jre"])' "$GLIBC")
-docker pull --platform linux/arm64 "$IMAGE"
-container=$(docker create --platform linux/arm64 "$IMAGE")
-trap 'docker rm "$container" >/dev/null' EXIT
-mkdir -p .runtime-cache/manual-jre
-docker cp "$container:/artifacts/." .runtime-cache/manual-jre/
-docker rm "$container"
-trap - EXIT
+zig build test
+zig build package -Dglibc=2.39 -Doptimize=small
 ```
 
-For decoder artifacts, select `runtime_images[GLIBC]["images"]` instead. Use `fetch_runtimes.py` for normal builds: manual copying alone does not perform its reviewed-checksum verification or generate a packaging manifest. Public pulls need no GHCR login.
+The package target builds the native app and worker, Java extension host and cached runtimes, then writes the installation tree, archive and checksum under `zig-out/release/`. Its profile checks prevent mixing runtimes and app binaries. Ordinary `zig build` and `zig build test` do not invoke Docker.
 
-## Rebuild runtimes using a published builder
+## Deliberately change runtime sources
 
-Choose this when changing OpenJDK, codecs or their build configuration. It reuses the expensive compiler/dependency build but compiles the runtime sources again. Use an ARM64 Docker builder when consuming the published builder.
+When updating OpenJDK, codecs, compiler options or the builder, new output checksums need review before a normal package build accepts them. The manual scripts remain useful for generating those candidates:
 
 ```sh
 GLIBC=2.39
 BUILDER=$(python3 -c 'import json,sys; print(json.load(open("tools/runtime-packages.json"))["builders"][sys.argv[1]])' "$GLIBC")
-DOCKER_DEFAULT_PLATFORM=linux/arm64 python3 tools/build_jre.py --glibc "$GLIBC" --builder-image "$BUILDER"
-DOCKER_DEFAULT_PLATFORM=linux/arm64 python3 tools/build_images.py --glibc "$GLIBC" --toolchain-image "$BUILDER"
+DOCKER_DEFAULT_PLATFORM=linux/arm64 python3 tools/build_jre.py \
+  --glibc "$GLIBC" --builder-image "$BUILDER" --record-digest
+DOCKER_DEFAULT_PLATFORM=linux/arm64 python3 tools/build_images.py \
+  --glibc "$GLIBC" --toolchain-image "$BUILDER" --record-digest
 ```
 
-The scripts export files locally, rather than publishing container images:
+`--record-digest` records a candidate `runtime-entry.json` alongside the output. It never modifies the reviewed source lock or bypasses packaging checks. Without that option, the scripts require the reviewed archive checksums. Default manual outputs are:
 
 | Profile | JVM output | Decoder output |
 | --- | --- | --- |
 | 2.23 | `.runtime-cache/jre/` | `.runtime-cache/image/` |
 | 2.39 | `.runtime-cache/jre-glibc-2.39/` | `.runtime-cache/image-glibc-2.39/` |
 
-Each script normally verifies its archive against the reviewed checksum. For deliberately changed inputs, add `--record-digest` to record a candidate `runtime-entry.json` alongside the output. This does not modify the source lock. Test and review the candidate before adopting its checksum; see [release packaging](releases.md) for creating a manifest and packaging a local candidate.
+Run the [runtime and firmware checks](development.md#firmware-verification), review the candidate, then update the builder pin and archive checksums as appropriate. Normal `zig build runtimes` will then verify and cache the newly reviewed outputs. Building on a different host architecture can change outputs; current reviewed builds use Linux ARM64.
 
-For an interactive compiler check on a compatible Docker host:
-
-```sh
-docker run --rm --platform linux/arm64 "$BUILDER" \
-  arm-pocketbook-linux-gnueabi-gcc --version
-```
-
-## Build the containers locally from source
-
-Docker with BuildKit and network access is required. Compiler and OpenJDK builds are CPU-, memory- and disk-intensive; allow substantial free disk space and roughly an hour for an initial full build. Later builds reuse Docker layers. Docker Desktop or a Linux Docker host supplies the Linux build environment.
-
-The convenience scripts can build everything from source, including a local toolchain:
-
-```sh
-python3 tools/build_jre.py --glibc 2.39
-python3 tools/build_images.py --glibc 2.39
-```
-
-These use the Docker host's build architecture. Outputs from another host architecture must be reviewed rather than assumed to match the published ARM64 build's checksums. `build_jre.py --no-cache` rebuilds its layers, including the toolchain.
-
-To build the same three image types as GHCR, use explicit targets. The build contexts differ: **`tools/jre` for the JVM Dockerfile**, and **the repository root for the decoder Dockerfile**, which copies the application bridge from `src/`.
+For an entirely local compiler/dependency build:
 
 ```sh
 GLIBC=2.39
 BUILDER="pocketmanga-jvm-builder:glibc-$GLIBC"
 docker build --platform linux/arm64 --target deps \
   --build-arg GLIBC_VERSION="$GLIBC" -t "$BUILDER" tools/jre
-
-docker build --platform linux/arm64 --target artifacts \
-  --build-arg GLIBC_VERSION="$GLIBC" --build-arg BUILDER_IMAGE="$BUILDER" \
-  -t "pocketmanga-jvm:glibc-$GLIBC" tools/jre
-
-docker build --platform linux/arm64 -f tools/image/Dockerfile --target artifacts \
-  --build-arg GLIBC_VERSION="$GLIBC" --build-arg TOOLCHAIN_IMAGE="$BUILDER" \
-  -t "pocketmanga-images:glibc-$GLIBC" .
+DOCKER_DEFAULT_PLATFORM=linux/arm64 python3 tools/build_jre.py \
+  --glibc "$GLIBC" --builder-image "$BUILDER" --record-digest
+DOCKER_DEFAULT_PLATFORM=linux/arm64 python3 tools/build_images.py \
+  --glibc "$GLIBC" --toolchain-image "$BUILDER" --record-digest
 ```
 
-Repeat with `GLIBC=2.23` for the older profile. These commands create local images; they do not push to GHCR. The default local Docker builder must be able to see the preceding local builder image. A separate remote Buildx builder needs access to an image published in a registry instead.
-
-Dockerfile targets serve different purposes:
-
-| Dockerfile | Target | Result |
-| --- | --- | --- |
-| `tools/jre/Dockerfile` | `toolchain` | Compiler and sysroot; sufficient as the decoder build's base |
-| `tools/jre/Dockerfile` | `deps` | Compiler plus JVM build dependencies; the published builder |
-| Either Dockerfile | `artifacts` | Small container with runtime outputs under `/artifacts/`; used for GHCR |
-| Either Dockerfile | `export` | Scratch stage for BuildKit `--output type=local,dest=...`; used by the Python build scripts |
-
-For details of the runtime configuration, see [the Java runtime](java-runtime.md) and [image decoders](../tools/image/README.md).
+This produces local candidates and does not publish anything. The local Docker builder must be able to see the preceding builder image; a remote Buildx builder instead needs a registry-accessible image. The runtime scripts use the Dockerfiles' `export` targets to write files locally. The JVM build context is `tools/jre`; the decoder context is the repository root because it includes the C bridge from `src/`.
 
 ## Publish images to GHCR
 
-Maintainers can run **Actions → Publish runtime builders → Run workflow** in [the repository](https://github.com/ssttevee/pocketbook-manga/actions/workflows/runtimes.yml):
+Maintainers use **Actions → Publish JVM builders → Run workflow** in [GitHub Actions](https://github.com/ssttevee/pocketbook-manga/actions/workflows/runtimes.yml). Select the intended source branch or tag. The workflow publishes both builder profiles on ARM64 runners using `GITHUB_TOKEN` with `packages: write`; it does not publish JVM or decoder artifact images.
 
-1. Select the source branch or tag containing the intended runtime changes.
-2. Enable **publish_builders** to rebuild and publish both compiler/dependency profiles. Disable it to reuse the reviewed builder digests and rebuild only the JVM and decoder artifact images.
-3. The workflow builds both profiles on ARM64 runners, runs the JVM and decoder smoke checks, and publishes all selected images. It uses the workflow's `GITHUB_TOKEN` with `packages: write` for authentication.
-4. Download the `runtimes-glibc-2.23` and `runtimes-glibc-2.39` workflow artifacts. Each contains the outputs and a manifest of their exact registry references and checksums.
-5. Run the [runtime and firmware checks](development.md#firmware-verification), review the outputs, then update `builders`, `runtime_images` and the profile checksums in `tools/runtime-packages.json` as appropriate.
+Review the workflow's builder references and build results before updating the reviewed pins in `tools/runtime-packages.json`. Then run cached runtime builds, review any changed archive checksums and perform the ARM and firmware checks before cutting an app release. Publication does not silently update the source lock or publish a PocketManga release. Follow the separate [release procedure](releases.md#cutting-a-release).
 
-Publishing candidate images does not update that lock or publish an app release. Ordinary app releases fetch reviewed artifacts from it; use the separate [release procedure](releases.md#cutting-a-release) to ship PocketManga.
-
-The existing three packages are public. When introducing another package, check its package visibility and verify an anonymous pull before referencing it in a public build. Container tags can advance independently of app releases; release manifests retain the immutable references used for each bundle.
+When introducing another public builder package, check its visibility and an anonymous pull before referencing it in public builds. Builder tags can advance independently of app releases; manifests retain the immutable input identities used for each bundle.
 
 ## Common problems
 
-- **`exec format error`:** executing an ARM64 builder on a host without ARM64 execution support. Use an ARM64 builder or configure emulation. Fetching artifacts with `fetch_runtimes.py` only needs file copying.
-- **glibc-profile check fails:** `GLIBC_VERSION` and the selected builder must match. App and packaging profile options must match too.
-- **Archive differs from the reviewed checksum:** inspect source, compiler and host-architecture changes. Use `--record-digest` only for a deliberate candidate build, then test and review it.
-- **An image builds but has no `/artifacts/`:** check the Dockerfile target. Published artifact images use `--target artifacts`; `export` instead writes outputs through BuildKit's local exporter.
+- **`exec format error`:** the builder executes ARM64 code. Use an ARM64 Docker host or configure ARM64 emulation.
+- **glibc-profile check fails:** the app, runtime profile and builder must agree. Use one `-Dglibc` value throughout the Zig package command.
+- **Archive differs from the reviewed checksum:** inspect source, compiler and build-platform changes. Generate a deliberate candidate with `--record-digest`, test it and review its checksum before changing the lock.
+- **First package build is slow:** the builder avoids compiling the cross-toolchain, but the JVM and decoders still need compilation. Preserve the Zig cache for subsequent builds.
+- **Docker is unavailable during an ordinary app check:** `zig build` and `zig build test` are Docker-free. Only runtime/package targets need Docker when their runtime cache is missing or invalidated.
+
+See [the Java runtime](java-runtime.md) and [image decoders](../tools/image/README.md) for component configuration and resource limits.

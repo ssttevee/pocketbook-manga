@@ -29,7 +29,7 @@ Use the corresponding `.so` path on Linux.
 ## Firmware verification
 
 
-The firmware checks run the packaged app on official firmware root filesystems. Extract the checksum-pinned 6.10.1461 and 6.9.862 archives (6.9 is the closest available glibc 2.23 stand-in for 6.8) **outside the repo**. `prepare_firmware.py` requires `debugfs` (e2fsprogs) and `unsquashfs`, and reads images without mounting them or using root:
+The firmware checks run the packaged app on official firmware root filesystems. The existing audit and fixture tools read `dist/applications`; when using `zig build package`, copy its `zig-out/release/applications` tree there before running them, preserving any earlier staging tree you need. Extract the checksum-pinned 6.10.1461 and 6.9.862 archives (6.9 is the closest available glibc 2.23 stand-in for 6.8) **outside the repo**. `prepare_firmware.py` requires `debugfs` (e2fsprogs) and `unsquashfs`, and reads images without mounting them or using root:
 
 ```
 zig build runtime-probe -Doptimize=small
@@ -71,7 +71,11 @@ The separate [reader wake diagnostic](reader-wake.md) tests completion delivery 
 
 ## Packaging details
 
-The packaging script checks Java and image runtime digests from `tools/runtime-packages.json`. It also verifies the Debian certificate package and creates Java and PEM trust stores from its public CA certificates. Packages are cached under `.runtime-cache/`; firmware files are never shipped.
+`zig build package -Dglibc=2.39 -Doptimize=small` builds the matching app, worker, extension host and runtimes, then writes the installation tree, archive and checksum under `zig-out/release/`. `zig build runtimes -Dglibc=2.39` prepares only the runtime archives and manifest under `zig-out/runtimes/`. Omit the profile option for glibc 2.23.
+
+Runtime compilation runs in the pinned public builder container and is cached by Zig. Scripts, Dockerfiles, source locks, the decoder bridge, profile, builder digest and build platform are tracked inputs, so changing them invalidates the affected runtime step. Normal builds and tests do not require Docker. See [container builds and caching](containers.md).
+
+The packaging script verifies the reviewed Java/image archive digests and Debian certificate package in `tools/runtime-packages.json`, then creates Java and PEM trust stores from the public certificates. The Zig build cache lives under `.zig-cache/`; advanced manual scripts may also use `.runtime-cache/`. Firmware files are never shipped.
 
 `zig build` compiles the worker's libzstd JNI decoder. Set `JAVA_HOME` so it can find `jni.h`. The packaged OpenJDK licenses are under `runtime/jre/legal/`; certificate and GCC runtime licenses are under `runtime/licenses/`. The host JAR path can be overridden with `tools/package_device.py --host-jar FILE`.
 

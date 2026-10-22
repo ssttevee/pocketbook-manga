@@ -107,28 +107,22 @@ Install:
 - **JDK 17**, with `JAVA_HOME` set to its installation directory. The Java host requests a JDK 17 toolchain.
 - **An Android SDK platform**, providing `android.jar`. Set `ANDROID_HOME` to the SDK directory (or use the standard macOS SDK location, `~/Library/Android/sdk`). No Android device is needed.
 - **Python 3.12 or later**.
-- **Docker**, to fetch the reviewed runtime images or build them from source.
+- **Docker**, with Linux ARM64 execution support, to compile the Java and image runtimes. Apple Silicon Docker hosts can run the published builder directly; Intel/AMD hosts need ARM64 emulation.
 
-From the project directory, fetch the reviewed runtime artifacts, then build the application and extension host:
+From the project directory, run:
 
 ```sh
-python3 tools/fetch_runtimes.py --glibc 2.23 --output .runtime-cache/release
-zig build host
 zig build test
-zig build -Doptimize=small
-python3 tools/package_device.py \
-  --runtime-manifest .runtime-cache/release/runtime-manifest.json \
-  --jre .runtime-cache/release/jre/pocketmanga-jre.tar \
-  --images .runtime-cache/release/images/pocketmanga-image.tar
+zig build package -Doptimize=small
 ```
 
-The runtime fetcher downloads immutable public container images and checks the artifacts against reviewed integrity values. It copies files from stopped containers, so it can run on an Intel/AMD computer without executing ARM code. For firmware 6.10, use `--glibc 2.39` when fetching and packaging, and `-Dglibc=2.39` when building the app.
+The package target builds the app, worker, Java extension host and native runtimes, then writes the complete installation bundle and checksum to **`zig-out/release/`**. For firmware 6.10, run `zig build package -Dglibc=2.39 -Doptimize=small` instead. The default profile is glibc 2.23 for firmware 6.8–6.9.
 
-To rebuild the third-party runtimes yourself, run `python3 tools/build_jre.py` and `python3 tools/build_images.py` instead, then use the packaging script's default runtime paths. The first source build compiles a cross-toolchain and OpenJDK and can take about an hour. See [runtime and release builds](docs/releases.md) for all profile options. Outputs stay in the ignored `.runtime-cache/` directory.
+The first package build compiles OpenJDK and the image decoders using a pinned public builder container and can take a while. Zig caches the runtime outputs in its build cache and reuses them until their inputs change. You can prepare just those outputs with `zig build runtimes -Dglibc=2.39`; the archives and manifest are installed under `zig-out/runtimes/`. See [container builds and caching](docs/containers.md) for the details.
 
-`zig build host` installs `zig-out/lib/tachi-host.jar`. The packaging script uses that JAR by default and creates **`dist/pocketmanga-armv7-softfp-glibc-2.23.tar.gz`**, ready for installation. The archive contains the application files and runtimes, not your personal library or downloads. `zig build` also supports the default optimization configuration; `-Doptimize=small` is the smaller device build.
+Ordinary `zig build` and `zig build test` do not invoke Docker. `zig build host` installs the extension host at `zig-out/lib/tachi-host.jar`. The complete package contains application files and runtimes, not your personal library or downloads.
 
-If Zig is installed somewhere else, use its full path in each command. Packaging verifies the runtime and certificate downloads against the integrity values recorded in `tools/runtime-packages.json`; it does not change your computer's Java installation or the reader's system libraries.
+If Zig is installed somewhere else, use its full path in each command. Packaging verifies runtime and certificate integrity against `tools/runtime-packages.json`; it does not change your computer's Java installation or the reader's system libraries.
 
 ### Make a change and check it
 
@@ -143,7 +137,7 @@ python3 tools/preview_png.py
 
 These write fake-InkView screenshots under `preview/`. They help check layout, but cannot reproduce the reader's panel refresh, Wi-Fi dialogs or suspend behavior.
 
-See [container images](docs/containers.md) for their purpose, usage and build commands, and [release builds](docs/releases.md) for firmware-specific packaging and publishing. Use `-Dglibc=2.39` when building for firmware 6.10, and pass `--glibc 2.39` to both runtime builders and the packaging script.
+See [container images](docs/containers.md) for their purpose, usage and build commands, and [release builds](docs/releases.md) for firmware-specific packaging and publishing. Use `-Dglibc=2.39` for firmware 6.10; the package target keeps the app and runtimes on the same profile.
 
 See [development and verification](docs/development.md) for the architecture, image-cache limits, production codec tests, firmware emulation and packaging details. The [reader wake investigation](docs/reader-wake.md) explains how background work is delivered promptly without periodic completion polling.
 
