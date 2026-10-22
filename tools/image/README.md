@@ -1,7 +1,10 @@
-The image runtime is built with the same pinned ARM soft-float GCC/glibc 2.23
-sysroot as the Java runtime. Run `python3 tools/build_images.py`, then package
+The image runtime is built with the same pinned ARM soft-float GCC/sysroot
+profile as the Java runtime: glibc 2.23 for firmware 6.8–6.9, or 2.39 for 6.10. Run `python3 tools/build_images.py`, then package
 with `tools/package_device.py`. Sources and SHA-256 checksums are recorded in
-`sources.json`; Docker's Debian packages use the JRE build's snapshot.
+`sources.json`; Docker's Debian packages use the JRE build's snapshot. Pass
+`--glibc 2.39` to build the newer profile. The libjpeg build label is fixed
+to the original reviewed runtime date so identical sources produce the same
+archive on different days. See [release builds](../../docs/releases.md).
 
 Enabled image families match Mihon's ImageUtil allowlist and imagedecoder 17:
 JPEG, PNG/APNG, WebP, GIF, AVIF, HEIF, JPEG XL and JPEG 2000. Animated images

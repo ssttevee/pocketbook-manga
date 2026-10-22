@@ -19,5 +19,27 @@
   "Source": "tools/image/sources.json (SHA-256-pinned upstream sources)",
   "Build": "tools/image/Dockerfile via tools/build_images.py",
   "SHA256": "35998367aea9386b88e5612ea25727a7f042088a5c91b239b23c8271d36d6afa"
+ },
+ "profiles": {
+  "2.39": {
+   "jre": {
+    "Version": "17.0.20.1+1-pocketmanga",
+    "Source": "https://github.com/openjdk/jdk17u/commit/c35a8d5a87559ad2734f1023bb321176c13c7ba0 (jdk-17.0.20.1-ga)",
+    "Build": "tools/jre/Dockerfile via tools/build_jre.py",
+    "SHA256": "abeee00296f6bd1f5758a1e31f68a2a906ee9dffc3dbc2147053404e33eec140",
+    "Glibc": "2.39"
+   },
+   "images": {
+    "Version": "libvips-8.18.7-mihon17",
+    "Source": "tools/image/sources.json (SHA-256-pinned upstream sources)",
+    "Build": "tools/image/Dockerfile via tools/build_images.py",
+    "SHA256": "c03a0fc4ea5faa5b2ffa5e97003401db98122751635a159022b14889295b1131",
+    "Glibc": "2.39"
+   }
+  }
+ },
+ "builders": {
+  "2.23": "ghcr.io/ssttevee/pocketmanga-jvm-builder@sha256:e977722c33b59ffb8602b766d7300d487d9f1d032f54a3524d07fe4353a8f6fb",
+  "2.39": "ghcr.io/ssttevee/pocketmanga-jvm-builder@sha256:3713fa01ef8063392967847da32a1f5bb397521c6837582991acdd94aa4b2d89"
  }
 }

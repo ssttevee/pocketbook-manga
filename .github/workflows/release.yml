@@ -42,6 +42,8 @@ jobs:
       contents: read
       packages: write
     uses: ./.github/workflows/runtimes.yml
+    with:
+      publish_builders: false
 
   bundle:
     name: Verify and package glibc ${{ matrix.glibc }}
@@ -89,6 +91,18 @@ jobs:
         with:
           name: runtimes-glibc-${{ matrix.glibc }}
           path: runtimes
+      - name: Verify runtime archives against reviewed build pins
+        env:
+          GLIBC: ${{ matrix.glibc }}
+          PYTHONPATH: tools
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from build_jre import verify_runtime
+          verify_runtime(Path('runtimes/jre/pocketmanga-jre.tar'), os.environ['GLIBC'], 'jre', False)
+          verify_runtime(Path('runtimes/images/pocketmanga-image.tar'), os.environ['GLIBC'], 'images', False)
+          PY
       - name: Test and build both optimization modes
         env:
           GLIBC: ${{ matrix.glibc }}

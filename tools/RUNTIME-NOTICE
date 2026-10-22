@@ -2,7 +2,8 @@ PocketManga Java runtime
 
 runtime/jre is OpenJDK 17.0.20.1+1 built from source for the Verse by
 tools/jre in the PocketManga repository: the jdk17u GA tag, cross-compiled
-with GCC 13.4.0 against glibc 2.23. It runs on the reader's own C library;
+with GCC 13.4.0 against the bundle's selected glibc profile (2.23 or 2.39,
+recorded in runtime/packages.json). It runs on the reader's own C library;
 no C library is bundled. OpenJDK's licenses (GPL-2.0 with the Classpath
 Exception, and third-party notices) are in runtime/jre/legal.
 

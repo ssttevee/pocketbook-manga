@@ -2,7 +2,16 @@ name: Publish runtime builders
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_builders:
+        description: Rebuild and publish cross compilers (otherwise reuse pinned public builders)
+        type: boolean
+        default: true
   workflow_call:
+    inputs:
+      publish_builders:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -36,6 +45,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish cross compiler and JVM build dependencies
         id: builder
+        if: ${{ inputs.publish_builders }}
         uses: docker/build-push-action@v6
         with:
           context: tools/jre
@@ -51,6 +61,26 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=builder-${{ matrix.glibc }}
           cache-to: type=gha,scope=builder-${{ matrix.glibc }},mode=max,ignore-error=true
+      - name: Select immutable public builder
+        id: builder_ref
+        env:
+          GLIBC: ${{ matrix.glibc }}
+          PUBLISH_BUILDERS: ${{ inputs.publish_builders }}
+          BUILT_DIGEST: ${{ steps.builder.outputs.digest }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re
+          if os.environ['PUBLISH_BUILDERS'] == 'true':
+              image = 'ghcr.io/ssttevee/pocketmanga-jvm-builder@' + os.environ['BUILT_DIGEST']
+          else:
+              lock = json.loads(pathlib.Path('tools/runtime-packages.json').read_text())
+              image = lock['builders'][os.environ['GLIBC']]
+          if not re.fullmatch(r'ghcr\.io/ssttevee/pocketmanga-jvm-builder@sha256:[0-9a-f]{64}', image):
+              raise SystemExit('Builder must be an immutable public PocketManga registry reference')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('image=' + image + '\n')
+          print('Using builder:', image)
+          PY
       - name: Publish JVM runtime artifacts
         id: jvm
         uses: docker/build-push-action@v6
@@ -61,7 +91,7 @@ jobs:
           push: true
           build-args: |
             GLIBC_VERSION=${{ matrix.glibc }}
-            BUILDER_IMAGE=ghcr.io/ssttevee/pocketmanga-jvm-builder@${{ steps.builder.outputs.digest }}
+            BUILDER_IMAGE=${{ steps.builder_ref.outputs.image }}
           tags: |
             ghcr.io/ssttevee/pocketmanga-jvm:glibc-${{ matrix.glibc }}-${{ github.sha }}
             ghcr.io/ssttevee/pocketmanga-jvm:glibc-${{ matrix.glibc }}
@@ -81,7 +111,7 @@ jobs:
           push: true
           build-args: |
             GLIBC_VERSION=${{ matrix.glibc }}
-            TOOLCHAIN_IMAGE=ghcr.io/ssttevee/pocketmanga-jvm-builder@${{ steps.builder.outputs.digest }}
+            TOOLCHAIN_IMAGE=${{ steps.builder_ref.outputs.image }}
           tags: |
             ghcr.io/ssttevee/pocketmanga-images:glibc-${{ matrix.glibc }}-${{ github.sha }}
             ghcr.io/ssttevee/pocketmanga-images:glibc-${{ matrix.glibc }}
@@ -93,7 +123,7 @@ jobs:
       - name: Export and record exact release inputs
         env:
           GLIBC: ${{ matrix.glibc }}
-          BUILDER: ghcr.io/ssttevee/pocketmanga-jvm-builder@${{ steps.builder.outputs.digest }}
+          BUILDER: ${{ steps.builder_ref.outputs.image }}
           JVM: ghcr.io/ssttevee/pocketmanga-jvm@${{ steps.jvm.outputs.digest }}
           IMAGES: ghcr.io/ssttevee/pocketmanga-images@${{ steps.images.outputs.digest }}
         run: |

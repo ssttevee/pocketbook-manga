@@ -1,7 +1,12 @@
 # The worker's Java runtime
 
 The worker runs OpenJDK 17 built from source for the Verse, on the reader's
-own C library. It replaces Debian's armel `openjdk-17-jre-headless` (a Zero
+own C library. It has two ARMv7 soft-float build profiles: **glibc 2.23**
+for firmware 6.8–6.9, and **glibc 2.39** for firmware 6.10. Select a matching
+profile for the native app, JVM and image decoders; [release packaging](releases.md)
+checks their identities and integrity values.
+
+It replaces Debian's armel `openjdk-17-jre-headless` (a Zero
 interpreter for ARMv5 without an FPU), which needed glibc 2.34 and so ran on
 a private copy of PocketBook's 6.10 glibc 2.39 through an explicit loader.
 The bundle no longer contains any C library or firmware file.
@@ -20,10 +25,11 @@ The bundle no longer contains any C library or firmware file.
   `java.xml`, `jdk.charsets`, `jdk.crypto.ec`, `jdk.localedata` and
   `jdk.unsupported` (Debian's runtime had 69). The module image is
   uncompressed: class loading on the reader is CPU bound.
-- Compiled against **glibc 2.23** and Linux 3.10 headers, the 6.8/6.9
-  firmware's own. `libjvm.so` and every JDK library need at most
+- Both profiles use Linux 3.10 headers. The default **glibc 2.23** profile
+  targets firmware 6.8/6.9. In that profile, `libjvm.so` and every JDK library need at most
   `GLIBC_2.17` and only libc, libm, libdl, libpthread and librt. GCC's
-  libstdc++ and libgcc are linked statically into libjvm.
+  libstdc++ and libgcc are linked statically into libjvm. The **glibc 2.39**
+  profile is built separately against the newer firmware's libc ABI.
 
 ## How it is built
 
@@ -34,7 +40,8 @@ the result against the digest pinned in `tools/runtime-packages.json`:
    snapshot.debian.org at a fixed date (build tools and the boot JDK).
 2. **toolchain**: crosstool-ng 1.29.0 (checksum-pinned) builds GCC 13.4.0
    for `arm-pocketbook-linux-gnueabi` with a glibc 2.23 sysroot from
-   `tools/jre/crosstool.config`; crosstool-ng verifies every source tarball.
+   `tools/jre/crosstool.config` (or 2.39 with `--glibc 2.39`); crosstool-ng
+   verifies every source tarball.
    About 15 minutes on a 10-core Mac.
 3. **deps**: headless OpenJDK still compiles java.desktop, which needs CUPS,
    fontconfig and X11 headers (copied from the pinned Debian packages) and
@@ -68,7 +75,8 @@ means an input or the build changed.
 
 ## Measurements
 
-QEMU user emulation on an Apple Silicon Mac, firmware 6.9 root filesystem
+These historical measurements use the glibc 2.23 runtime. QEMU user
+emulation on an Apple Silicon Mac, firmware 6.9 root filesystem
 with the kernel 3.10 syscall filter. Emulation slows JIT-compiled code more
 than interpreted code, so the reader should gain at least as much.
 
