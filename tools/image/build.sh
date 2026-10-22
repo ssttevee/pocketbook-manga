@@ -28,7 +28,9 @@ cmake_build expat -DEXPAT_DEV_URANDOM=ON -DEXPAT_BUILD_DOCS=OFF -DEXPAT_BUILD_EX
 ;; esac
 case "${1:-all}" in codecs|all)
 cmake_build libpng -DPNG_TESTS=OFF -DPNG_TOOLS=OFF -DPNG_HARDWARE_OPTIMIZATIONS=OFF
-cmake_build jpeg-turbo -DENABLE_STATIC=OFF -DWITH_TURBOJPEG=OFF -DWITH_SIMD=OFF
+# libjpeg otherwise embeds the wall-clock date in its version banner. Keep
+# the original runtime build string so rebuilding preserves its reviewed digest.
+cmake_build jpeg-turbo -DBUILD=20261021 -DENABLE_STATIC=OFF -DWITH_TURBOJPEG=OFF -DWITH_SIMD=OFF
 cmake_build webp -DWEBP_BUILD_ANIM_UTILS=OFF -DWEBP_BUILD_CWEBP=OFF -DWEBP_BUILD_DWEBP=OFF -DWEBP_BUILD_GIF2WEBP=OFF -DWEBP_BUILD_IMG2WEBP=OFF -DWEBP_BUILD_VWEBP=OFF -DWEBP_BUILD_WEBPINFO=OFF -DWEBP_BUILD_WEBPMUX=OFF -DWEBP_BUILD_EXTRAS=OFF
 meson_build dav1d -Denable_tools=false -Denable_tests=false -Denable_asm=false
 cmake_build libde265 -DENABLE_SDL=OFF -DENABLE_DECODER=OFF -DENABLE_ENCODER=OFF
