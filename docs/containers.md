@@ -43,6 +43,8 @@ Tracked inputs include build scripts, Dockerfiles, source locks, the decoder bri
 
 A lightweight verifier runs even when runtime generation is cached. It checks reviewed archive hashes and the original manifest snapshot, including the separate CDS checksum. If cached files are damaged, clear the Zig cache and rebuild; regenerating a manifest must not approve the damaged files.
 
+Zig 0.17 can rerun a cached command after input timestamps change during cache restoration. The runtime producer recognizes its existing output directory and verifies the receipt written after the original successful build before reusing it. Missing receipts or changed outputs fail verification rather than being accepted as a new build.
+
 The **Cache runtime builds** workflow warms both profiles on the default branch when runtime inputs change. Release tags can restore those caches. Its manual **package** option also runs the full tests and packaging without publishing a release. Cache eviction is safe: the next build regenerates missing outputs with the pinned builder.
 
 For a complete installation bundle:

@@ -11,7 +11,9 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tarfile
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -124,12 +126,44 @@ with open(os.environ['POCKETMANGA_FAKE_DOCKER_LOG'],'a') as log:
                     self.assertNotEqual(result.returncode, 0, 'Corrupted runtime cache was accepted:\n' + result.stdout)
                 return result
 
+            def touch_unchanged_inputs():
+                for name in ('tools/runtime_cache.py', 'tools/jre/build-jdk.sh', 'src/vips_bridge.c'):
+                    path = source / name
+                    status = path.stat()
+                    os.utime(path, ns=(status.st_atime_ns, max(time.time_ns(), status.st_mtime_ns + 2_000_000_000)))
+
+            def discard_step_metadata():
+                # Force Run decisions to be recomputed without removing their
+                # existing content-keyed outputs, as happens after cache repair.
+                metadata = [path for path in (cache / 'h').iterdir() if path.is_file()]
+                self.assertTrue(metadata, 'No Zig step metadata was available to invalidate')
+                for path in metadata:
+                    path.unlink()
+
             build()
             self.assertTrue((source / 'zig-out/runtimes/images/runtime-link').is_symlink())
             initial = records()
             self.assertEqual({entry['component'] for entry in initial}, {'jre', 'images'})
             build()
             self.assertEqual(records(), initial, 'An unchanged build invoked Docker instead of using Zig output caching')
+
+            # A real archive round trip changes cache output inodes and ctimes
+            # while retaining the paths/content keys used by a restored CI cache.
+            witness = next(cache.rglob('producer-receipt.json'))
+            old_inode = witness.stat().st_ino
+            archive = root / 'saved-local-cache.tar'
+            with tarfile.open(archive, 'w') as saved:
+                saved.add(cache, arcname='local')
+            original_cache = root / 'before-restore'
+            cache.rename(original_cache)
+            with tarfile.open(archive) as saved:
+                saved.extractall(root, filter='tar')
+            self.assertNotEqual(witness.stat().st_ino, old_inode, 'Cache restoration reused the original inode')
+            shutil.rmtree(original_cache)
+            touch_unchanged_inputs()
+            build()
+            self.assertEqual(records(), initial, 'A restored cache or metadata-only source change re-exported a runtime')
+            self.assertTrue((source / 'zig-out/runtimes/images/runtime-link').is_symlink())
 
             bridge = source / 'src/vips_bridge.c'
             bridge.write_bytes(bridge.read_bytes() + b'\n/* runtime cache invalidation fixture */\n')
@@ -167,11 +201,43 @@ with open(os.environ['POCKETMANGA_FAKE_DOCKER_LOG'],'a') as log:
                 body['builder'] = 'ghcr.io/example/unreviewed@sha256:' + 'f' * 64
                 path.write_text(json.dumps(body))
             before = records()
-            build(succeeds=False)
+            touch_unchanged_inputs()
+            discard_step_metadata()
+            rejected = build(succeeds=False)
+            self.assertIn('differs from its original snapshot', rejected.stdout)
             self.assertEqual(records(), before)
             for path, body in manifests:
                 body['builder'] = lock['builders']['2.23']
                 path.write_text(json.dumps(body))
+
+            receipts = []
+            for path in cache.rglob('producer-receipt.json'):
+                body = json.loads(path.read_text())
+                if body.get('component') == 'jre' and body.get('glibc') == '2.23' and body.get('builder') == lock['builders']['2.23']:
+                    receipts.append((path, path.read_bytes()))
+            self.assertTrue(receipts)
+            for path, _ in receipts:
+                path.unlink()
+            touch_unchanged_inputs()
+            discard_step_metadata()
+            rejected = build(succeeds=False)
+            self.assertRegex(rejected.stdout, r'runtime_cache\.py build [^\n]*--component jre')
+            self.assertIn('producer-receipt.json', rejected.stdout)
+            self.assertEqual(records(), before, 'A nonempty output without a receipt was rebuilt or accepted')
+            for path, contents in receipts:
+                path.write_bytes(contents)
+
+            for path, contents in receipts:
+                body = json.loads(contents)
+                body['cds_sha256'] = 'f' * 64
+                path.write_text(json.dumps(body))
+            touch_unchanged_inputs()
+            discard_step_metadata()
+            rejected = build(succeeds=False)
+            self.assertIn('differs from its producer receipt', rejected.stdout)
+            self.assertEqual(records(), before, 'A corrupted receipt was overwritten or accepted')
+            for path, contents in receipts:
+                path.write_bytes(contents)
 
             # CDS is deliberately outside the pinned tar; its manifest hash
             # must still detect corruption of a previously generated archive.
@@ -179,7 +245,13 @@ with open(os.environ['POCKETMANGA_FAKE_DOCKER_LOG'],'a') as log:
             self.assertTrue(cds_files)
             for path in cds_files:
                 path.write_bytes(b'corrupted class-data archive')
-            build(succeeds=False)
+            # Even if producer and manifest Run steps are reconsidered, a
+            # damaged CDS must not be rebuilt or blessed by fresh provenance.
+            touch_unchanged_inputs()
+            discard_step_metadata()
+            rejected = build(succeeds=False)
+            self.assertRegex(rejected.stdout, r'runtime_cache\.py build [^\n]*--component jre')
+            self.assertIn('differs from its producer receipt', rejected.stdout)
             self.assertEqual(records(), before)
             for path in cds_files:
                 path.write_bytes(b'CDS-2.23')
