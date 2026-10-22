@@ -66,7 +66,8 @@ jobs:
           set -euo pipefail
           sdkmanager 'platforms;android-35'
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libvips-dev libvips-tools pkg-config
+          sudo apt-get install -y --no-install-recommends libvips-dev libvips-tools pkg-config \
+            libheif-plugin-x265 libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
       - name: Install checksum-verified Zig 0.17.0
         run: |
           python3 - <<'PY'
