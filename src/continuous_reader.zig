@@ -10,7 +10,7 @@ pub const Resolver = struct {
 };
 pub const Context = struct { gpa: std.mem.Allocator, io: std.Io, tiles: *cache.Service, resolver: Resolver };
 pub const Request = struct { pages: []const []const u8, anchor: Anchor, delta: f64 = 0, viewport: cache.Size };
-pub const Output = struct { frame: cache.Frame, anchor: Anchor, at_end: bool, waiting: bool, last_visible_page: usize };
+pub const Output = struct { frame: cache.Frame, anchor: Anchor, at_end: bool, waiting: bool, last_visible_page: usize, content_height: u32 = 0 };
 const max_images = 128;
 
 pub fn render(ctx: Context, arena: std.mem.Allocator, request: Request, checkpoint: cache.Checkpoint) !Output {
@@ -161,5 +161,5 @@ fn compose(ctx: Context, arena: std.mem.Allocator, request: Request, checkpoint:
     }
     success = true;
     const frame_geometry: vp.Geometry = .{ .source = request.viewport, .viewport = request.viewport, .output = request.viewport, .axis = .page, .rtl = false };
-    return .{ .frame = .{ .source = request.viewport, .geometry = frame_geometry, .position = anchor.position, .rect = .{ .x = 0, .y = 0, .width = request.viewport.width, .height = request.viewport.height }, .pixels = pixels, .revision = revision.final() }, .anchor = anchor, .at_end = at_end, .waiting = blocked, .last_visible_page = last };
+    return .{ .frame = .{ .source = request.viewport, .geometry = frame_geometry, .position = anchor.position, .rect = .{ .x = 0, .y = 0, .width = request.viewport.width, .height = request.viewport.height }, .pixels = pixels, .revision = revision.final() }, .anchor = anchor, .at_end = at_end, .waiting = blocked, .last_visible_page = last, .content_height = filled };
 }

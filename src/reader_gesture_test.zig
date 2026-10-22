@@ -9,6 +9,7 @@ test "reader releases a vertical drag before moving and hides chapter skip until
     var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true };
     defer model.deinit();
     try model.dispatch(.{ .read = 0 });
+    model.reader_zoom = true;
     try model.configureReader(.{ .width = 1000, .height = 12000 }, .{ .width = 686, .height = 760 });
     var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io, .next_chapter = 0 };
     defer session.deinit();
@@ -31,6 +32,7 @@ test "wide reader drags reverse correctly for horizontal RTL and LTR" {
         var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true, .prefs = .{ .rtl = rtl } };
         defer model.deinit();
         try model.dispatch(.{ .read = 0 });
+        model.reader_zoom = true;
         try model.configureReader(.{ .width = 12000, .height = 1000 }, .{ .width = 686, .height = 760 });
         var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io };
         defer session.deinit();

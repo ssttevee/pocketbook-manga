@@ -14,7 +14,7 @@ pub const Navigation = enum { library, updates, history, browse, more };
 pub const ReaderBusyKey = struct { epoch: u64, revision: usize, chapter: u64 };
 pub const State = struct { reader_busy: ?ReaderBusyKey = null, storage_snapshot: ?storage.Snapshot = null, storage_revision: u32 = 0, storage_clearing: bool = false, more_root: bool = false, reading_from_more: bool = false, focused: bool = false, tapping: bool = false, pointer_start: ?f.Vec2 = null, reader_updates: u8 = 0 };
 pub const Props = struct {};
-pub const Msg = union(enum) { reader_busy: ReaderBusyKey, reader_mode_menu, reader_mode_choice: ?usize, storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage, series }, jump_chapter, jump_page, page_target: ?[]const u8, dismiss_error, dismiss_status: u64, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, library_sort, library_sort_choice: ?usize, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
+pub const Msg = union(enum) { reader_zoom, reader_busy: ReaderBusyKey, reader_mode_menu, reader_mode_choice: ?usize, storage_loaded: anyerror!storage.Snapshot, storage_cleared: anyerror!void, storage_action: enum { internal, sd_card, clear_cache, manage, series }, jump_chapter, jump_page, page_target: ?[]const u8, dismiss_error, dismiss_status: u64, chapter_target: ?[]const u8, region_frame: anyerror!regions.Result, navigate: Navigation, reading_settings, library_grid, library_sort, library_sort_choice: ?usize, act: lib.Action, track: Session.TrackEdit, login_user: []const u8, login_password: []const u8, add_store: []const u8, confirm_add: bool, global_query: []const u8, edit: Session.Edit, setting: lib.Setting, category_edit: Session.CategoryEdit, new_category: []const u8, restore: usize, backup_command: BackupCommand, key: app.KeyEvent, pointer: app.Pointer, query: []const u8, online_query: []const u8, online: OnlineCommand, poll, pref_text: ?[]const u8, pref_choice: ?usize, remove_answer: ?usize, focus, quit };
 
 pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
     const session = @constCast(ctx.use(Session));
@@ -24,6 +24,7 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(Root)) !void {
         else => return,
     };
     switch (msg) {
+        .reader_zoom => session.toggleReaderZoom(),
         .reader_busy => |key| {
             const pending = readerBusyKey(session) orelse return;
             if (std.meta.eql(pending, key)) state.reader_busy = key;
@@ -747,6 +748,8 @@ fn toolbar(ui: *app.Ui, session: *const Session, navigation: ?Navigation) !void 
             if (model.library.manga.len > 0) try onlineButton(ui, "update-library", "Update", .update_all);
             try app.widgets.searchField(ui, "query", .{ .text = model.query_text, .placeholder = "Search library", .on_change = ui.messages(Root).handler(.query), .sizing = .{ .width = .fixed(140) } });
         }
+        if (model.screen == .reader and model.readingMode() == .paged)
+            try app.widgets.button(ui, "reader-zoom", .{ .label = if (model.reader_zoom) "Fit page" else "Zoom", .on_click = ui.messages(Root).bind(.reader_zoom) });
         if (navigation == null and model.screen != .settings and session.browser.busy == null) try button(ui, "settings", "Aa", .settings);
     }
 }
@@ -1476,7 +1479,7 @@ fn readerDrag(geometry: lib.viewport.Geometry, drag: f.Vec2, size: f.Vec2) f64 {
 }
 
 fn readerBusyKey(session: *const Session) ?ReaderBusyKey {
-    if (session.model.screen != .reader or session.region_service == null or session.image == null or
+    if (session.model.screen != .reader or session.region_service == null or (session.image == null and session.model.readingMode() == .vertical) or
         session.regionCurrent() or session.status.len > 0) return null;
     const chapter = session.model.current() orelse return null;
     return .{ .epoch = session.region_epoch, .revision = session.reader_download_done, .chapter = std.hash.Wyhash.hash(0, chapter.id) };
@@ -1501,6 +1504,7 @@ fn reader(ui: *app.Ui, session: *const Session, state: *const State) !void {
         var request: regions.Request = .{
             .requested_at_ms = if (session.reader_requested_at) |at| at.toMilliseconds() else null,
             .mode = model.readingMode(),
+            .zoom = model.reader_zoom,
             .pages = if (model.readingMode() == .vertical) ch.pages else &.{},
             .delta = model.reader_scroll_delta,
             .revision = session.reader_download_done,
@@ -1526,12 +1530,12 @@ fn reader(ui: *app.Ui, session: *const Session, state: *const State) !void {
         // Acceptance normalizes the anchor and clears pending motion. Those
         // outputs must not cancel the task that is still preparing the next view.
         // Effective navigation advances region_epoch; external inputs remain keys.
-        try ui.task("reader-region", .{ .restart = .{ request.chapter, request.epoch, viewport, request.rtl, request.mode, request.revision } }, regions.render, .{ service, request, on.handler(.region_frame) }, on.handler(.region_frame));
+        try ui.task("reader-region", .{ .restart = .{ request.chapter, request.epoch, viewport, request.rtl, request.mode, request.revision, request.zoom } }, regions.render, .{ service, request, on.handler(.region_frame) }, on.handler(.region_frame));
     };
     {
         try ui.open("page", .{ .layout = .{ .sizing = .grow(.{}), .child_alignment = .center }, .background_color = .white, .on_pointer = on.handler(.pointer) });
         defer ui.close();
-        if (session.image) |*image| ui.content(@constCast(&image.content)) else {
+        if (session.image) |*image| ui.content(@constCast(&image.content)) else if (model.readingMode() != .paged or session.region_service == null or session.status.len > 0) {
             try ui.open("page-loading", .{ .layout = .{ .sizing = .{ .width = .grow(.{}) }, .axis = .y, .padding = .all(12), .child_gap = 12 } });
             defer ui.close();
             try downloadIdentity(ui, model.library.manga[model.manga].title, ch.title);
@@ -1545,13 +1549,24 @@ fn reader(ui: *app.Ui, session: *const Session, state: *const State) !void {
         try ui.after(.{ .reader_busy = key }, .fromMilliseconds(300), on.bind(.{ .reader_busy = key }));
         if (state.reader_busy) |shown| if (std.meta.eql(shown, key)) {
             try ui.open("reader-preparing", .{ .floating = .{ .mode = .root, .parent_point = .right_bottom, .unit_point = .right_bottom, .offset = .init(-12, -48) }, .background_color = .white, .border = .{ .color = .black, .widths = .outside(1) }, .layout = .{ .padding = .all(8) } });
-            try text(ui, "Preparing view…", 12, 0);
+            try text(ui, if (ch.pages[model.page].len == 0) "Downloading page…" else "Preparing view…", 12, 0);
             ui.close();
         };
     }
-    if (pending == null and model.readingMode() == .vertical and model.reader_waiting and !model.reader_controls) {
-        try ui.open("reader-waiting", .{ .floating = .{ .mode = .root, .parent_point = .left_bottom, .unit_point = .left_bottom }, .background_color = .white, .layout = .{ .padding = .all(6) } });
-        try text(ui, "Waiting for next page…", 12, 60);
+    if (pending == null and model.readingMode() == .vertical and model.reader_waiting) {
+        const below = @as(f32, @floatFromInt(model.reader_content_height)) / session.display_scale + 6;
+        try ui.open("reader-waiting", .{ .floating = .{ .mode = .root, .parent_point = .left_top, .unit_point = .left_top, .offset = .init(6, @min(below, @max(0, ui.core.viewport.y - 76))) }, .background_color = .white, .layout = .{ .padding = .all(6) } });
+        const streaming = model.online_chapter != null and std.mem.eql(u8, model.online_chapter.?, ch.id);
+        try text(ui, if (streaming) (if (session.reader_download_failed) "Download paused" else "Downloading next page…") else "Waiting for next page…", 12, 60);
+        ui.close();
+    }
+    if (!model.reader_controls) {
+        const vertical = model.readingMode() == .vertical;
+        const extent = if (vertical) ui.core.viewport.y else ui.core.viewport.x;
+        const progress: f32 = @floatCast(model.readerProgress());
+        try ui.open("reader-progress-track", .{ .floating = .{ .mode = .root, .parent_point = if (vertical) .right_top else .left_bottom, .unit_point = if (vertical) .right_top else .left_bottom }, .background_color = .gray(220), .layout = .{ .sizing = .{ .width = .fixed(if (vertical) 2 else extent), .height = .fixed(if (vertical) extent else 2) } } });
+        ui.close();
+        try ui.open("reader-progress-fill", .{ .floating = .{ .mode = .root, .parent_point = if (vertical) .right_top else .left_bottom, .unit_point = if (vertical) .right_top else .left_bottom }, .background_color = .black, .layout = .{ .sizing = .{ .width = .fixed(if (vertical) 2 else extent * progress), .height = .fixed(if (vertical) extent * progress else 2) } } });
         ui.close();
     }
     if (model.readingMode() == .vertical and session.image != null and session.status.len > 0 and !session.status_transient and !session.download_error) {
@@ -1569,7 +1584,7 @@ fn reader(ui: *app.Ui, session: *const Session, state: *const State) !void {
             try ui.open("reader-progress", .{ .layout = .{ .sizing = .{ .height = .grow(.{}) }, .child_alignment = .center }, .on_click = on.bind(.jump_page) });
             defer ui.close();
             if (model.readingMode() == .vertical) {
-                try ui.print(.{ .font_size = 12 }, "{d}/{d} vertical", .{ model.page + 1, ch.pages.len });
+                try ui.print(.{ .font_size = 12 }, "{d}/{d} vertical", .{ model.readerProgressPage(), ch.pages.len });
             } else if (model.reader_geometry) |geometry| {
                 if (geometry.axis != .page) {
                     const percent: u8 = @intFromFloat(@round(lib.viewport.clamp(model.reader_position) * 100));

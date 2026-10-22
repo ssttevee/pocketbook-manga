@@ -1,4 +1,4 @@
-//! Pixel geometry for width-fitted webtoons and height-fitted wide pages.
+//! Pixel geometry for complete pages and optional width/height-fitted zoom.
 //! Progress follows reading order, so horizontal RTL starts at the right edge.
 const std = @import("std");
 
@@ -11,6 +11,18 @@ pub const Geometry = struct {
     output: Size,
     axis: Axis,
     rtl: bool,
+
+    /// Fit the entire source inside the display, regardless of aspect ratio.
+    pub fn fit(source: Size, viewport: Size, rtl: bool) Geometry {
+        var geometry = init(source, viewport, rtl);
+        const scale = @min(
+            @as(f64, @floatFromInt(geometry.viewport.width)) / @as(f64, @floatFromInt(geometry.source.width)),
+            @as(f64, @floatFromInt(geometry.viewport.height)) / @as(f64, @floatFromInt(geometry.source.height)),
+        );
+        geometry.axis = .page;
+        geometry.output = .{ .width = scaled(geometry.source.width, scale), .height = scaled(geometry.source.height, scale) };
+        return geometry;
+    }
 
     pub fn init(source: Size, viewport: Size, rtl: bool) Geometry {
         const src: Size = .{ .width = @max(1, source.width), .height = @max(1, source.height) };
@@ -134,5 +146,19 @@ test "shallow page fragments fit whole instead of magnifying to screen height" {
         try std.testing.expectEqual(Axis.horizontal, boundary.axis);
         const below_boundary = Geometry.init(.{ .width = 4096, .height = 511 }, strip.viewport, rtl);
         try std.testing.expectEqual(Axis.page, below_boundary.axis);
+    }
+}
+
+test "whole-page fit contains tall and wide sources without panning" {
+    for ([_]Size{ .{ .width = 900, .height = 13000 }, .{ .width = 13000, .height = 900 }, .{ .width = 700, .height = 1000 } }) |source| {
+        for ([_]bool{ false, true }) |rtl| {
+            const geometry = Geometry.fit(source, .{ .width = 758, .height = 1024 }, rtl);
+            try std.testing.expectEqual(Axis.page, geometry.axis);
+            try std.testing.expect(geometry.output.width <= geometry.viewport.width);
+            try std.testing.expect(geometry.output.height <= geometry.viewport.height);
+            try std.testing.expectEqual(geometry.region(0), geometry.region(1));
+            try std.testing.expectEqual(@as(?f64, null), geometry.step(0, 1));
+            try std.testing.expect(geometry.atEnd(0));
+        }
     }
 }

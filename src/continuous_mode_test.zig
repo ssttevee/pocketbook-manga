@@ -240,6 +240,9 @@ test "continuous reader refreshes missing footer pages when background downloads
     try std.testing.expectEqual(@as(f64, 0), model.reader_scroll_delta);
     try std.testing.expectEqual(@as(u8, 0), session.image.?.pixels[0]);
     try std.testing.expectEqual(@as(u8, 255), session.image.?.pixels[343 * 200]);
+    try h.expectText("Downloading next page…");
+    const waiting_badge = h.findElement(h.root().element("reader-waiting")).?.bbox;
+    try std.testing.expect(waiting_badge.y >= @as(f32, @floatFromInt(model.reader_content_height)));
     const stale_request: Regions.Request = .{ .mode = .vertical, .revision = 1, .pages = model.online_pages, .root = root, .relative = "first.png", .chapter = "chapter", .page = model.page, .epoch = session.region_epoch, .viewport = session.region_viewport, .position = model.reader_position, .backward = false, .rtl = model.prefs.rtl };
     model.online_pages = fixture.manga[0].chapters[0].pages;
     session.reader_download_done = 3;
@@ -293,6 +296,7 @@ test "slow retained reader views show delayed feedback without signaling backgro
         defer session.deinit();
         try session.act(.{ .reader_mode = mode });
         try session.act(.{ .read = 0 });
+        model.reader_zoom = mode == .paged; // Exercise a slow retained region in each mode.
         var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
         defer h.deinit();
         try h.frame();
@@ -342,5 +346,42 @@ test "slow retained reader views show delayed feedback without signaling backgro
         try session.act(.back);
         try h.post(h.root().handler(Root, .reader_busy), stale);
         try h.expectNoText("Preparing view…");
+    }
+}
+
+test "end progress and physical forward reveal controls without moving the anchor" {
+    for ([_]lib.ReaderMode{ .paged, .vertical }) |mode| {
+        var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true, .reader_requires_presentation = true };
+        defer model.deinit();
+        try model.dispatch(.{ .reader_mode = mode });
+        try model.dispatch(.{ .read = 0 });
+        if (mode == .vertical) {
+            try model.presentContinuous(1, 0.75, geometry, true, false);
+        } else {
+            try model.dispatch(.{ .jump_page = 2 });
+            try model.configureReader(view, view);
+        }
+        var session: Session = .{ .model = &model, .root = ".", .io = std.testing.io, .next_chapter = 0 };
+        defer session.deinit();
+        var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+        defer h.deinit();
+        try h.frame();
+        try std.testing.expectEqual(@as(usize, 3), model.readerProgressPage());
+        try std.testing.expectEqual(@as(f64, 1), model.readerProgress());
+        const track = h.findElement(h.root().element("reader-progress-track")).?.bbox;
+        const fill = h.findElement(h.root().element("reader-progress-fill")).?.bbox;
+        try std.testing.expectEqual(track, fill);
+        try std.testing.expectEqual(@as(f32, 2), if (mode == .vertical) track.w else track.h);
+        try std.testing.expectEqual(@as(f32, if (mode == .vertical) 464 else 343), if (mode == .vertical) track.h else track.w);
+        const page = model.page;
+        const position = model.reader_position;
+        try session.act(.{ .turn = 1 });
+        try h.frame();
+        try h.expectText("Chapter >");
+        try std.testing.expect(model.reader_controls);
+        try std.testing.expectEqual(page, model.page);
+        try std.testing.expectEqual(position, model.reader_position);
+        try std.testing.expect(h.findElement(h.root().element("reader-progress-track")) == null);
+        if (mode == .vertical) try h.expectText("3/3 vertical");
     }
 }

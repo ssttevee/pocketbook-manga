@@ -10,6 +10,7 @@ test "region turns reach the edge before advancing or completing the chapter" {
     defer model.deinit();
     try model.dispatch(.{ .read = 0 });
     try std.testing.expect(!model.readerAtEnd());
+    model.reader_zoom = true;
     try model.configureReader(tall, view);
     try model.dispatch(.{ .turn = 1 });
     try std.testing.expectEqual(@as(usize, 0), model.page);
@@ -18,6 +19,7 @@ test "region turns reach the edge before advancing or completing the chapter" {
     try model.dispatch(.{ .turn = 1 });
     try std.testing.expectEqual(@as(usize, 1), model.page);
     try std.testing.expect(!model.readState(fixture.manga[0].chapters[0]).read);
+    model.reader_zoom = true;
     try model.configureReader(tall, view);
     try std.testing.expect(!model.readState(fixture.manga[0].chapters[0]).read);
     try model.dispatch(.{ .pan = 1 });
@@ -25,6 +27,7 @@ test "region turns reach the edge before advancing or completing the chapter" {
     try model.dispatch(.{ .pan = -1 });
     try model.dispatch(.{ .turn = -1 });
     try std.testing.expectEqual(@as(usize, 0), model.page);
+    model.reader_zoom = true;
     try model.configureReader(tall, view);
     try std.testing.expectEqual(@as(f64, 1), model.reader_position);
 }
@@ -33,6 +36,7 @@ test "saved region positions survive JSON, reopening and viewport changes" {
     var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true };
     defer model.deinit();
     try model.dispatch(.{ .read = 0 });
+    model.reader_zoom = true;
     try model.configureReader(tall, view);
     try model.dispatch(.{ .pan = 0.4 });
     const bytes = try std.json.Stringify.valueAlloc(std.testing.allocator, model.prefs, .{});
@@ -42,6 +46,7 @@ test "saved region positions survive JSON, reopening and viewport changes" {
     var resumed: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .prefs = parsed.value, .region_reader = true };
     defer resumed.deinit();
     try resumed.dispatch(.{ .read = 0 });
+    resumed.reader_zoom = true;
     try resumed.configureReader(tall, .{ .width = 600, .height = 700 });
     try std.testing.expectApproxEqAbs(@as(f64, 0.4), resumed.reader_position, 0.000001);
     try std.testing.expect(!resumed.dirty);
@@ -52,6 +57,7 @@ test "wide RTL reading reaches left edge and a normal page completes immediately
     var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true };
     defer model.deinit();
     try model.dispatch(.{ .read = 0 });
+    model.reader_zoom = true;
     try model.configureReader(.{ .width = 12000, .height = 1000 }, view);
     const start = model.reader_geometry.?.region(model.reader_position);
     try model.dispatch(.{ .turn = 1 });
@@ -59,6 +65,7 @@ test "wide RTL reading reaches left edge and a normal page completes immediately
     try model.dispatch(.{ .pan = 1 });
     try std.testing.expectEqual(@as(u32, 0), model.reader_geometry.?.region(model.reader_position).x);
     try model.dispatch(.{ .turn = 1 });
+    model.reader_zoom = true;
     try model.configureReader(.{ .width = 700, .height = 1000 }, view);
     try std.testing.expect(model.readerAtEnd());
     try std.testing.expect(model.readState(fixture.manga[0].chapters[0]).read);
@@ -78,6 +85,7 @@ test "partial last-image progress remains unfinished when dimensions are pending
     try std.testing.expect(!model.readState(chapter).read);
     try model.dispatch(.{ .turn = 1 });
     try std.testing.expectEqual(@as(usize, 1), model.page);
+    model.reader_zoom = true;
     try model.configureReader(tall, view);
     try std.testing.expect(!model.readState(chapter).read);
 }
@@ -86,6 +94,7 @@ test "region anchor storage is bounded and ordinary pages do not consume entries
     var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true };
     defer model.deinit();
     try model.dispatch(.{ .read = 0 });
+    model.reader_zoom = true;
     try model.configureReader(.{ .width = 700, .height = 1000 }, view);
     for (model.prefs.reader_positions) |entry| try std.testing.expect(entry == null);
     // Treat each generated chapter as a distinct visited title. The model owns
@@ -100,6 +109,7 @@ test "region anchor storage is bounded and ordinary pages do not consume entries
         model.library.manga = &.{manga};
         model.clearReading();
         try model.dispatch(.{ .read = 0 });
+        model.reader_zoom = true;
         try model.configureReader(tall, view);
         try model.dispatch(.{ .pan = 0.25 });
     }
@@ -112,15 +122,18 @@ test "asynchronous readers complete only after the final region is presented" {
     var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true, .reader_requires_presentation = true };
     defer model.deinit();
     try model.dispatch(.{ .read = 0 });
+    model.reader_zoom = true;
     try model.configureReader(tall, view);
     try model.dispatch(.{ .pan = 1 });
     try std.testing.expect(!model.reader_presented);
     try model.dispatch(.{ .turn = 1 });
+    model.reader_zoom = true;
     try model.configureReader(tall, view);
     try model.dispatch(.{ .pan = 1 });
     try std.testing.expect(model.readerAtEnd());
     try std.testing.expect(!model.reader_presented);
     try std.testing.expect(!model.readState(fixture.manga[0].chapters[0]).read);
+    model.reader_zoom = true;
     try model.configureReader(tall, view);
     try std.testing.expect(model.reader_presented);
     try std.testing.expect(model.readState(fixture.manga[0].chapters[0]).read);
@@ -135,9 +148,28 @@ test "private reading moves the viewport without storing region anchors" {
     var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true, .reader_record_positions = false };
     defer model.deinit();
     try model.dispatch(.{ .read = 0 });
+    model.reader_zoom = true;
     try model.configureReader(tall, view);
     try model.dispatch(.{ .pan = 0.5 });
     try std.testing.expectApproxEqAbs(@as(f64, 0.5), model.reader_position, 0.00001);
     for (model.prefs.reader_positions) |anchor| try std.testing.expect(anchor == null);
     try std.testing.expect(!model.dirty);
+}
+
+test "paged reading fits whole sources by default and zoom resets on reentry" {
+    var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true };
+    defer model.deinit();
+    try model.dispatch(.{ .read = 0 });
+    try model.configureReader(tall, view);
+    try std.testing.expectEqual(vp.Axis.page, model.reader_geometry.?.axis);
+    try model.dispatch(.{ .turn = 1 });
+    try std.testing.expectEqual(@as(usize, 1), model.page);
+    model.reader_zoom = true;
+    try model.configureReader(.{ .width = 12000, .height = 1000 }, view);
+    try std.testing.expectEqual(vp.Axis.horizontal, model.reader_geometry.?.axis);
+    try model.dispatch(.back);
+    try model.dispatch(.{ .read = 0 });
+    try std.testing.expect(!model.reader_zoom);
+    try model.configureReader(.{ .width = 12000, .height = 1000 }, view);
+    try std.testing.expectEqual(vp.Axis.page, model.reader_geometry.?.axis);
 }

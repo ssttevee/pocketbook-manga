@@ -419,3 +419,35 @@ test "visible rendering defers initial and recurring cache cleanup and canceled 
     try std.testing.expectEqual(@as(usize, 0), service.disk_written);
     try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "tiles/abandoned.tile.tmp", .{}));
 }
+
+test "whole-page and zoomed cache entries remain independent in both orientations" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const p = try paths(a, tmp.dir);
+    const view: cache.Size = .{ .width = 300, .height = 400 };
+    for ([_]cache.Size{ .{ .width = 900, .height = 9000 }, .{ .width = 9000, .height = 900 } }) |source| {
+        // Distinct directories avoid reusing the fake source's earlier tiles.
+        const disk = try std.fmt.allocPrint(a, "{s}-{d}", .{ p.disk, source.width });
+        var fake: Fake = .{ .source = source };
+        var service = cache.Service.init(std.testing.allocator, fake.backend(), disk);
+        defer service.deinit();
+        const whole = try service.frameFit(a, io, p.image, view, 0, false, false, false, .{});
+        try std.testing.expectEqual(vp.Axis.page, whole.geometry.axis);
+        try std.testing.expect(whole.rect.width <= view.width and whole.rect.height <= view.height);
+        try expectPixels(whole);
+        try std.testing.expect(try service.cachedFrameFit(a, io, p.image, view, 0, false, false, true) == null);
+        const zoomed = try service.frameFit(a, io, p.image, view, 0, false, false, true, .{});
+        try std.testing.expect(zoomed.geometry.axis != .page);
+        try std.testing.expect(whole.revision != zoomed.revision);
+        const reads = fake.reads;
+        const restored = (try service.cachedFrameFit(a, io, p.image, view, 0, false, false, false)).?;
+        try std.testing.expectEqual(whole.geometry, restored.geometry);
+        try std.testing.expectEqualSlices(u8, whole.pixels, restored.pixels);
+        try std.testing.expectEqual(reads, fake.reads);
+        try service.prepareFit(io, p.image, view, 0, false, false, .{});
+        try std.testing.expectEqual(reads, fake.reads);
+    }
+}

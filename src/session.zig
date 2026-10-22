@@ -29,7 +29,7 @@ pub const Session = struct {
     region_epoch: u64 = 0,
     reader_requested_at: ?std.Io.Timestamp = null,
     region_pixels: ?[]u8 = null,
-    region_drawn: ?struct { chapter: u64, page: usize, epoch: u64, position: f64, rtl: bool, viewport: Viewport.Size, mode: lib.ReaderMode = .paged, revision: usize = 0 } = null,
+    region_drawn: ?struct { chapter: u64, page: usize, epoch: u64, position: f64, rtl: bool, viewport: Viewport.Size, zoom: bool = false, mode: lib.ReaderMode = .paged, revision: usize = 0 } = null,
     load_image: ?*const fn (*Session, []const u8) anyerror!void = null,
     /// Decodes an owned, bounded thumbnail independently of the reader page.
     load_cover: ?*const fn (*Session, []const u8, usize, usize) anyerror!Image = null,
@@ -102,7 +102,7 @@ pub const Session = struct {
         const chapter = self.model.current() orelse return false;
         return self.image != null and self.model.reader_presented and drawn.epoch == self.region_epoch and
             drawn.chapter == std.hash.Wyhash.hash(0, chapter.id) and drawn.page == self.model.page and
-            drawn.mode == self.model.readingMode() and (drawn.mode != .vertical or drawn.revision == self.reader_download_done) and self.model.reader_scroll_delta == 0 and drawn.position == self.model.reader_position and drawn.rtl == self.model.prefs.rtl and
+            drawn.mode == self.model.readingMode() and drawn.zoom == self.model.reader_zoom and (drawn.mode != .vertical or drawn.revision == self.reader_download_done) and self.model.reader_scroll_delta == 0 and drawn.position == self.model.reader_position and drawn.rtl == self.model.prefs.rtl and
             std.meta.eql(drawn.viewport, self.region_viewport);
     }
     pub fn clearRegionImage(self: *Session) void {
@@ -133,7 +133,7 @@ pub const Session = struct {
         else
             try std.fs.path.join(arena.allocator(), &.{ request.root, request.relative });
         const terminated = try arena.allocator().dupeSentinel(u8, path, 0);
-        const frame = try service.tiles.cachedFrame(arena.allocator(), self.io, terminated, request.viewport, request.position, request.backward, request.rtl) orelse return false;
+        const frame = try service.tiles.cachedFrameFit(arena.allocator(), self.io, terminated, request.viewport, request.position, request.backward, request.rtl, request.zoom) orelse return false;
         checked = std.Io.Clock.boot.now(self.io);
         return self.acceptRegion(.{ .request = request, .value = .{ .frame = frame } });
     }
@@ -143,7 +143,7 @@ pub const Session = struct {
         const chapter = model.current() orelse return false;
         if (model.screen != .reader or model.page != request.page or self.region_epoch != request.epoch or
             !std.mem.eql(u8, chapter.id, request.chapter) or model.reader_position != request.position or
-            model.readingMode() != request.mode or model.reader_scroll_delta != request.delta or
+            model.readingMode() != request.mode or model.reader_zoom != request.zoom or model.reader_scroll_delta != request.delta or
             (request.mode == .vertical and request.revision != self.reader_download_done) or
             model.reader_pending_end != request.backward or model.prefs.rtl != request.rtl or
             !std.meta.eql(self.region_viewport, request.viewport)) return false;
@@ -165,7 +165,10 @@ pub const Session = struct {
                     const owned = try model.gpa.dupe(u8, frame.pixels);
                     errdefer model.gpa.free(owned);
                     switch (result.value) {
-                        .continuous => |output| try model.presentContinuous(output.anchor.page, output.anchor.position, frame.geometry, output.at_end, output.waiting),
+                        .continuous => |output| {
+                            try model.presentContinuous(output.anchor.page, output.anchor.position, frame.geometry, output.at_end, output.waiting);
+                            model.reader_content_height = output.content_height;
+                        },
                         else => try model.configureReader(frame.source, request.viewport),
                     }
                     break :blk owned;
@@ -174,7 +177,7 @@ pub const Session = struct {
                 self.clearRegionImage();
                 self.region_pixels = pixels;
                 self.image = .{ .width = frame.rect.width, .height = frame.rect.height, .pixels = pixels, .revision = frame.revision, .native_scale = self.display_scale };
-                self.region_drawn = .{ .chapter = std.hash.Wyhash.hash(0, chapter.id), .page = model.page, .epoch = self.region_epoch, .position = model.reader_position, .rtl = model.prefs.rtl, .viewport = request.viewport, .mode = request.mode, .revision = request.revision };
+                self.region_drawn = .{ .chapter = std.hash.Wyhash.hash(0, chapter.id), .page = model.page, .epoch = self.region_epoch, .position = model.reader_position, .rtl = model.prefs.rtl, .viewport = request.viewport, .mode = request.mode, .zoom = request.zoom, .revision = request.revision };
                 self.setStatus("");
                 const saving = std.Io.Clock.boot.now(self.io);
                 self.recordProgress();
@@ -734,8 +737,10 @@ pub const Session = struct {
             self.model.online_pages = pages;
             if (newly_ready) {
                 self.region_epoch +%= 1;
-                self.clearRegionImage();
-                if (self.load_image) |load| try load(self, pages[self.model.page]);
+                if (self.region_service == null or self.image == null) {
+                    self.clearRegionImage();
+                    if (self.load_image) |load| try load(self, pages[self.model.page]);
+                }
             }
         }
         self.reader_download_failed = false;
@@ -1336,7 +1341,27 @@ pub const Session = struct {
         for (self.model.library.categories) |c| if (c.id == self.category_id) return .decode(c.flags);
         return .decode(self.settings.library.sort);
     }
+    pub fn toggleReaderZoom(self: *Session) void {
+        if (self.model.screen != .reader or self.model.readingMode() != .paged) return;
+        if (self.region_service != null and !self.regionCurrent()) return;
+        self.model.reader_zoom = !self.model.reader_zoom;
+        self.model.reader_position = 0;
+        self.model.reader_pending_end = false;
+        self.model.reader_presented = false;
+        self.region_epoch +%= 1;
+        self.reader_requested_at = std.Io.Clock.boot.now(self.io);
+    }
+
     pub fn act(self: *Session, action: lib.Action) !void {
+        if (action == .turn and action.turn > 0 and self.model.screen == .reader and
+            self.model.readerAtEnd() and (self.region_service == null or self.regionCurrent()))
+        {
+            const ch = self.model.current() orelse return;
+            if (self.model.readingMode() == .vertical or self.model.page + 1 == ch.pages.len) {
+                self.model.reader_controls = true;
+                return;
+            }
+        }
         if (self.model.screen == .reader and self.region_service != null) switch (action) {
             .turn, .pan, .jump_page => {
                 // Keep one navigation request in flight. Repeated input must
@@ -1417,7 +1442,9 @@ pub const Session = struct {
             if (!self.starting_read_download and self.browser.busy == null and self.read_download == null and self.queued_read == null and self.browser.loading_sources == null) if (self.browser.engine) |engine| {
                 if (!engine.queue.running()) engine.backend.release();
             };
-            if (self.load_image) |load| {
+            const retain_page = self.region_service != null and old_screen == .reader and before != null and
+                std.mem.eql(u8, before.?.id, self.model.current().?.id);
+            if (!retain_page) if (self.load_image) |load| {
                 const path = self.model.current().?.pages[self.model.page];
                 if (path.len == 0) {
                     self.clearRegionImage();
@@ -1426,7 +1453,7 @@ pub const Session = struct {
                     self.image = null;
                     try self.formatStatus("Cannot open page: {s}", .{@errorName(err)});
                 };
-            }
+            };
         }
         if (self.model.screen == .reader and (old_screen != .reader or before == null or !std.mem.eql(u8, before.?.id, self.model.current().?.id))) self.findNextChapter();
         if (self.model.screen != .reader) {

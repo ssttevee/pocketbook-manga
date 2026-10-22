@@ -58,12 +58,16 @@ pub const Model = struct {
     reader_presented: bool = false,
     reader_controls: bool = false,
     reader_geometry: ?viewport.Geometry = null,
+    /// Whole-page fit is the default; zoom lasts only for this reader visit.
+    reader_zoom: bool = false,
     reader_position: f64 = 0,
     reader_pending_end: bool = false,
     /// Continuous mode anchors the top of the viewport within one source image.
     reader_scroll_delta: f64 = 0,
     reader_continuous_end: bool = false,
     reader_waiting: bool = false,
+    /// Actual image rows before the white remainder of a streaming viewport.
+    reader_content_height: u32 = 0,
     offset: usize = 0,
     title_expanded: bool = false,
     chapter_page_rows: usize = rows,
@@ -180,9 +184,23 @@ pub const Model = struct {
         return geometry.atEnd(self.reader_position);
     }
 
+    pub fn readerProgressPage(self: *const Model) usize {
+        const ch = self.current() orelse return 0;
+        if (self.readingMode() == .vertical and self.readerAtEnd()) return ch.pages.len;
+        return @min(self.page + 1, ch.pages.len);
+    }
+
+    pub fn readerProgress(self: *const Model) f64 {
+        const ch = self.current() orelse return 0;
+        if (ch.pages.len == 0) return 0;
+        if (self.readingMode() == .vertical and self.readerAtEnd()) return 1;
+        const within: f64 = if (self.readingMode() == .vertical) self.reader_position else 1;
+        return viewport.clamp((@as(f64, @floatFromInt(self.page)) + within) / @as(f64, @floatFromInt(ch.pages.len)));
+    }
+
     /// Called after the source dimensions are known, and again after a resize.
     pub fn configureReader(self: *Model, source: viewport.Size, view: viewport.Size) !void {
-        self.reader_geometry = viewport.Geometry.init(source, view, self.prefs.rtl);
+        self.reader_geometry = if (self.reader_zoom) viewport.Geometry.init(source, view, self.prefs.rtl) else viewport.Geometry.fit(source, view, self.prefs.rtl);
         self.reader_presented = true;
         if (self.reader_pending_end) {
             self.reader_position = 1;
@@ -295,6 +313,7 @@ pub const Model = struct {
                 if (ch.pages.len == 0) return;
                 self.chapter = i;
                 self.page = @min(self.readState(ch).page, ch.pages.len - 1);
+                if (self.screen != .reader) self.reader_zoom = false;
                 self.reader_controls = false;
                 self.screen = .reader;
                 self.restoreRegion(ch.id);

@@ -93,6 +93,7 @@ fn expectReaderReplacement(different_chapter: bool) !void {
     var session: Session = .{ .model = &model, .root = root, .io = std.testing.io, .region_service = &service, .load_image = invalidate };
     defer session.deinit();
     try session.act(.{ .read = 0 });
+    model.reader_zoom = true; // Exercise cancellation during zoomed region prefetch.
     var wake: Wake = .{};
     var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
     defer h.deinit();
@@ -216,6 +217,7 @@ test "production codecs drive vertical and horizontal reader tasks and reject st
     var session: Session = .{ .model = &model, .root = root, .io = std.testing.io, .region_service = &service, .load_image = invalidate };
     defer session.deinit();
     try session.act(.{ .read = 0 });
+    model.reader_zoom = true; // These assertions exercise opt-in region panning.
     var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
     defer h.deinit();
     try h.frame();
@@ -400,4 +402,103 @@ test "speculative source failures preserve cached views in both reader modes" {
         try std.testing.expectEqual(pixels, session.image.?.pixels.ptr);
         try std.testing.expectEqualStrings("", session.status);
     }
+}
+
+test "paged whole-source fit toggles zoom without reusing its tiles or persisting the toggle" {
+    const library_path = std.c.getenv("POCKETMANGA_IMAGE_TEST_LIBRARY") orelse return error.SkipZigTest;
+    var codecs = try Vips.Library.load(std.mem.span(library_path));
+    defer codecs.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writePng(tmp.dir, "vertical.png", "iVBORw0KGgoAAAANSUhEUgAAABAAAACACAIAAACN9351AAAAOUlEQVR4nO3ToREAMAzEsOy/dMv6uCAgOYkbugp4zieBYHMARP9xAsGcAIj+4wSCOQEQ/ccJBGOCC/q69KbReaZDAAAAAElFTkSuQmCC");
+    try writePng(tmp.dir, "horizontal.png", horizontal_png);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", arena.allocator());
+    var service: Regions.Service = undefined;
+    service.init(std.testing.allocator, &codecs, try std.fs.path.join(arena.allocator(), &.{ root, "cache" }));
+    defer service.deinit();
+    var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true, .reader_requires_presentation = true };
+    defer model.deinit();
+    var session: Session = .{ .model = &model, .root = root, .io = std.testing.io, .region_service = &service, .load_image = invalidate };
+    defer session.deinit();
+    try session.act(.{ .read = 0 });
+    var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try h.runTasks();
+    try std.testing.expect(session.regionCurrent());
+    try std.testing.expect(!model.reader_zoom);
+    try std.testing.expectEqual(lib.viewport.Axis.page, model.reader_geometry.?.axis);
+    try std.testing.expect(session.image.?.width <= 343 and session.image.?.height <= 464);
+    const whole_revision = session.image.?.revision;
+    session.toggleReaderZoom();
+    try h.frame();
+    try std.testing.expect(!session.regionCurrent());
+    try h.runTasks();
+    try std.testing.expectEqual(lib.viewport.Axis.vertical, model.reader_geometry.?.axis);
+    try std.testing.expect(whole_revision != session.image.?.revision);
+    session.toggleReaderZoom();
+    try h.frame();
+    try std.testing.expect(session.regionCurrent()); // Whole-page cache entry survived zoom.
+    try std.testing.expectEqual(whole_revision, session.image.?.revision);
+    try h.runTasks();
+    try session.act(.{ .turn = 1 });
+    try h.frame();
+    try std.testing.expect(session.regionCurrent()); // Following page was prepared using fit mode.
+    try std.testing.expectEqual(lib.viewport.Axis.page, model.reader_geometry.?.axis);
+    try std.testing.expect(session.image.?.width <= 343 and session.image.?.height <= 464);
+    try h.runTasks();
+    session.toggleReaderZoom();
+    try h.frame();
+    try h.runTasks();
+    try std.testing.expectEqual(lib.viewport.Axis.horizontal, model.reader_geometry.?.axis);
+    try session.act(.back);
+    try h.frame();
+    try session.act(.{ .read = 0 });
+    try h.frame();
+    try std.testing.expect(!model.reader_zoom);
+    try std.testing.expect(session.regionCurrent());
+    try std.testing.expectEqual(lib.viewport.Axis.page, model.reader_geometry.?.axis);
+}
+
+test "paged turns retain the image and use compact feedback on an uncached page" {
+    const library_path = std.c.getenv("POCKETMANGA_IMAGE_TEST_LIBRARY") orelse return error.SkipZigTest;
+    var codecs = try Vips.Library.load(std.mem.span(library_path));
+    defer codecs.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writePng(tmp.dir, "vertical.png", "iVBORw0KGgoAAAANSUhEUgAAABAAAACACAIAAACN9351AAAAOUlEQVR4nO3ToREAMAzEsOy/dMv6uCAgOYkbugp4zieBYHMARP9xAsGcAIj+4wSCOQEQ/ccJBGOCC/q69KbReaZDAAAAAElFTkSuQmCC");
+    try writePng(tmp.dir, "horizontal.png", horizontal_png);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", arena.allocator());
+    var service: Regions.Service = undefined;
+    service.init(std.testing.allocator, &codecs, try std.fs.path.join(arena.allocator(), &.{ root, "cache" }));
+    defer service.deinit();
+    var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true, .reader_requires_presentation = true };
+    defer model.deinit();
+    var session: Session = .{ .model = &model, .root = root, .io = std.testing.io, .region_service = &service, .load_image = invalidate };
+    defer session.deinit();
+    try session.act(.{ .read = 0 });
+    var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    try h.frame();
+    try h.expectNoText("Loading page…");
+    try h.advance(.fromMilliseconds(300));
+    try h.expectText("Preparing view…");
+    try h.runTasks();
+    const pixels = session.image.?.pixels.ptr;
+    try tmp.dir.deleteTree(std.testing.io, "cache");
+    try session.act(.{ .turn = 1 });
+    try std.testing.expectEqual(pixels, session.image.?.pixels.ptr);
+    try h.frame();
+    try std.testing.expect(!session.regionCurrent());
+    try h.expectNoText("Loading page…");
+    try h.advance(.fromMilliseconds(300));
+    try h.expectText("Preparing view…");
+    try h.runTasks();
+    try std.testing.expect(session.regionCurrent());
+    try std.testing.expectEqual(@as(usize, 1), model.page);
+    try h.expectNoText("Preparing view…");
 }

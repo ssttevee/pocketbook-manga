@@ -12,6 +12,7 @@ pub const Request = struct {
     /// The UI already installed this view from verified cached tiles.
     presented: bool = false,
     mode: @import("library.zig").ReaderMode = .paged,
+    zoom: bool = false,
     delta: f64 = 0,
     pages: []const []const u8 = &.{},
     revision: usize = 0,
@@ -133,7 +134,7 @@ fn renderInternal(task: *app.Task, service: *Service, request: Request, on_frame
     else
         try std.fs.path.join(task.gpa, &.{ request.root, request.relative });
     const terminated = try task.gpa.dupeSentinel(u8, path, 0);
-    const frame = service.tiles.frame(task.gpa, task.io, terminated, request.viewport, request.position, request.backward, request.rtl, .{ .context = task, .check = checkpoint }) catch |err| {
+    const frame = service.tiles.frameFit(task.gpa, task.io, terminated, request.viewport, request.position, request.backward, request.rtl, request.zoom, .{ .context = task, .check = checkpoint }) catch |err| {
         if (err == error.Canceled or request.presented) return err;
         const diagnostic = service.adapter.library.diagnostic();
         const failure = try std.fmt.allocPrint(task.gpa, "{s}: {s}", .{ @errorName(err), diagnostic });
@@ -155,7 +156,7 @@ fn renderInternal(task: *app.Task, service: *Service, request: Request, on_frame
     // Finish the next screenful of a long image before opening other files.
     // The same geometry handles vertical webtoons and horizontal RTL/LTR pans.
     if (frame.geometry.step(frame.position, 1)) |position| {
-        service.tiles.prepare(task.io, terminated, request.viewport, position, request.rtl, .{ .context = task, .check = checkpoint }) catch |err| {
+        service.tiles.prepareFit(task.io, terminated, request.viewport, position, request.rtl, request.zoom, .{ .context = task, .check = checkpoint }) catch |err| {
             if (err == error.Canceled) return err;
             std.log.debug("Next region preparation: {s}", .{@errorName(err)});
         };
@@ -181,7 +182,7 @@ fn preparePage(task: *app.Task, service: *Service, request: Request, relative: [
         try std.fs.path.join(arena.allocator(), &.{ request.root, relative });
     const terminated = try arena.allocator().dupeSentinel(u8, path, 0);
     const started = std.Io.Clock.boot.now(task.io);
-    try service.tiles.prepare(task.io, terminated, request.viewport, 0, request.rtl, .{ .context = task, .check = checkpoint });
+    try service.tiles.prepareFit(task.io, terminated, request.viewport, 0, request.rtl, request.zoom, .{ .context = task, .check = checkpoint });
     std.log.info("Reader prepared {s}: {d} ms", .{ relative, started.durationTo(std.Io.Clock.boot.now(task.io)).toMilliseconds() });
 }
 
