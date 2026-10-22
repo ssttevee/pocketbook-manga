@@ -11,6 +11,27 @@ spec.loader.exec_module(package)
 
 
 class PackageTests(unittest.TestCase):
+    def test_reused_native_build_cannot_select_another_runtime(self):
+        lock = package.runtime_lock('2.23', None)
+        package.validate_profile('2.23', lock, {'cpu': 'armv7', 'abi': 'softfp', 'glibc': '2.23'})
+        with self.assertRaisesRegex(ValueError, 'Native build target'):
+            package.validate_profile('2.23', lock, {'cpu': 'armv7', 'abi': 'softfp', 'glibc': '2.39'})
+        with self.assertRaisesRegex(ValueError, 'Native build target'):
+            package.validate_profile('2.23', lock, {'cpu': 'armv7', 'abi': 'hard', 'glibc': '2.23'})
+
+    def test_mixed_runtime_manifest_is_rejected(self):
+        lock = package.runtime_lock('2.23', None)
+        lock['images']['Glibc'] = '2.39'
+        with self.assertRaisesRegex(ValueError, 'images runtime'):
+            package.validate_profile('2.23', lock, package.PROFILES['2.23'])
+
+    def test_unreviewed_profile_requires_manifest(self):
+        # Until a runtime is reviewed, it cannot inherit the other ABI's pins.
+        from unittest.mock import patch
+        with patch.dict(package.LOCK, {'profiles': {}}):
+            with self.assertRaisesRegex(ValueError, 'No reviewed runtime pins'):
+                package.runtime_lock('2.39', None)
+
     def test_archive_only_contains_application_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -29,6 +29,11 @@ fn uiModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
 }
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
+    const glibc = b.option(enum { @"2.23", @"2.39" }, "glibc", "PocketBook firmware glibc (2.23 for 6.8–6.9, 2.39 for 6.10)") orelse .@"2.23";
+    const glibc_minor: u32 = switch (glibc) {
+        .@"2.23" => 23,
+        .@"2.39" => 39,
+    };
     const host = b.dependency("tachi", .{});
     b.step("host", "Build and install the Java extension host for packaging").dependOn(&host.builder.top_level_steps.get("host").?.step);
     const host_ui = uiModules(b, b.graph.host, optimize);
@@ -51,7 +56,7 @@ pub fn build(b: *std.Build) void {
     }) });
     preview.root_module.addCSourceFile(.{ .file = b.path("src/posix_compat.c"), .flags = &.{} });
     b.step("preview", "Render sample screens through fake InkView into preview/").dependOn(&b.addRunArtifact(preview).step);
-    const device_target = b.resolveTargetQuery(.{ .cpu_arch = .arm, .os_tag = .linux, .abi = .gnueabi, .cpu_model = .{ .explicit = &std.Target.arm.cpu.cortex_a7 }, .glibc_version = .{ .major = 2, .minor = 23, .patch = 0 } });
+    const device_target = b.resolveTargetQuery(.{ .cpu_arch = .arm, .os_tag = .linux, .abi = .gnueabi, .cpu_model = .{ .explicit = &std.Target.arm.cpu.cortex_a7 }, .glibc_version = .{ .major = 2, .minor = glibc_minor, .patch = 0 } });
     const device_ui = uiModules(b, device_target, optimize);
     const device_imports = device_ui.imports();
     const device = b.addExecutable(.{ .name = "pocketmanga.app", .root_module = b.createModule(.{
@@ -92,7 +97,11 @@ pub fn build(b: *std.Build) void {
     b.step("wake-probe", "Build the standalone reader wake diagnostic").dependOn(&b.addInstallArtifact(wake_probe, .{}).step);
     const install = b.addInstallArtifact(device, .{});
     const launcher = b.addInstallFile(b.path("tools/pocketmanga-log.app"), "bin/pocketmanga-log.app");
-    const device_step = b.step("device", "Build native Verse 6.8+ UI and isolated JVM worker");
+    const device_step = b.step("device", "Build native PocketBook UI and isolated JVM worker");
+    // Packaging checks this alongside the runtime manifest, preventing a
+    // reused zig-out directory from silently mixing firmware targets.
+    const target_metadata = b.addWriteFiles().add("build-target.json", b.fmt("{{\"cpu\":\"armv7\",\"abi\":\"softfp\",\"glibc\":\"{s}\"}}\n", .{@tagName(glibc)}));
+    device_step.dependOn(&b.addInstallFile(target_metadata, "share/pocketmanga/build-target.json").step);
     device_step.dependOn(&install.step);
     device_step.dependOn(&b.addInstallArtifact(worker, .{}).step);
     device_step.dependOn(&launcher.step);

@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Build-time bundler. The delivered application needs no computer or service."""
 import argparse, hashlib, json, pathlib, shutil, subprocess, tarfile, tempfile, urllib.request
+from release_manifest import PROFILES, digest
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LOCK = json.loads((ROOT / 'tools/runtime-packages.json').read_text())
 
-def fetch(name, cache):
-    entry = LOCK['packages'][name]
+def fetch(name, cache, lock=LOCK):
+    entry = lock['packages'][name]
     target = cache / pathlib.Path(entry['Filename']).name
     if not target.exists():
         print('Downloading', name, flush=True)
         part = target.with_suffix('.part')
-        with urllib.request.urlopen(LOCK['base_url'] + entry['Filename'], timeout=60) as response, part.open('wb') as out:
+        with urllib.request.urlopen(lock['base_url'] + entry['Filename'], timeout=60) as response, part.open('wb') as out:
             shutil.copyfileobj(response, out)
         part.replace(target)
     if hashlib.sha256(target.read_bytes()).hexdigest() != entry['SHA256']:
@@ -37,24 +38,59 @@ def write_archive(output, archive):
                     arcname='applications/' + relative)
 
 
+def validate_profile(glibc, lock, target):
+    expected = PROFILES[glibc]
+    if any(target.get(key) != expected[key] for key in ('cpu', 'abi', 'glibc')):
+        raise ValueError('Native build target does not match the selected runtime; rebuild with -Dglibc=' + glibc)
+    if lock.get('profile') != expected:
+        raise ValueError('Runtime manifest does not match the selected firmware profile')
+    for component in ('jre', 'images'):
+        if lock[component].get('Glibc') != glibc:
+            raise ValueError(component + ' runtime has the wrong glibc profile')
+
+
+def runtime_lock(glibc, manifest):
+    if manifest:
+        return json.loads(manifest.read_text())
+    entries = LOCK.get('profiles', {}).get(glibc)
+    if entries is None:
+        if glibc != '2.23':
+            raise ValueError('No reviewed runtime pins for glibc ' + glibc + '; provide --runtime-manifest from the trusted runtime build')
+        entries = {key: dict(LOCK[key], Glibc=glibc) for key in ('jre', 'images')}
+    return dict(LOCK, **entries, profile=PROFILES[glibc])
+
+
 def main():
     parser=argparse.ArgumentParser()
+    parser.add_argument('--glibc', choices=PROFILES, default='2.23')
+    parser.add_argument('--runtime-manifest', type=pathlib.Path, help='Trusted release build manifest with runtime integrity values')
     parser.add_argument('--cache', type=pathlib.Path, default=ROOT / '.runtime-cache')
     parser.add_argument('--output', type=pathlib.Path, default=ROOT / 'dist')
     parser.add_argument('--host-jar', type=pathlib.Path, default=ROOT / 'zig-out/lib/tachi-host.jar')
     parser.add_argument('--zstd-library', type=pathlib.Path, help='Source-built JNI decoder (default: zig-out/lib from zig build device)')
-    parser.add_argument('--images', type=pathlib.Path, default=ROOT / '.runtime-cache/image/pocketmanga-image.tar', help='Decoder runtime from tools/build_images.py')
-    parser.add_argument('--jre', type=pathlib.Path, default=ROOT / '.runtime-cache/jre/pocketmanga-jre.tar', help='Java runtime from tools/build_jre.py')
+    parser.add_argument('--images', type=pathlib.Path, help='Decoder runtime from tools/build_images.py')
+    parser.add_argument('--jre', type=pathlib.Path, help='Java runtime from tools/build_jre.py')
     args=parser.parse_args()
+    suffix = '' if args.glibc == '2.23' else '-glibc-' + args.glibc
+    args.images = args.images or ROOT / ('.runtime-cache/image' + suffix) / 'pocketmanga-image.tar'
+    args.jre = args.jre or ROOT / ('.runtime-cache/jre' + suffix) / 'pocketmanga-jre.tar'
+    try:
+        lock = runtime_lock(args.glibc, args.runtime_manifest)
+        target = json.loads((ROOT / 'zig-out/share/pocketmanga/build-target.json').read_text())
+        validate_profile(args.glibc, lock, target)
+    except (ValueError, OSError, KeyError) as error:
+        raise SystemExit(str(error))
     args.cache.mkdir(parents=True, exist_ok=True)
     if not args.host_jar.is_file(): raise SystemExit('Build the host jar first: zig build host')
     if not args.jre.is_file(): raise SystemExit('Build the Java runtime first: tools/build_jre.py')
     if not args.images.is_file(): raise SystemExit('Build the image runtime first: tools/build_images.py')
     image_lock = json.loads((ROOT / 'tools/image/sources.json').read_text())
-    if hashlib.sha256(args.images.read_bytes()).hexdigest() != LOCK['images']['SHA256']:
+    if digest(args.images) != lock['images']['SHA256']:
         raise SystemExit('Image runtime differs from pinned build; rerun tools/build_images.py')
-    if hashlib.sha256(args.jre.read_bytes()).hexdigest() != LOCK['jre']['SHA256']:
+    if digest(args.jre) != lock['jre']['SHA256']:
         raise SystemExit(f'{args.jre} is not the pinned runtime build; rerun tools/build_jre.py')
+    if 'CDS_SHA256' in lock['jre'] and digest(args.jre.parent / 'classes.jsa') != lock['jre']['CDS_SHA256']:
+        raise SystemExit('The class-data archive does not match the runtime manifest')
     zstd = args.zstd_library or ROOT / 'zig-out/lib/libpocketmanga-zstd.so'
     if not zstd.is_file(): raise SystemExit('Run zig build device first: '+str(zstd))
     app=args.output / 'applications' / 'pocketmanga'
@@ -64,7 +100,7 @@ def main():
     runtime.mkdir(parents=True)
     with tempfile.TemporaryDirectory(prefix='pocketmanga-runtime-') as tmp:
         extracted=pathlib.Path(tmp)
-        extract(fetch('ca-certificates',args.cache),extracted)
+        extract(fetch('ca-certificates',args.cache,lock),extracted)
         with tarfile.open(args.jre) as tar:
             # The runtime is a pinned build of ours, not a user-supplied file.
             tar.extractall(runtime, filter='tar')
@@ -93,8 +129,8 @@ def main():
     shutil.copy2(ROOT/'zig-out/bin/pocketmanga-worker', app/'bin/pocketmanga-worker')
     shutil.copy2(ROOT/'tools/pocketmanga.app',args.output/'applications/pocketmanga.app')
     shutil.copy2(ROOT/'tools/pocketmanga-log.app',args.output/'applications/pocketmanga-log.app')
-    (runtime/'packages.json').write_text(json.dumps(LOCK,indent=2)+'\n')
-    archive=args.output/'pocketmanga-verse.tar.gz'
+    (runtime/'packages.json').write_text(json.dumps(lock,indent=2)+'\n')
+    archive=args.output/f'pocketmanga-armv7-softfp-glibc-{args.glibc}.tar.gz'
     write_archive(args.output, archive)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     (args.output/(archive.name+'.sha256')).write_text(f'{digest}  {archive.name}\n')
