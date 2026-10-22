@@ -1337,10 +1337,11 @@ pub const Session = struct {
         return .decode(self.settings.library.sort);
     }
     pub fn act(self: *Session, action: lib.Action) !void {
-        if (self.model.screen == .reader and (action == .turn or action == .pan or action == .jump_page)) {
-            self.reader_requested_at = std.Io.Clock.boot.now(self.io);
-            std.log.info("Reader input action={s} page={d}", .{ @tagName(action), self.model.page + 1 });
-        } else if (action == .back or action == .feed) self.reader_requested_at = null;
+        const input_at = std.Io.Clock.boot.now(self.io);
+        const old_position = self.model.reader_position;
+        const old_delta = self.model.reader_scroll_delta;
+        const old_presented = self.model.reader_presented;
+        const old_backward = self.model.reader_pending_end;
         switch (action) {
             .back, .feed, .help, .settings, .open, .open_chapter, .menu => self.queued_read_pending = false,
             else => {},
@@ -1367,6 +1368,16 @@ pub const Session = struct {
             }
         }
         try self.model.dispatch(action);
+        if (self.model.screen != .reader) {
+            self.reader_requested_at = null;
+        } else if (old_screen == .reader and (action == .turn or action == .pan or action == .jump_page) and
+            (old_page != self.model.page or old_position != self.model.reader_position or
+                old_delta != self.model.reader_scroll_delta or old_presented != self.model.reader_presented or
+                old_backward != self.model.reader_pending_end))
+        {
+            self.reader_requested_at = input_at;
+            std.log.info("Reader input action={s} page={d}", .{ @tagName(action), old_page + 1 });
+        }
         if (action == .reader_mode) {
             self.region_epoch +%= 1;
             self.clearRegionImage();

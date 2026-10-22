@@ -240,3 +240,21 @@ test "continuous reader refreshes missing footer pages when background downloads
     try std.testing.expectEqual(@as(u8, 255), session.image.?.pixels[343 * 230]);
     try std.testing.expect(h.findText("Waiting for next page…") == null);
 }
+
+test "reader latency ignores ineffective inputs and preserves the pending request timestamp" {
+    var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true, .reader_requires_presentation = true };
+    defer model.deinit();
+    var session: Session = .{ .model = &model, .root = "", .io = std.testing.io };
+    defer session.deinit();
+    try session.act(.{ .reader_mode = .vertical });
+    try session.act(.{ .read = 0 });
+    try session.act(.{ .turn = 1 }); // Initial geometry is not ready yet.
+    try std.testing.expect(session.reader_requested_at == null);
+    try model.presentContinuous(0, 0, geometry, false, false);
+    try session.act(.{ .turn = 1 });
+    const requested_at = session.reader_requested_at.?;
+    try session.act(.{ .pan = std.math.nan(f64) });
+    try std.testing.expectEqual(requested_at, session.reader_requested_at.?);
+    try session.act(.back);
+    try std.testing.expect(session.reader_requested_at == null);
+}
