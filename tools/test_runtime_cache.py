@@ -60,7 +60,7 @@ class RuntimeCacheTests(unittest.TestCase):
             source = root / 'source'
             source.mkdir()
             tracked = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode().split('\0')
-            for name in {*tracked, 'tools/runtime_cache.py'}:
+            for name in {*tracked, 'tools/runtime_cache.py', 'tools/install_tree.py'}:
                 if not name:
                     continue
                 original = ROOT / name
@@ -98,6 +98,7 @@ destination.mkdir(parents=True,exist_ok=True)
 name='pocketmanga-jre.tar' if component=='jre' else 'pocketmanga-image.tar'
 data=f'cache-fixture-{component}-glibc-{glibc}\\n'.encode()
 (destination/name).write_bytes(data)
+(destination/'runtime-link').symlink_to(name)
 (destination/(name+'.sha256')).write_text(hashlib.sha256(data).hexdigest()+'  '+name+'\\n')
 if component=='jre':(destination/'classes.jsa').write_bytes(('CDS-'+glibc).encode())
 with open(os.environ['POCKETMANGA_FAKE_DOCKER_LOG'],'a') as log:
@@ -124,6 +125,7 @@ with open(os.environ['POCKETMANGA_FAKE_DOCKER_LOG'],'a') as log:
                 return result
 
             build()
+            self.assertTrue((source / 'zig-out/runtimes/images/runtime-link').is_symlink())
             initial = records()
             self.assertEqual({entry['component'] for entry in initial}, {'jre', 'images'})
             build()

@@ -61,6 +61,19 @@ fn hostJar(host: *std.Build.Dependency) std.Build.LazyPath {
     return source orelse @panic("libtachi host step must export tachi-host.jar");
 }
 
+fn installRuntimeTree(b: *std.Build, source: std.Build.LazyPath, destination: []const u8) *std.Build.Step {
+    // Zig 0.17's InstallDir skips symlinks, including libvips's SONAME links.
+    // Use a preserving installer for generated runtime and release trees.
+    const run = b.addSystemCommand(&.{"python3"});
+    run.addFileArg(b.path("tools/install_tree.py"));
+    run.addArg("--source");
+    run.addDirectoryArg2(source, .{});
+    run.addArg("--destination");
+    run.addDirectoryArg2(.{ .relative = .{ .base = .install_prefix, .sub_path = destination } }, .{});
+    run.has_side_effects = true;
+    return &run.step;
+}
+
 fn runtimeAndPackageSteps(b: *std.Build, glibc: []const u8, device: *std.Build.Step.Compile, worker: *std.Build.Step.Compile, host: *std.Build.Dependency, zstd: *std.Build.Dependency, target_metadata: std.Build.LazyPath) void {
     const jre = runtimeBuild(b, "jre", glibc, &.{ "tools/jre/Dockerfile", "tools/jre/build-jdk.sh", "tools/jre/crosstool.config" });
     const images = runtimeBuild(b, "images", glibc, &.{
@@ -95,9 +108,9 @@ fn runtimeAndPackageSteps(b: *std.Build, glibc: []const u8, device: *std.Build.S
     // are not integrity checked by Zig's Run cache.
     const runtimes = b.step("runtimes", "Build, cache and verify the selected PocketBook runtimes");
     inline for (.{ .{ jre, "runtimes/jre" }, .{ images, "runtimes/images" } }) |entry| {
-        const install_runtime = b.addInstallDirectory(.{ .source_dir = entry[0], .install_dir = .prefix, .install_subdir = entry[1] });
-        install_runtime.step.dependOn(&verify.step);
-        runtimes.dependOn(&install_runtime.step);
+        const install_runtime = installRuntimeTree(b, entry[0], entry[1]);
+        install_runtime.dependOn(&verify.step);
+        runtimes.dependOn(install_runtime);
     }
     const install_manifest = b.addInstallFile(manifest, "runtimes/runtime-manifest.json");
     install_manifest.step.dependOn(&verify.step);
@@ -132,9 +145,9 @@ fn runtimeAndPackageSteps(b: *std.Build, glibc: []const u8, device: *std.Build.S
     package.step.dependOn(&verify.step);
     package.addArg("--output");
     const output = package.addOutputDirectoryArg2("release", .{});
-    const install_package = b.addInstallDirectory(.{ .source_dir = output, .install_dir = .prefix, .install_subdir = "release" });
+    const install_package = installRuntimeTree(b, output, "release");
     const package_step = b.step("package", "Build a complete PocketBook installation bundle with cached runtimes");
-    package_step.dependOn(&install_package.step);
+    package_step.dependOn(install_package);
     package_step.dependOn(runtimes);
 }
 pub fn build(b: *std.Build) error{LazyDependencyNeeded}!void {
