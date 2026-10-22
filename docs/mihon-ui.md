@@ -1,6 +1,6 @@
 # Mihon presentation on PocketBook
 
-The reference is [Mihon's Android UI](https://github.com/mihonapp/mihon/tree/d001e6f210e6a077a30dd9a1392573a3225bba2f/app/src/main/java/eu/kanade/presentation), and [official library screenshot](https://mihon.app/home/phone.dark.webp), reviewed at commit `d001e6f210e6a077a30dd9a1392573a3225bba2f` on 2026-10-21. Relevant screens are `HomeScreen`, `CommonMangaItem`, `SourcesScreen`, `BaseSourceItem`, `HistoryItem`, `UpdatesUiItem` and `MoreScreen`. PocketManga implements its own Zig widgets and shape-based icons; no Android code, icons or manga artwork was copied.
+The reference is [Mihon's Android UI](https://github.com/mihonapp/mihon/tree/main/app/src/main/java/eu/kanade/presentation), and [official library screenshot](https://mihon.app/home/phone.dark.webp), reviewed on 2026-10-21. Relevant screens are `HomeScreen`, `CommonMangaItem`, `SourcesScreen`, `BaseSourceItem`, `HistoryItem`, `UpdatesUiItem` and `MoreScreen`. PocketManga implements its own Zig widgets and shape-based icons; no Android code, icons or manga artwork was copied.
 
 ## Screen mapping
 

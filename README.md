@@ -1,148 +1,142 @@
 # PocketManga for PocketBook Verse
 
-A standalone manga app for the **PocketBook Verse PB629**, inspired by Mihon / Tachiyomi. Source extensions, browsing, search, chapter updates, image downloads and reading all run **on the reader**. No desktop companion or server is used.
+Read manga directly on a **PocketBook Verse PB629**. PocketManga lets you browse sources, build a library, download chapters and read offline, with an interface inspired by Mihon / Tachiyomi. Once installed, you only need your reader and Wi-Fi—no desktop companion or server.
 
-The app uses fabrum, fabrum-platform-inkview, libinkview and libtachi. Its install bundle includes an **OpenJDK 17 runtime built from source for the Verse** (HotSpot's ARM32 client VM with the C1 JIT and class-data sharing), the libtachi host, a decoder-only libvips image runtime, and public certificate stores. The app is a GUI over libtachi's engine: libtachi owns the library, reading progress, chapter sync, downloads and the local source, and runs extensions in its on-demand worker process. The UI process never loads the JVM. Chapter images download through libtachi's native client (Zig DNS and TLS) over cancellable `std.Io` tasks. Reading downloaded chapters and scanning local manga need only the native InkView app. See [native download design and verification](docs/native-downloads.md).
+**Supported device:** PocketBook Verse PB629 with firmware 6.8 or later. Other PocketBook models have not been verified.
 
-## Install
+## Download and install
 
-Use `dist/pocketmanga-verse.tar.gz`, or copy the contents of `dist/applications/` to the reader's `applications/` folder by USB. Copy the entire bundle, including `applications/pocketmanga/runtime/`; the `.app` launcher alone is insufficient.
+If you have been supplied a prebuilt **`pocketmanga-verse.tar.gz` installation bundle**, use that file. There is no public release download link for this checkout yet. The source-code archive and individual `.app` files are not enough to install the app.
 
-**Verse firmware 6.8 or later is supported.** Both executables target Cortex-A7 and ARM EABI soft-float. Both target glibc 2.23 and run on the reader's own loader and C library; the bundle contains no C library. Do not replace the reader's system libraries.
+The complete bundle includes everything needed to run PocketManga, including its Java runtime. Developers can produce it using the [build instructions below](#build-from-source).
 
-1. Connect the Verse by USB and select **PC link**.
-2. Extract the archive onto the reader's storage, merging its `applications/` folder. Preserve the existing `pocketmanga/` data folder when upgrading, including `tachi.sqlite3`, `progress.json`, `extensions/`, and `downloads/`. Never replace the database with a file from another installation.
-3. On macOS, run `dot_clean /Volumes/READER/applications` to remove `._` files, then eject.
-4. Start **pocketmanga** from Applications. Use **pocketmanga-log** if you need diagnostics in `applications/pocketmanga.log`.
+1. Connect your reader to your computer by USB and choose **PC link** on the reader.
+2. Extract the installation bundle. Copy its **`applications`** folder onto the reader's internal storage, merging it with the existing folder. Copy all its contents, including `applications/pocketmanga/runtime/`.
+3. Safely eject the reader from your computer, then disconnect the cable.
+4. Open **Applications → pocketmanga** on the reader.
 
-After installation, normal use needs only the reader and Wi-Fi. The UI starts the worker when online work is requested. After a task starts the worker, it stays ready for later tasks until reading begins. Reading releases it once background downloads no longer need it. Backgrounding or closing the app stops and reaps it. A crashed worker reports an error; the next request can start a fresh one. The launcher retains the executable-stack loader setting needed by some firmware 6.11 releases. A full runtime is included rather than downloaded at first launch.
+**Upgrading?** Keep your existing `applications/pocketmanga/` data. In particular, preserve `tachi.sqlite3`, `progress.json`, `extensions/` and `downloads/`. Replace only the application files supplied in the bundle. Do not copy a database from someone else's installation.
 
-## Use
+On macOS, if the app does not appear or open correctly, remove Finder's extra metadata files before ejecting:
 
-- **Library** uses two portrait cover cards per page, with unread and downloaded counts. Tap **List** for five rows with single-line titles; the layout choice is saved. Category tabs and search filter either layout. Tap **Sort** to choose alphabetical, recently read, recently added, unread chapter count, total chapter count or latest release; **Asc / Desc** reverses the order. Sorting is saved for each category.
-- Successful actions show a nonblocking confirmation for two seconds; tap it to dismiss sooner. Errors stay visible until **Dismiss** is tapped.
-- The bottom tabs follow Mihon: **Library, Updates, History, Browse, More**. **More** holds downloads, categories, statistics, backups, trackers and settings.
-- Local, custom and cached covers work offline. Missing online covers load quietly in the background, starting the retained worker when needed; opening a downloaded chapter never starts the JVM just for artwork. Unsupported or failed covers keep a placeholder.
-- Downloads that require unsupported browser verification show why they cannot download and suggest another version or source. Tap a blocked title in the download queue to search for alternatives. These failures stay blocked across queue starts and app restarts; temporary network failures remain retryable.
-- **Browse → Extensions:** filter the repository by name or language, then tap an extension to install or update it. libtachi checks the repository's signing key. Unsupported extension API versions are labelled.
-- Tap an installed **source** to view popular titles. Use the reader's system keyboard and **Search**, or switch to **Latest**. **Previous / Next** browse results and source pages.
-- Tap a **title** to add it to your library and fetch its chapters. Tap an undownloaded or interrupted **chapter** to start downloading and read as soon as its saved starting page is available. The remaining pages continue saving in the background; **DL saved/total** appears beside the reader page counter. Zig downloads plain GET images using the source's resolved requests, headers, cookies and rate limits. Unsupported requests and unknown response-transforming interceptors use the extension's JVM client. Each completed page is saved atomically; retry keeps completed pages, including after cancellation. Failures show their cause and any saved progress.
-- On a series page, tap the two-line title to expand it and tap again to collapse. **Oldest first / Newest first** reverses chapter order. Chapters default to number order across sources. **Jump** opens the numeric keyboard to find a chapter number (including fractions). Tap the reader's bottom page counter to jump to a page using the numeric keyboard. Chapter rows show **Unread** until progress moves beyond the first page, then **Reading current/total** and **Download paused saved/total · Tap to resume** for interrupted downloads; queued chapters show their queue status instead.
-- **More → Download queue** shows whether the queue is running, paused, waiting for Wi-Fi or empty. Loading screens wrap the full series and chapter titles. It shows worker/extension startup and page listing before a page count is known, then download progress. Only **Start** or **Stop** is shown when applicable, and the row count adapts to the available screen space. Page lists are cached separately while the queue prepares upcoming chapters; transfers share download slots across chapter boundaries, assigning all remaining pages of each earlier chapter before starting the next, including after a restart. Pausing retains those lists, and removing or clearing queue entries discards them.
-- **Search all** searches up to four enabled sources concurrently in the existing worker. One source failing does not discard results from the others.
-- **More → Manage storage** breaks down each disk's capacity, free space, chapter downloads, reading cache, covers, app data and other disk contents. Select where new downloads go. Existing downloads and interrupted chapters retain their original volume; an unavailable card must be reinserted to resume. **Manage chapters** shows a compact chapter inventory; **Manage series** groups downloaded chapters by title. Both support selection across pages, Select all, and bulk Delete downloads / Read / Unread actions, plus **Move to internal** and **Move to SD**. Pause downloads before moving; moves retain interrupted pages and reading progress. Library entries and progress are kept when deleting downloads. **Clear online reading cache** keeps downloaded chapters.
-- **Refresh chapters** updates a title; **Update library** refreshes online titles. Existing page downloads and reading progress survive metadata updates.
-- **Source settings** supports text, toggle, list and multi-select preferences, plus extension removal. MangaDex’s **Data saver** toggle selects smaller, more compressed pages. Removing an extension preserves downloaded chapters.
-- Cold online requests first show **Loading libtachi worker... (this may take a minute)**, then their actual operation when the JVM is ready. An extension's classes load the first time one of its sources is used, not at worker start, shown as **Loading <name> extension...**, and extension HTTP goes through Zig sockets and TLS rather than the JVM's interpreted TLS. The log records each call's DNS, connect, TLS and header times. Active jobs keep the reader awake and postpone timed power-off; finishing, failure or cancellation releases the guard.
-- During background work, **Cancel** interrupts the active `std.Io` operation immediately. An unresponsive JVM worker is terminated after a short cancellation grace period. Tap the chapter again to resume.
-- In the reader, reveal the controls and open **Aa → Viewing mode → Continuous vertical** to join consecutive images into one width-fitted strip. The choice is saved per series. Footer fragments stay directly below the preceding image; Next / Prev move by overlapping screenfuls and vertical drags cross image boundaries. **Paged** retains ordinary manga pages and horizontal spreads.
-- Reading starts full screen. Tap the top or bottom edge to reveal controls; tap the page to dismiss them. Controls overlay the image without changing its viewport. Hardware **Next / Prev** always move in reading order. In RTL mode, tap the page's left half to advance; in LTR mode, tap the right half. At the last page, **Chapter >** opens or downloads the next chapter.
-- **Back** returns to chapters, the library, then exits. **Aa** changes direction and full/partial refresh. Progress is saved on each page change.
-
-For local manga, place extracted JPEG/PNG files in `applications/pocketmanga/local/Title/Chapter/001.jpg`, as in Mihon's local source, then tap **More → Scan local manga**. Numeric filename runs sort naturally. Scanning merges titles into the existing library and preserves progress; it does not remove entries for deleted folders. No Java startup or network is needed for local scanning or reading.
-
-Library metadata, reading progress, settings, and the download queue are stored by libtachi in `tachi.sqlite3` on internal storage. On first use, existing `library.json`, `reading.json`, settings, and queue JSON are validated and imported transactionally; the original files remain as migration backups and are not imported again. Keep the database when upgrading. Close the app before copying its data folder for a backup; do not remove an active SQLite journal. Images and their resumable-download manifests remain ordinary files, and source-extension preferences remain in the worker's existing format. `progress.json` contains PocketManga display preferences only.
-
-Library data lives in `/mnt/ext1/applications/pocketmanga/`; SD chapter images live in `/mnt/ext2/pocketmanga/downloads/`. Download records retain their storage location when the destination changes. The app accepts another absolute data folder as its first argument when invoked from a shell. `INKVIEW_LIBRARY` can override the InkView library path.
-
-## Build
-
-Requires Zig **0.17.0**, Python 3.12+, a host JDK 17+ for packaging, and these sibling repositories:
-
-```
-pocketbook-manga-app/
-zig-layout/
-zig-fabrum-renderer-z2d/
-zig-fabrum-platform-inkview/
-libinkview/
-zig-tachi/
+```sh
+dot_clean "/Volumes/READER/applications"
 ```
 
-libtachi's bundled-CA option (`ca_file`, recorded in `patches/libtachi-ca-file.patch` and part of zig-tachi since `0406ed7`) keeps repository HTTPS verification independent of the device's system certificate paths.
+Replace `READER` with your reader's volume name. If you need a diagnostic log, launch **pocketmanga-log** instead; it writes `applications/pocketmanga.log`.
 
-The region reader requires fabrum commit `4ff5f21` or later, which schedules frames when task cleanup can unblock a pending page, and libtachi commit `06d670c` or later for explicit region completion. Use fabrum-platform-inkview commit `ff23232` or later for the pending-task hard timer and activity callback. The app combines decoder and online activity to prevent sleep until background work finishes. PB629 tests verified prompt completion delivery with that protection and no periodic polling, so PocketManga disables the fallback timer when paired sleep preventors are available; see [the measured results](docs/reader-wake.md).
+## Start reading
 
-SQLite persistence requires libtachi commit `c70d52f` or later. `build.zig.zon` points at `../zig-tachi`. Build its `tachi-host.jar` first with `zig build host` in that repository; the tools read it from `../zig-tachi/zig-out/lib`. On this workspace, use `/Users/steve/Programs/Zig/v0.17.0/zig`; the `zig` on PATH is 0.16.
+1. Turn on Wi-Fi. In **Browse → Extensions**, install an extension for a source you want to use.
+2. Open an installed source, then browse or search for a title. **Search all** searches enabled sources together.
+3. Open a title, add it to your library and choose a chapter. Reading starts as soon as its starting page has downloaded; the remaining pages download in the background.
+4. Use the reader's physical **Next / Prev** buttons, or tap the page, to move through the chapter.
 
-The latest validated libtachi revision is `69a78ac4fd1c6bfe4356d4545f4d53a4487dca45`. Its standalone `tachicore` module handles the extension runtime; PocketManga continues to use the `tachi` module for the managed runtime, engine, SQLite library and download queue. The local-path dependency uses the checked-out revision rather than pinning this hash.
+The first online operation can take a while because the extension worker needs to start. The screen shows the current operation. Downloaded chapters can be read without Wi-Fi.
 
-The worker's Java runtime is built from source in Docker; see [the Java runtime](docs/java-runtime.md). The first build compiles a GCC cross toolchain and OpenJDK, which takes about an hour; later builds reuse Docker's cache:
+Some sources require browser verification or other features the reader cannot provide. If a download is blocked, PocketManga explains the problem and suggests finding another version or using another source. A temporary network error can be retried without downloading completed pages again.
 
+### Reading controls
+
+Reading starts with the controls hidden. Tap near the **top or bottom edge** to reveal them; tap the page to hide them again. A thin progress bar remains visible along the bottom in paged mode or the right edge in vertical mode.
+
+- **Aa** changes reading direction, viewing mode and screen-refresh settings. Viewing mode is saved per series.
+- **Paged** fits the whole page on screen. **Zoom**, beside Aa, lets you enlarge long or wide pages and pan through them. This temporary choice is not saved.
+- **Continuous vertical** joins successive images into one scrolling strip, suitable for webtoons and chapters split into small image fragments. Physical Next / Prev move by overlapping screenfuls; dragging moves through image boundaries.
+- Tap the **page counter** to jump to a page. The download counter beside it shows how much of a streaming chapter has been saved.
+- At the end of a chapter, press Next to reveal the controls and **Chapter >**. This opens or downloads the next chapter.
+- **Back** returns to the chapter list, then the library, then exits.
+
+The app keeps the current image visible while preparing a new view and shows a small loading indicator when needed. Repeated navigation while waiting is ignored so a delayed page does not cause several unexpected turns.
+
+### Library, chapters and downloads
+
+The bottom tabs are **Library, Updates, History, Browse** and **More**. More contains the download queue, storage management, settings and other tools.
+
+In the library, use the view button to choose a grid or list, choose a sort order with **Sort**, and reverse it with **Asc / Desc**. Categories and search filter the library. On a series page, tap its title to expand or collapse it, change chapter order, or use **Jump** to find a chapter number.
+
+Chapter rows distinguish unread, partially read, queued and paused downloads. Interrupted downloads show how many pages were saved; tap to resume. Partially read chapters can be marked unread. The download queue shows startup, page listing and transfer progress separately, and can be paused and restarted.
+
+In settings, enable **Hide on-screen Next / Prev buttons** to give lists more space and use the reader's physical buttons instead. Success messages disappear automatically; error banners have a **Dismiss** button.
+
+### Storage and local manga
+
+**More → Manage storage** shows space used on internal storage and the SD card. Choose where new downloads go, manage downloaded series or chapters, and move selected downloads between disks. Pause downloads before moving them. Deleting downloaded files keeps the series and reading progress in your library. Existing downloads keep their original location when you change the destination for new downloads.
+
+For local manga, create folders like this on internal storage:
+
+```text
+applications/pocketmanga/local/Title/Chapter/001.jpg
+applications/pocketmanga/local/Title/Chapter/002.jpg
 ```
-python3 tools/build_jre.py                  # .runtime-cache/jre/, checked against the pinned digest
-python3 tools/build_images.py               # .runtime-cache/image/, pinned decoder sources and runtime digest
+
+Then choose **More → Scan local manga**. Scanning and reading local images work offline. Filenames containing numbers are sorted naturally.
+
+### Back up your library
+
+Close PocketManga before copying `applications/pocketmanga/` to your computer. Include any chapter images stored on the SD card if you want to back up those too.
+
+Library information, reading progress, settings and the download queue are stored in **`tachi.sqlite3`**. Display preferences are in `progress.json`; downloaded images remain ordinary files. Older JSON libraries are imported automatically on first use, with the originals retained as migration backups. Keep the database and any active SQLite journal together; never delete a journal while the app is running.
+
+## Compatibility and limitations
+
+PocketManga is still under development and does not provide every Mihon feature. It has been tested on a physical Verse as well as in firmware emulation; behavior on other models and firmware versions may differ.
+
+Supported image families are JPEG, PNG/APNG, WebP, GIF, AVIF, HEIF, JPEG XL and JPEG 2000. Animated images show their first frame. Very large images can exceed the decoder's resource limits. CBZ import is not exposed in this interface.
+
+Source extensions use the extensions-lib 1.6 API. WebView/Cloudflare challenges, Android bitmap descrambling and some source-specific native compression are not supported. Source availability depends on the extension and the source itself.
+
+## Build from source
+
+This section is for developers. You do not need these tools if you already have the installation bundle.
+
+The application and native worker are written in Zig. [libtachi](https://github.com/ssttevee/libtachi) handles manga data and extensions; [fabrum](https://github.com/ssttevee/fabrum), its [InkView platform](https://github.com/ssttevee/fabrum-platform-inkview) and its [renderer](https://github.com/ssttevee/fabrum-renderer-z2d) provide the interface. Zig downloads the pinned dependencies listed in `build.zig.zon`; no sibling checkouts are required.
+
+Install:
+
+- **Zig 0.17.0**. Check `zig version`; another version on your PATH may not work.
+- **JDK 17**, with `JAVA_HOME` set to its installation directory. The Java host requests a JDK 17 toolchain.
+- **An Android SDK platform**, providing `android.jar`. Set `ANDROID_HOME` to the SDK directory (or use the standard macOS SDK location, `~/Library/Android/sdk`). No Android device is needed.
+- **Python 3.12 or later**.
+- **Docker**, to build the reader's Java and image runtimes from source.
+
+From the project directory, first build the runtimes:
+
+```sh
+python3 tools/build_jre.py
+python3 tools/build_images.py
 ```
 
-Then:
+The first Java runtime build compiles a cross-toolchain and OpenJDK and can take about an hour. Later builds reuse Docker's cache. Runtime outputs are kept in the ignored `.runtime-cache/` directory.
 
-```
-ZIG=/Users/steve/Programs/Zig/v0.17.0/zig
-"$ZIG" build -Doptimize=small                # native UI, isolated ARM JVM worker and its libzstd JNI decoder
-"$ZIG" build test                           # model, persistence, UI and background flows
-"$ZIG" build preview -Doptimize=small        # fake-InkView screenshots in preview/*.pgm
-python3 tools/preview_png.py                # lossless preview/*.png for review
+Then build the extension host, run tests and package the device application:
+
+```sh
+zig build host
+zig build test
+zig build -Doptimize=small
 python3 tools/package_device.py
 ```
 
-The packaging script installs the Java and image runtimes after checking their digests pinned in `tools/runtime-packages.json`, downloads the checksum-pinned Debian certificate package listed there, and creates Java and PEM stores from its public CA certificates. No firmware file is shipped. Packages are cached in `.runtime-cache/`. It does not install Java on the development computer or change the reader's system libraries. The host jar can be overridden with `--host-jar FILE`. `zig build` compiles the worker's zstd decoder from the libzstd source pinned in zig-tachi's `build.zig.zon`, which needs a JDK's `jni.h` through `JAVA_HOME` or `-Djdk=PATH`; packaging copies it from `zig-out/lib`. OpenJDK's licenses are in `runtime/jre/legal/`; the certificate package's and the statically linked GCC runtime's are under `runtime/licenses/`.
+`zig build host` installs `zig-out/lib/tachi-host.jar`. The packaging script uses that JAR by default and creates **`dist/pocketmanga-verse.tar.gz`**, ready for installation. The archive contains the application files and runtimes, not your personal library or downloads. `zig build` also supports the default optimization configuration; `-Doptimize=small` is the smaller device build.
 
-The former desktop companion has been removed from the source and build. All shipping binaries are ARM device components; the diagnostic and preview targets below are developer tests.
+If Zig is installed somewhere else, use its full path in each command. Packaging verifies the runtime and certificate downloads against the integrity values recorded in `tools/runtime-packages.json`; it does not change your computer's Java installation or the reader's system libraries.
 
-## Verification
+### Make a change and check it
 
-The firmware checks run the packaged app on official firmware root filesystems. Extract the checksum-pinned 6.10.1461 and 6.9.862 archives (6.9 is the closest available glibc 2.23 stand-in for 6.8) **outside the repo**. `prepare_firmware.py` requires `debugfs` (e2fsprogs) and `unsquashfs`, and reads images without mounting them or using root:
+Start with `src/` for application code and `build.zig` for build targets. Keep related changes together, run **`zig build test`** and **`zig build`**, then check the interface on the device. For changes to decoder behavior, use the production image test bridge described in the development guide.
 
-```
-"$ZIG" build runtime-probe -Doptimize=small
-docker build -f tools/Dockerfile.arm-test -t pocketmanga-arm-test:local .
-python3 tools/prepare_firmware.py 6.10 /tmp/inkview-firmware-6.8-device/verse-6.10.1461.zip --output /tmp/pocketmanga-prepared610
-python3 tools/prepare_firmware.py 6.9 /tmp/inkview-firmware-6.8-device/verse-6.9.862.zip --output /tmp/pocketmanga-prepared69
-```
+You can also generate screenshots without a reader:
 
-The fixture checks request planning, both rate-limit layouts, null image URL resolution and JVM fallback. It downloads three ~1 MiB PNGs through native TLS and Zig DNS, requiring the extension's header, Referer, cookie-jar cookie and request-interceptor cookie. Its test CA is generated and installed only into temporary container copies, never into dist/. The repository test exercises live HTTPS using the bundle's CA roots.
-
-```
-python3 tools/test_firmware_runtime.py --rootfs /tmp/pocketmanga-prepared69 --version 6.9 --log-launcher
-python3 tools/test_firmware_runtime.py --rootfs /tmp/pocketmanga-prepared610 --version 6.10
-
-docker build -f tools/Dockerfile.kernel310-test -t pocketmanga-kernel310-test:local .
-python3 tools/test_firmware_runtime.py --rootfs /tmp/pocketmanga-prepared69 --version 6.9 --deny-new-syscalls --log-launcher
-python3 tools/test_firmware_runtime.py --rootfs /tmp/pocketmanga-prepared610 --version 6.10 --deny-new-syscalls
-python3 tools/test_firmware_runtime.py --rootfs /tmp/pocketmanga-prepared69 --version 6.9 --deny-new-syscalls --parent-exit
-
-python3 tools/audit_runtime.py --rootfs /tmp/pocketmanga-prepared69 --process ui
-python3 tools/audit_runtime.py --rootfs /tmp/pocketmanga-prepared69 --process worker
+```sh
+zig build preview -Doptimize=small
+python3 tools/preview_png.py
 ```
 
-Additional strict scenarios exercise cancellation/resume and dynamic redirect fallback:
+These write fake-InkView screenshots under `preview/`. They help check layout, but cannot reproduce the reader's panel refresh, Wi-Fi dialogs or suspend behavior.
 
-```
-python3 tools/test_firmware_runtime.py --rootfs /tmp/pocketmanga-prepared69 --version 6.9 --deny-new-syscalls --cancel-resume
-python3 tools/test_firmware_runtime.py --rootfs /tmp/pocketmanga-prepared610 --version 6.10 --deny-new-syscalls --redirect
-```
+See [development and verification](docs/development.md) for the architecture, image-cache limits, production codec tests, firmware emulation and packaging details. The [reader wake investigation](docs/reader-wake.md) explains how background work is delivered promptly without periodic completion polling.
 
-Repeat the ELF audits for the 6.10 root. The containers use the packaged UI, native firmware loader and real InkView library up to symbol resolution, stopping before `InkViewMain`. They exercise the worker's full fixture on the firmware's own glibc and the actual UI/worker protocol, including progress, crash/retry, version rejection, EOF and idle shutdown. `--parent-exit` deliberately bypasses UI cleanup and checks that its worker exits too. RSS samples include emulator overhead and stop before the hardware event loop.
+## Licenses
 
-The extra QEMU build makes post-3.10 **guest** ARM syscalls return `ENOSYS` (including time64 calls), rather than relying on the host's newer kernel. It is a test artifact only. Local firmware Docker images contain proprietary libraries; keep them local. Logs are in `dist/firmware-tests/`. See [the firmware implementation report](docs/firmware-6.8.md) for the syscall audit, process/library ownership and measured results.
-
-UI tests drive the actual fabrum InkView host through its fake framebuffer: source installation, keyboard search, adding a title, downloading and opening a chapter, source preferences, physical keys, tap zones, Back, progress after metadata replacement, and failure handling. Partial image redraws are compared against a full redraw, including padded framebuffer rows.
-
-The separate [reader wake diagnostic](docs/reader-wake.md) tests completion delivery on physical firmware with periodic task polling disabled, without replacing the production app.
-
-## Current limits
-
-This is an initial implementation, not feature parity with Mihon. CBZ import and zoom are not yet exposed by this UI. libtachi supports extensions-lib **1.6**; WebView/Cloudflare challenges, Android bitmap descrambling and some source-specific native compression remain libtachi limitations.
-
-The native reader supports Mihon’s image families: JPEG, PNG/APNG, WebP, GIF, AVIF, HEIF, JPEG XL and JPEG 2000. Animation displays its first frame. Tall pages fit the viewport width and advance vertically; wide pages fit its height and advance horizontally in the selected reading direction. Next/Prev, tap zones and physical keys advance by 90% of a viewport before changing source pages. Dragging pans along the page’s long axis on release. Progress includes the position inside a page; completion waits until the last region of the final page is displayed.
-
-Regions are resized once with Lanczos filtering, composited onto white and copied as grayscale pixels. Background tasks publish the visible region before preparing the next screenful and the entry viewports of the next two pages. This speculative work is serialized with decoding and canceled when navigation requests another region. A 1 MiB RAM tile cache and a 64 MiB disk tile cache avoid repeated decoding. PNG/JPEG decoding can use temporary disk space; full-frame codecs have a 32-megapixel admission limit. These cache limits do not cap total decoder memory. See [image runtime build and resource limits](tools/image/README.md).
-
-To exercise the production codec path in the UI tests, build the host bridge as described there and run `POCKETMANGA_IMAGE_TEST_LIBRARY="$PWD/.runtime-cache/image-host/libpocketmanga-image.dylib" "$ZIG" build test` (use `.so` on Linux).
-
-Zero interprets Java bytecode. Startup and extension loading can be slow on the Verse, especially with large multi-source extensions. The worker starts with a 16 MiB heap, capped at 128 MiB, with 96 MiB for class metadata and 512 KiB Java thread stacks (Serial GC, two active processors); installing many large extensions can exhaust that budget. Network responses have the source client's normal timeouts. Downloads publish their manifest only after every page succeeds; completed pages survive failure or cancellation for retry.
-
-The ARM runtime, JNI bridge, repository connection and UI flows are tested in emulation. **Physical Verse verification is still needed** for real panel refresh, Wi-Fi dialogs, suspend behavior, startup time and peak RAM. Failed startup or corrupt persistent data is reported in the log rather than silently resetting user data. Keep the runtime directory and launch through the provided `.app` script.
-
-The Go font and its license are in `src/fonts/`. See zig-tachi's NOTICE for the upstream Mihon and Android compatibility code.
-
-The [device feedback fixes](docs/device-feedback-fixes.md) document extension-compatible zstd decoding (since replaced by source-built libzstd over JNI), download identification and partial-refresh row feedback.
+The bundle includes license notices for its Java runtime and other components. The Go font and its license are in `src/fonts/`. See libtachi's NOTICE for upstream Mihon and Android compatibility code.

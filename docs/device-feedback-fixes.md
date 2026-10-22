@@ -1,8 +1,7 @@
 # Device feedback fixes
 
-Follow-up to app `1d42223` and zig-tachi `c0c6336`, both developed on
-`native-downloads` and since merged into `main`. zig-layout and
-zig-fabrum-platform-inkview were not modified.
+Follow-up to the native-download implementation in PocketManga and libtachi.
+fabrum and its InkView platform were not modified.
 
 ## Extension-compatible zstd
 

@@ -2,7 +2,7 @@
 
 Chapter downloading, cancellation, protocol version and resume behavior are superseded by [native-downloads.md](native-downloads.md). The worker's private glibc 2.39 runtime, its loader invocation and Debian's Zero JVM are superseded by [java-runtime.md](java-runtime.md): the worker now targets glibc 2.23 and runs a source-built JVM on the reader's own C library. The UI's firmware ABI and the kernel 3.10 syscall audit described here still apply.
 
-The final design uses two processes. The UI's firmware libraries remain paired with their own glibc; the newer GNU runtime is private to the JVM worker. All changes are uncommitted on `firmware-6.8`, based on clean commit `1f8a214` (the checkout's starting branch was named `main`). No sibling repository or physical reader was modified.
+The final design uses two processes. The UI's firmware libraries remain paired with their own glibc; the newer GNU runtime is private to the JVM worker. This report records the original firmware compatibility investigation; later runtime changes are described above.
 
 ## Processes and lifecycle
 

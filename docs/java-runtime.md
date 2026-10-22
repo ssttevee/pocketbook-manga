@@ -8,8 +8,7 @@ The bundle no longer contains any C library or firmware file.
 
 ## What is built
 
-- **OpenJDK 17.0.20.1+1** from the jdk17u `jdk-17.0.20.1-ga` tag (commit
-  `c35a8d5a87559ad2734f1023bb321176c13c7ba0`), version string
+- **OpenJDK 17.0.20.1+1** from the jdk17u `jdk-17.0.20.1-ga` tag, version string
   `17.0.20.1+1-pocketmanga`.
 - HotSpot's **ARM32 client VM**: the template interpreter and the C1 JIT,
   with class-data sharing. The `arm-vfp-sflt` ABI profile targets ARMv7 with

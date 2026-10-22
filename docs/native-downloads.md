@@ -1,6 +1,6 @@
 # Native chapter downloads
 
-Developed on the `native-downloads` branches of this app (from `c128c58`) and zig-tachi (from `051f138`), both since merged into `main`. Neither zig-layout nor zig-fabrum-platform-inkview needed changes.
+The native-download implementation spans PocketManga and libtachi. It does not require changes to fabrum or its InkView platform.
 
 ## Request planning and native transfer
 
