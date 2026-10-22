@@ -66,7 +66,7 @@ jobs:
       - name: Install SDK platform and production decoder test dependencies
         run: |
           set -euo pipefail
-          sdkmanager 'platforms;android-35'
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-35'
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends libvips-dev libvips-tools pkg-config \
             libheif-plugin-x265 libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
