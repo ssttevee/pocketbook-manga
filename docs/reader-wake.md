@@ -118,3 +118,10 @@ and speculative preparation, never from a visible tile read/write. Its separate
 `maintenance_ms` entry includes scanning, sorting and eviction. Initial cleanup
 and cleanup due after 1 MiB of writes remain pending if canceled or unsuccessful.
 The 64 MiB disk target can temporarily be exceeded until maintenance completes.
+
+The reader task is keyed by navigation generation and external inputs rather
+than its accepted anchor. Accepting a continuous frame normalizes the page,
+position and pending delta without restarting its still-running prefetch.
+Effective navigation advances the generation and cancels obsolete preparation.
+When the UI has already installed a cached view, the task prepares subsequent
+views without publishing that same frame a second time.

@@ -35,6 +35,7 @@ const Wake = struct {
 
 const DelayedPrefetch = struct {
     backend: Cache.Backend,
+    block_y: u32 = 512,
     entered: std.atomic.Value(bool) = .init(false),
     release: std.Io.Event = .unset,
     once: std.atomic.Value(bool) = .init(true),
@@ -51,7 +52,7 @@ const DelayedPrefetch = struct {
     }
     fn read(context: *anyopaque, rect: lib.viewport.Rect, pixels: []u8, stride: usize) !void {
         const delay = self(context);
-        if (rect.y >= 512 and delay.once.swap(false, .acq_rel)) {
+        if (rect.y >= delay.block_y and delay.once.swap(false, .acq_rel)) {
             delay.entered.store(true, .release);
             delay.release.waitUncancelable(std.testing.io);
         }
@@ -303,4 +304,97 @@ test "production codecs drive vertical and horizontal reader tasks and reject st
     try h.runTasks();
     try std.testing.expect(!h.taskStarted("reader-region"));
     try std.testing.expectEqual(lib.Screen.chapters, model.screen);
+}
+
+test "accepting a normalized vertical anchor keeps its next viewport preparation alive" {
+    const library_path = std.c.getenv("POCKETMANGA_IMAGE_TEST_LIBRARY") orelse return error.SkipZigTest;
+    var codecs = try Vips.Library.load(std.mem.span(library_path));
+    defer codecs.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writePng(tmp.dir, "vertical.png", "iVBORw0KGgoAAAANSUhEUgAAABAAAACACAIAAACN9351AAAAOUlEQVR4nO3ToREAMAzEsOy/dMv6uCAgOYkbugp4zieBYHMARP9xAsGcAIj+4wSCOQEQ/ccJBGOCC/q69KbReaZDAAAAAElFTkSuQmCC");
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", arena.allocator());
+    var service: Regions.Service = undefined;
+    service.init(std.testing.allocator, &codecs, try std.fs.path.join(arena.allocator(), &.{ root, "cache" }));
+    defer service.deinit();
+    var delay: DelayedPrefetch = .{ .backend = service.tiles.backend, .block_y = 1024 };
+    service.tiles.backend = .{ .context = &delay, .probe = DelayedPrefetch.probe, .open = DelayedPrefetch.open, .read = DelayedPrefetch.read, .close = DelayedPrefetch.close };
+    var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true, .reader_requires_presentation = true };
+    defer model.deinit();
+    var session: Session = .{ .model = &model, .root = root, .io = std.testing.io, .region_service = &service, .load_image = invalidate };
+    defer session.deinit();
+    try session.act(.{ .reader_mode = .vertical });
+    try session.act(.{ .read = 0 });
+    const view: Cache.Size = .{ .width = 343, .height = 464 };
+    try model.presentContinuous(0, 0, lib.viewport.Geometry.init(view, view, false), false, false);
+    try session.act(.{ .turn = 1 });
+    try std.testing.expect(model.reader_scroll_delta > 0);
+    var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+    defer h.deinit();
+    defer delay.release.set(std.testing.io);
+    h.runtime.core.tasks.queued = false;
+    try h.frame();
+    for (0..5000) |_| {
+        if (delay.entered.load(.acquire)) break;
+        try std.testing.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try std.testing.expect(delay.entered.load(.acquire));
+    const preparing = h.runtime.core.tasks.records.items[0];
+    try h.frame(); // Accept the frame while its next viewport is blocked.
+    try std.testing.expect(session.regionCurrent());
+    try std.testing.expect(model.reader_position > 0);
+    try std.testing.expectEqual(@as(f64, 0), model.reader_scroll_delta);
+    try h.frame(); // Normalized output must not retire the preparing task.
+    try std.testing.expect(!preparing.canceled.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), h.runtime.core.tasks.records.items.len);
+    try std.testing.expectEqual(preparing, h.runtime.core.tasks.records.items[0]);
+    delay.release.set(std.testing.io);
+    for (0..5000) |_| {
+        if (preparing.done.load(.acquire)) break;
+        try std.testing.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try std.testing.expect(preparing.done.load(.acquire));
+    try h.frame();
+    try session.act(.{ .turn = 1 });
+    try h.frame();
+    try std.testing.expect(session.regionCurrent()); // Prepared without another decode.
+    try std.testing.expect(h.findText("Loading page…") == null);
+}
+
+test "speculative source failures preserve cached views in both reader modes" {
+    const library_path = std.c.getenv("POCKETMANGA_IMAGE_TEST_LIBRARY") orelse return error.SkipZigTest;
+    var codecs = try Vips.Library.load(std.mem.span(library_path));
+    defer codecs.deinit();
+    for ([_]lib.ReaderMode{ .paged, .vertical }) |mode| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writePng(tmp.dir, "vertical.png", "iVBORw0KGgoAAAANSUhEUgAAABAAAACACAIAAACN9351AAAAOUlEQVR4nO3ToREAMAzEsOy/dMv6uCAgOYkbugp4zieBYHMARP9xAsGcAIj+4wSCOQEQ/ccJBGOCC/q69KbReaZDAAAAAElFTkSuQmCC");
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", arena.allocator());
+        var service: Regions.Service = undefined;
+        service.init(std.testing.allocator, &codecs, try std.fs.path.join(arena.allocator(), &.{ root, "cache" }));
+        defer service.deinit();
+        var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true, .reader_requires_presentation = true };
+        defer model.deinit();
+        var session: Session = .{ .model = &model, .root = root, .io = std.testing.io, .region_service = &service, .load_image = invalidate };
+        defer session.deinit();
+        try session.act(.{ .reader_mode = mode });
+        try session.act(.{ .read = 0 });
+        var h: f.app.testing.Harness(.{}, Root) = try .init(.{}, .{ .viewport = .init(343, 464), .provide = &.{f.app.RootValue.of(&session)}, .widgets = .drawn });
+        defer h.deinit();
+        try h.frame();
+        try h.runTasks();
+        try session.act(.{ .jump_page = 0 });
+        try h.frame();
+        try std.testing.expect(session.regionCurrent());
+        const pixels = session.image.?.pixels.ptr;
+        try tmp.dir.deleteFile(std.testing.io, "vertical.png");
+        try h.runTasks(); // Reopening the source now fails after the cache hit.
+        try std.testing.expect(session.regionCurrent());
+        try std.testing.expectEqual(pixels, session.image.?.pixels.ptr);
+        try std.testing.expectEqualStrings("", session.status);
+    }
 }

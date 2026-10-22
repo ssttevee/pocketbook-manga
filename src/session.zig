@@ -29,7 +29,7 @@ pub const Session = struct {
     region_epoch: u64 = 0,
     reader_requested_at: ?std.Io.Timestamp = null,
     region_pixels: ?[]u8 = null,
-    region_drawn: ?struct { chapter: u64, page: usize, epoch: u64, position: f64, rtl: bool, viewport: Viewport.Size, mode: lib.ReaderMode = .paged } = null,
+    region_drawn: ?struct { chapter: u64, page: usize, epoch: u64, position: f64, rtl: bool, viewport: Viewport.Size, mode: lib.ReaderMode = .paged, revision: usize = 0 } = null,
     load_image: ?*const fn (*Session, []const u8) anyerror!void = null,
     /// Decodes an owned, bounded thumbnail independently of the reader page.
     load_cover: ?*const fn (*Session, []const u8, usize, usize) anyerror!Image = null,
@@ -102,7 +102,7 @@ pub const Session = struct {
         const chapter = self.model.current() orelse return false;
         return self.image != null and self.model.reader_presented and drawn.epoch == self.region_epoch and
             drawn.chapter == std.hash.Wyhash.hash(0, chapter.id) and drawn.page == self.model.page and
-            drawn.mode == self.model.readingMode() and self.model.reader_scroll_delta == 0 and drawn.position == self.model.reader_position and drawn.rtl == self.model.prefs.rtl and
+            drawn.mode == self.model.readingMode() and (drawn.mode != .vertical or drawn.revision == self.reader_download_done) and self.model.reader_scroll_delta == 0 and drawn.position == self.model.reader_position and drawn.rtl == self.model.prefs.rtl and
             std.meta.eql(drawn.viewport, self.region_viewport);
     }
     pub fn clearRegionImage(self: *Session) void {
@@ -174,7 +174,7 @@ pub const Session = struct {
                 self.clearRegionImage();
                 self.region_pixels = pixels;
                 self.image = .{ .width = frame.rect.width, .height = frame.rect.height, .pixels = pixels, .revision = frame.revision, .native_scale = self.display_scale };
-                self.region_drawn = .{ .chapter = std.hash.Wyhash.hash(0, chapter.id), .page = model.page, .epoch = self.region_epoch, .position = model.reader_position, .rtl = model.prefs.rtl, .viewport = request.viewport, .mode = request.mode };
+                self.region_drawn = .{ .chapter = std.hash.Wyhash.hash(0, chapter.id), .page = model.page, .epoch = self.region_epoch, .position = model.reader_position, .rtl = model.prefs.rtl, .viewport = request.viewport, .mode = request.mode, .revision = request.revision };
                 self.setStatus("");
                 const saving = std.Io.Clock.boot.now(self.io);
                 self.recordProgress();
@@ -1370,11 +1370,12 @@ pub const Session = struct {
         try self.model.dispatch(action);
         if (self.model.screen != .reader) {
             self.reader_requested_at = null;
-        } else if (old_screen == .reader and (action == .turn or action == .pan or action == .jump_page) and
+        } else if (old_screen == .reader and (action == .turn or action == .pan or action == .jump_page or action == .read or action == .open_chapter) and
             (old_page != self.model.page or old_position != self.model.reader_position or
                 old_delta != self.model.reader_scroll_delta or old_presented != self.model.reader_presented or
                 old_backward != self.model.reader_pending_end))
         {
+            self.region_epoch +%= 1;
             self.reader_requested_at = input_at;
             std.log.info("Reader input action={s} page={d}", .{ @tagName(action), old_page + 1 });
         }

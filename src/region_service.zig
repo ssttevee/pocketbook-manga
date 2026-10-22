@@ -9,6 +9,8 @@ pub const Continuous = @import("continuous_reader.zig");
 
 pub const Request = struct {
     requested_at_ms: ?i64 = null,
+    /// The UI already installed this view from verified cached tiles.
+    presented: bool = false,
     mode: @import("library.zig").ReaderMode = .paged,
     delta: f64 = 0,
     pages: []const []const u8 = &.{},
@@ -88,6 +90,16 @@ pub fn continuousRequest(request: Request) Continuous.Request {
 }
 
 pub fn render(task: *app.Task, service: *Service, request: Request, on_frame: app.Handler(anyerror!Result)) anyerror!Result {
+    return renderInternal(task, service, request, on_frame) catch |err| {
+        if (err == error.Canceled or !request.presented) return err;
+        // A cache hit has already delivered the view. All remaining work is
+        // speculative, including reopening its source to prepare neighbors.
+        std.log.debug("Reader prepared view: {s}", .{@errorName(err)});
+        return finish(task, service, request);
+    };
+}
+
+fn renderInternal(task: *app.Task, service: *Service, request: Request, on_frame: app.Handler(anyerror!Result)) anyerror!Result {
     try task.checkCancel();
     const started = std.Io.Clock.boot.now(task.io);
     const before = service.tiles.metrics;
@@ -98,7 +110,7 @@ pub fn render(task: *app.Task, service: *Service, request: Request, on_frame: ap
         try task.checkCancel();
         const ready_at = std.Io.Clock.boot.now(task.io);
         logRender(service, request, started, ready_at, before);
-        try task.post(on_frame, @as(anyerror!Result, .{ .request = request, .ready_at = ready_at, .value = .{ .continuous = output } }));
+        if (!request.presented) try task.post(on_frame, @as(anyerror!Result, .{ .request = request, .ready_at = ready_at, .value = .{ .continuous = output } }));
         if (!output.at_end and !output.waiting) {
             var arena: std.heap.ArenaAllocator = .init(task.gpa);
             defer arena.deinit();
@@ -122,7 +134,7 @@ pub fn render(task: *app.Task, service: *Service, request: Request, on_frame: ap
         try std.fs.path.join(task.gpa, &.{ request.root, request.relative });
     const terminated = try task.gpa.dupeSentinel(u8, path, 0);
     const frame = service.tiles.frame(task.gpa, task.io, terminated, request.viewport, request.position, request.backward, request.rtl, .{ .context = task, .check = checkpoint }) catch |err| {
-        if (err == error.Canceled) return err;
+        if (err == error.Canceled or request.presented) return err;
         const diagnostic = service.adapter.library.diagnostic();
         const failure = try std.fmt.allocPrint(task.gpa, "{s}: {s}", .{ @errorName(err), diagnostic });
         std.log.warn("Cannot render {s}: {s}", .{ request.relative, failure });
@@ -134,7 +146,7 @@ pub fn render(task: *app.Task, service: *Service, request: Request, on_frame: ap
     std.log.info("Reader region {s}: {d},{d} {d}x{d} ready decode_ms={d}", .{ request.relative, frame.rect.x, frame.rect.y, frame.rect.width, frame.rect.height, started.durationTo(ready_at).toMilliseconds() });
     // Publish the viewport before speculative work; borrowed task pixels stay
     // alive until message delivery, and canceled generations are discarded.
-    try task.post(on_frame, @as(anyerror!Result, .{ .request = request, .ready_at = ready_at, .value = .{ .frame = frame } }));
+    if (!request.presented) try task.post(on_frame, @as(anyerror!Result, .{ .request = request, .ready_at = ready_at, .value = .{ .frame = frame } }));
     service.tiles.prefetch(task.io, frame.geometry, frame.rect, .{ .context = task, .check = checkpoint }) catch |err| {
         if (err == error.Canceled) return err;
         // A failed speculative neighbor must not replace the visible viewport.
@@ -175,7 +187,7 @@ fn preparePage(task: *app.Task, service: *Service, request: Request, relative: [
 
 fn logRender(service: *Service, request: Request, started: std.Io.Timestamp, ready: std.Io.Timestamp, before: cache.Metrics) void {
     const m = service.tiles.metrics.since(before);
-    std.log.info("Reader render mode={s} page={d} delta={d:.1} render_ms={d} ram_hits={d} disk_hits={d} decoded={d} open_us={d} disk_read_us={d} decode_us={d} disk_write_us={d}", .{ @tagName(request.mode), request.page + 1, request.delta, started.durationTo(ready).toMilliseconds(), m.ram_hits, m.disk_hits, m.decoded, m.open_us, m.disk_read_us, m.decode_us, m.disk_write_us });
+    std.log.info("Reader render mode={s} page={d} presented={} delta={d:.1} render_ms={d} ram_hits={d} disk_hits={d} decoded={d} open_us={d} disk_read_us={d} decode_us={d} disk_write_us={d}", .{ @tagName(request.mode), request.page + 1, request.presented, request.delta, started.durationTo(ready).toMilliseconds(), m.ram_hits, m.disk_hits, m.decoded, m.open_us, m.disk_read_us, m.decode_us, m.disk_write_us });
 }
 
 fn finish(task: *app.Task, service: *Service, request: Request) !Result {

@@ -143,6 +143,7 @@ test "production reader joins footer strips and serves prepared continuous turns
     defer service.deinit();
     var model: lib.Model = .{ .gpa = std.testing.allocator, .library = fixture, .region_reader = true, .reader_requires_presentation = true };
     defer model.deinit();
+    model.prefs.full_refresh = false;
     try model.dispatch(.{ .reader_mode = .vertical });
     var session: Session = .{ .model = &model, .root = root, .io = std.testing.io, .region_service = &service, .load_image = invalidate };
     defer session.deinit();
@@ -156,7 +157,10 @@ test "production reader joins footer strips and serves prepared continuous turns
     try h.frame();
     try std.testing.expect(session.regionCurrent());
     try std.testing.expect(h.findText("Loading page…") == null);
+    const updates = h.state().reader_updates;
     try h.runTasks();
+    // A cache hit is presented once; the worker only prepares future views.
+    try std.testing.expectEqual(updates, h.state().reader_updates);
     try session.act(.{ .jump_page = 1 });
     try h.frame();
     try h.runTasks();
@@ -230,6 +234,7 @@ test "continuous reader refreshes missing footer pages when background downloads
     const stale_request: Regions.Request = .{ .mode = .vertical, .revision = 1, .pages = model.online_pages, .root = root, .relative = "first.png", .chapter = "chapter", .page = model.page, .epoch = session.region_epoch, .viewport = session.region_viewport, .position = model.reader_position, .backward = false, .rtl = model.prefs.rtl };
     model.online_pages = fixture.manga[0].chapters[0].pages;
     session.reader_download_done = 3;
+    try std.testing.expect(!session.regionCurrent()); // The displayed view predates these pages.
     try std.testing.expect(!try session.acceptRegion(.{ .request = stale_request, .value = .{ .failure = "old missing page" } }));
     try h.frame();
     try h.runTasks();

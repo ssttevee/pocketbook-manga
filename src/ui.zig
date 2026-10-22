@@ -1505,12 +1505,16 @@ fn reader(ui: *app.Ui, session: *const Session) !void {
             .next_pages = ch.pages[model.page + 1 .. @min(ch.pages.len, model.page + 3)],
         };
         if (!mutable.regionCurrent()) _ = try mutable.acceptCachedRegion(request);
+        request.presented = mutable.regionCurrent();
         request.page = model.page;
         request.relative = ch.pages[model.page];
         request.delta = model.reader_scroll_delta;
         request.position = model.reader_position;
         request.backward = model.reader_pending_end;
-        try ui.task("reader-region", .{ .restart = .{ request.relative, request.chapter, request.page, request.epoch, viewport, @as(u64, @bitCast(request.position)), request.backward, request.rtl, request.mode, @as(u64, @bitCast(request.delta)), request.revision } }, regions.render, .{ service, request, on.handler(.region_frame) }, on.handler(.region_frame));
+        // Acceptance normalizes the anchor and clears pending motion. Those
+        // outputs must not cancel the task that is still preparing the next view.
+        // Effective navigation advances region_epoch; external inputs remain keys.
+        try ui.task("reader-region", .{ .restart = .{ request.chapter, request.epoch, viewport, request.rtl, request.mode, request.revision } }, regions.render, .{ service, request, on.handler(.region_frame) }, on.handler(.region_frame));
     };
     {
         try ui.open("page", .{ .layout = .{ .sizing = .grow(.{}), .child_alignment = .center }, .background_color = .white, .on_pointer = on.handler(.pointer) });
