@@ -112,3 +112,9 @@ image opening, disk reads, decoding and tile writes; these are components of
 render time, not additional delays. UI cache lookups report elapsed time
 separately because they use immutable disk tiles without entering the decoder.
 `progress_ms` and `preferences_ms` identify synchronous persistence costs.
+
+Tile-directory maintenance runs on the serialized reader task after publication
+and speculative preparation, never from a visible tile read/write. Its separate
+`maintenance_ms` entry includes scanning, sorting and eviction. Initial cleanup
+and cleanup due after 1 MiB of writes remain pending if canceled or unsuccessful.
+The 64 MiB disk target can temporarily be exceeded until maintenance completes.

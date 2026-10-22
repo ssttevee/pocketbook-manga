@@ -367,3 +367,55 @@ test "prepared viewports compose without decoding and reject stale or incomplete
         }
     }
 }
+
+test "visible rendering defers initial and recurring cache cleanup and canceled cleanup retries" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const p = try paths(arena.allocator(), tmp.dir);
+    try tmp.dir.createDir(io, "tiles", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "tiles/abandoned.tile.tmp", .data = "unfinished" });
+    {
+        const stale = try tmp.dir.createFile(io, "tiles/stale.tile", .{});
+        defer stale.close(io);
+        try stale.setLength(io, cache.Service.disk_limit);
+        try stale.setTimestamps(io, .{ .modify_timestamp = .{ .new = .{ .nanoseconds = 0 } } });
+    }
+    var fake: Fake = .{};
+    var service = cache.Service.init(std.testing.allocator, fake.backend(), p.disk);
+    defer service.deinit();
+    const view: cache.Size = .{ .width = 1024, .height = 1024 };
+    const first = try service.frame(arena.allocator(), io, p.image, view, 0, false, false, .{});
+    try expectPixels(first);
+    try std.testing.expect(!service.disk_scanned);
+    try std.testing.expect(service.disk_written >= 1024 * 1024);
+    _ = try tmp.dir.statFile(io, "tiles/abandoned.tile.tmp", .{});
+    _ = try tmp.dir.statFile(io, "tiles/stale.tile", .{});
+    try service.maintain(io, fake.checkpoint());
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "tiles/stale.tile", .{}));
+    try std.testing.expect(service.disk_scanned);
+    try std.testing.expectEqual(@as(usize, 0), service.disk_written);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "tiles/abandoned.tile.tmp", .{}));
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "tiles/abandoned.tile.tmp", .data = "unfinished" });
+    _ = try service.frame(arena.allocator(), io, p.image, view, 0.5, false, false, .{});
+    try std.testing.expect(service.disk_written >= 1024 * 1024);
+    _ = try tmp.dir.statFile(io, "tiles/abandoned.tile.tmp", .{});
+    const Stop = struct {
+        checks: usize = 0,
+        fn check(context: ?*anyopaque) !void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.checks += 1;
+            if (self.checks == 2) return error.Canceled;
+        }
+    };
+    var stop: Stop = .{};
+    try std.testing.expectError(error.Canceled, service.maintain(io, .{ .context = &stop, .check = Stop.check }));
+    try std.testing.expectEqual(@as(usize, 2), stop.checks);
+    try std.testing.expect(service.disk_written >= 1024 * 1024);
+    _ = try tmp.dir.statFile(io, "tiles/abandoned.tile.tmp", .{});
+    try service.maintain(io, fake.checkpoint());
+    try std.testing.expectEqual(@as(usize, 0), service.disk_written);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "tiles/abandoned.tile.tmp", .{}));
+}

@@ -138,10 +138,6 @@ pub const Service = struct {
         const rect = if (slice) |part| sliceRect(geometry, part) else geometry.region(position);
         const pixels = try arena.alloc(u8, @as(usize, rect.width) * rect.height);
         errdefer arena.free(pixels);
-        if (!self.disk_scanned) {
-            self.prune(io) catch {};
-            self.disk_scanned = true;
-        }
         var y = rect.y / tile_size * tile_size;
         while (y < rect.y + rect.height) : (y += tile_size) {
             var x = rect.x / tile_size * tile_size;
@@ -393,13 +389,26 @@ pub const Service = struct {
         }
         try std.Io.Dir.cwd().rename(tmp, std.Io.Dir.cwd(), path, io);
         self.disk_written += header.len + tile.pixels.len;
-        if (self.disk_written >= 1024 * 1024) {
-            try self.prune(io);
-            self.disk_written = 0;
-        }
     }
-    fn prune(self: *Service, io: std.Io) !void {
-        var dir = std.Io.Dir.cwd().openDir(io, self.cache_dir, .{ .iterate = true }) catch return;
+
+    /// Call only after publishing the visible frame and preparing its neighbor.
+    /// A canceled/failed pass remains due, so the next idle reader task retries.
+    pub fn maintain(self: *Service, io: std.Io, checkpoint: Checkpoint) !void {
+        if (self.disk_scanned and self.disk_written < 1024 * 1024) return;
+        const started = std.Io.Clock.boot.now(io);
+        defer std.log.info("Reader cache maintenance_ms={d}", .{started.durationTo(std.Io.Clock.boot.now(io)).toMilliseconds()});
+        try checkpoint.run(io);
+        try self.prune(io, checkpoint);
+        try checkpoint.run(io);
+        self.disk_scanned = true;
+        self.disk_written = 0;
+    }
+
+    fn prune(self: *Service, io: std.Io, checkpoint: Checkpoint) !void {
+        var dir = std.Io.Dir.cwd().openDir(io, self.cache_dir, .{ .iterate = true }) catch |err| switch (err) {
+            error.FileNotFound => return,
+            else => return err,
+        };
         defer dir.close(io);
         const Entry = struct { name: []const u8, size: u64, time: i128 };
         var arena: std.heap.ArenaAllocator = .init(self.gpa);
@@ -408,6 +417,7 @@ pub const Service = struct {
         var total: u64 = 0;
         var iter = dir.iterate();
         while (try iter.next(io)) |entry| {
+            try checkpoint.run(io);
             if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".tile.tmp")) {
                 try dir.deleteFile(io, entry.name);
                 continue;
@@ -421,12 +431,14 @@ pub const Service = struct {
             total += stat.size;
             try entries.append(arena.allocator(), .{ .name = try arena.allocator().dupe(u8, entry.name), .size = stat.size, .time = stat.mtime.nanoseconds });
         }
+        try checkpoint.run(io);
         std.mem.sort(Entry, entries.items, {}, struct {
             fn less(_: void, a: Entry, b: Entry) bool {
                 return a.time < b.time;
             }
         }.less);
         for (entries.items) |entry| {
+            try checkpoint.run(io);
             if (total <= disk_limit) break;
             try dir.deleteFile(io, entry.name);
             total -= entry.size;

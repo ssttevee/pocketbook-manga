@@ -109,11 +109,11 @@ pub fn render(task: *app.Task, service: *Service, request: Request, on_frame: ap
             _ = Continuous.render(context, arena.allocator(), next, .{ .context = task, .check = checkpoint }) catch |err| {
                 if (err == error.Canceled) return err;
                 std.log.debug("Continuous preparation: {s}", .{@errorName(err)});
-                return .{ .request = request, .value = .prefetched };
+                return finish(task, service, request);
             };
             std.log.info("Reader continuous preparation_ms={d}", .{preparing.durationTo(std.Io.Clock.boot.now(task.io)).toMilliseconds()});
         }
-        return .{ .request = request, .value = .prefetched };
+        return finish(task, service, request);
     }
     if (!tachi.library.safePath(request.relative)) return error.UnsafePagePath;
     const path = if (request.engine) |engine|
@@ -156,7 +156,7 @@ pub fn render(task: *app.Task, service: *Service, request: Request, on_frame: ap
             std.log.debug("Page preparation {s}: {s}", .{ relative, @errorName(err) });
         };
     }
-    return .{ .request = request, .value = .prefetched };
+    return finish(task, service, request);
 }
 
 fn preparePage(task: *app.Task, service: *Service, request: Request, relative: []const u8) !void {
@@ -176,4 +176,13 @@ fn preparePage(task: *app.Task, service: *Service, request: Request, relative: [
 fn logRender(service: *Service, request: Request, started: std.Io.Timestamp, ready: std.Io.Timestamp, before: cache.Metrics) void {
     const m = service.tiles.metrics.since(before);
     std.log.info("Reader render mode={s} page={d} delta={d:.1} render_ms={d} ram_hits={d} disk_hits={d} decoded={d} open_us={d} disk_read_us={d} decode_us={d} disk_write_us={d}", .{ @tagName(request.mode), request.page + 1, request.delta, started.durationTo(ready).toMilliseconds(), m.ram_hits, m.disk_hits, m.decoded, m.open_us, m.disk_read_us, m.decode_us, m.disk_write_us });
+}
+
+fn finish(task: *app.Task, service: *Service, request: Request) !Result {
+    service.tiles.maintain(task.io, .{ .context = task, .check = checkpoint }) catch |err| {
+        if (err == error.Canceled) return err;
+        // Cache housekeeping must never replace an already published frame.
+        std.log.debug("Region cache maintenance: {s}", .{@errorName(err)});
+    };
+    return .{ .request = request, .value = .prefetched };
 }
