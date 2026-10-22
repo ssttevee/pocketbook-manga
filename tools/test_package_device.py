@@ -11,6 +11,27 @@ spec.loader.exec_module(package)
 
 
 class PackageTests(unittest.TestCase):
+    def test_packaging_rejects_modified_runtime_before_staging(self):
+        import json
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / 'zig-out/share/pocketmanga/build-target.json'
+            target.parent.mkdir(parents=True)
+            target.write_text(json.dumps(package.PROFILES['2.23']))
+            image_sources = root / 'tools/image/sources.json'
+            image_sources.parent.mkdir(parents=True)
+            image_sources.write_text('{}')
+            for name in ('host.jar', 'jre.tar', 'image.tar'):
+                (root / name).write_bytes(b'modified runtime')
+            args = ['package_device.py', '--host-jar', str(root / 'host.jar'),
+                    '--jre', str(root / 'jre.tar'), '--images', str(root / 'image.tar'),
+                    '--output', str(root / 'dist'), '--cache', str(root / 'cache')]
+            with patch.object(package, 'ROOT', root), patch('sys.argv', args):
+                with self.assertRaisesRegex(SystemExit, 'Image runtime differs'):
+                    package.main()
+            self.assertFalse((root / 'dist').exists())
+
     def test_reused_native_build_cannot_select_another_runtime(self):
         lock = package.runtime_lock('2.23', None)
         package.validate_profile('2.23', lock, {'cpu': 'armv7', 'abi': 'softfp', 'glibc': '2.23'})

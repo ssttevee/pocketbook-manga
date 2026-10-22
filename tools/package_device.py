@@ -132,8 +132,8 @@ def main():
     (runtime/'packages.json').write_text(json.dumps(lock,indent=2)+'\n')
     archive=args.output/f'pocketmanga-armv7-softfp-glibc-{args.glibc}.tar.gz'
     write_archive(args.output, archive)
-    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    (args.output/(archive.name+'.sha256')).write_text(f'{digest}  {archive.name}\n')
+    checksum = digest(archive)
+    (args.output/(archive.name+'.sha256')).write_text(f'{checksum}  {archive.name}\n')
     print('Bundle bytes:', sum(p.stat().st_size for p in (args.output/'applications').rglob('*') if p.is_file()), flush=True)
     print('Archive bytes:', archive.stat().st_size, flush=True)
     print('Archive:',archive,flush=True)
