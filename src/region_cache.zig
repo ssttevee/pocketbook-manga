@@ -26,6 +26,22 @@ pub const Frame = struct {
     pixels: []u8,
     revision: u64,
 };
+pub const Metrics = struct {
+    ram_hits: u64 = 0,
+    disk_hits: u64 = 0,
+    decoded: u64 = 0,
+    open_us: i64 = 0,
+    disk_read_us: i64 = 0,
+    decode_us: i64 = 0,
+    disk_write_us: i64 = 0,
+
+    pub fn since(self: Metrics, before: Metrics) Metrics {
+        var delta: Metrics = undefined;
+        inline for (@typeInfo(Metrics).@"struct".field_names) |name| @field(delta, name) = @field(self, name) - @field(before, name);
+        return delta;
+    }
+};
+
 const Tile = struct { x: u32, y: u32, width: u32, height: u32, pixels: []u8, used: u64 };
 pub const Service = struct {
     pub const tile_size = 256;
@@ -39,6 +55,8 @@ pub const Service = struct {
     geometry: ?vp.Geometry = null,
     tiles: [capacity]?Tile = @splat(null),
     clock: u64 = 0,
+    /// Written only by the serialized reader task, never by cached UI reads.
+    metrics: Metrics = .{},
     disk_scanned: bool = false,
     disk_written: usize = 0,
     // Only this bounded metadata is shared with the UI. Tile files are published
@@ -81,6 +99,8 @@ pub const Service = struct {
         const key = try modeKey(io, path, view, slice != null);
         if (self.key != key) {
             self.clear();
+            const opening = std.Io.Clock.boot.now(io);
+            defer self.metrics.open_us += opening.durationTo(std.Io.Clock.boot.now(io)).toMicroseconds();
             const source = try self.backend.probe(self.backend.context, path);
             if (source.width == 0 or source.height == 0) return error.InvalidImageDimensions;
             try checkpoint.run(io);
@@ -296,6 +316,7 @@ pub const Service = struct {
         self.clock +%= 1;
         for (&self.tiles) |*slot| if (slot.*) |*tile| {
             if (tile.x == x and tile.y == y) {
+                self.metrics.ram_hits += 1;
                 tile.used = self.clock;
                 return tile.*;
             }
@@ -316,10 +337,19 @@ pub const Service = struct {
         const tile: Tile = .{ .x = x, .y = y, .width = width, .height = height, .pixels = pixels, .used = self.clock };
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         const path = try std.fmt.bufPrint(&path_buf, "{s}/{x}-{d}-{d}.tile", .{ self.cache_dir, self.key.?, x, y });
-        if (!try readDisk(self.gpa, io, path, tile)) {
+        const reading = std.Io.Clock.boot.now(io);
+        const hit = try readDisk(self.gpa, io, path, tile);
+        self.metrics.disk_read_us += reading.durationTo(std.Io.Clock.boot.now(io)).toMicroseconds();
+        if (hit) self.metrics.disk_hits += 1;
+        if (!hit) {
             try checkpoint.run(io);
+            const decoding = std.Io.Clock.boot.now(io);
             try self.backend.read(self.backend.context, .{ .x = x, .y = y, .width = width, .height = height }, pixels, width);
+            self.metrics.decoded += 1;
+            self.metrics.decode_us += decoding.durationTo(std.Io.Clock.boot.now(io)).toMicroseconds();
             try checkpoint.run(io);
+            const writing = std.Io.Clock.boot.now(io);
+            defer self.metrics.disk_write_us += writing.durationTo(std.Io.Clock.boot.now(io)).toMicroseconds();
             self.writeDisk(io, path, tile) catch |err| switch (err) {
                 error.Canceled => return error.Canceled,
                 else => {}, // Optional cache: reading must also work on full storage.

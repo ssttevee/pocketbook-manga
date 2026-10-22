@@ -1487,6 +1487,7 @@ fn reader(ui: *app.Ui, session: *const Session) !void {
             mutable.region_viewport = viewport;
         }
         var request: regions.Request = .{
+            .requested_at_ms = if (session.reader_requested_at) |at| at.toMilliseconds() else null,
             .mode = model.readingMode(),
             .pages = if (model.readingMode() == .vertical) ch.pages else &.{},
             .delta = model.reader_scroll_delta,

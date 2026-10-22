@@ -8,6 +8,7 @@ const vp = @import("reader_viewport.zig");
 pub const Continuous = @import("continuous_reader.zig");
 
 pub const Request = struct {
+    requested_at_ms: ?i64 = null,
     mode: @import("library.zig").ReaderMode = .paged,
     delta: f64 = 0,
     pages: []const []const u8 = &.{},
@@ -89,14 +90,19 @@ pub fn continuousRequest(request: Request) Continuous.Request {
 pub fn render(task: *app.Task, service: *Service, request: Request, on_frame: app.Handler(anyerror!Result)) anyerror!Result {
     try task.checkCancel();
     const started = std.Io.Clock.boot.now(task.io);
+    const before = service.tiles.metrics;
+    if (request.requested_at_ms) |at| std.log.info("Reader task page={d} delta={d:.1} input_to_start_ms={d}", .{ request.page + 1, request.delta, started.toMilliseconds() - at });
     if (request.mode == .vertical) {
         const context = continuousContext(service, task.io, &request);
         const output = try Continuous.render(context, task.gpa, continuousRequest(request), .{ .context = task, .check = checkpoint });
         try task.checkCancel();
-        try task.post(on_frame, @as(anyerror!Result, .{ .request = request, .ready_at = std.Io.Clock.boot.now(task.io), .value = .{ .continuous = output } }));
+        const ready_at = std.Io.Clock.boot.now(task.io);
+        logRender(service, request, started, ready_at, before);
+        try task.post(on_frame, @as(anyerror!Result, .{ .request = request, .ready_at = ready_at, .value = .{ .continuous = output } }));
         if (!output.at_end and !output.waiting) {
             var arena: std.heap.ArenaAllocator = .init(task.gpa);
             defer arena.deinit();
+            const preparing = std.Io.Clock.boot.now(task.io);
             var next = continuousRequest(request);
             next.anchor = output.anchor;
             next.delta = @as(f64, @floatFromInt(request.viewport.height)) * 0.9;
@@ -105,6 +111,7 @@ pub fn render(task: *app.Task, service: *Service, request: Request, on_frame: ap
                 std.log.debug("Continuous preparation: {s}", .{@errorName(err)});
                 return .{ .request = request, .value = .prefetched };
             };
+            std.log.info("Reader continuous preparation_ms={d}", .{preparing.durationTo(std.Io.Clock.boot.now(task.io)).toMilliseconds()});
         }
         return .{ .request = request, .value = .prefetched };
     }
@@ -123,6 +130,7 @@ pub fn render(task: *app.Task, service: *Service, request: Request, on_frame: ap
     };
     try task.checkCancel();
     const ready_at = std.Io.Clock.boot.now(task.io);
+    logRender(service, request, started, ready_at, before);
     std.log.info("Reader region {s}: {d},{d} {d}x{d} ready decode_ms={d}", .{ request.relative, frame.rect.x, frame.rect.y, frame.rect.width, frame.rect.height, started.durationTo(ready_at).toMilliseconds() });
     // Publish the viewport before speculative work; borrowed task pixels stay
     // alive until message delivery, and canceled generations are discarded.
@@ -163,4 +171,9 @@ fn preparePage(task: *app.Task, service: *Service, request: Request, relative: [
     const started = std.Io.Clock.boot.now(task.io);
     try service.tiles.prepare(task.io, terminated, request.viewport, 0, request.rtl, .{ .context = task, .check = checkpoint });
     std.log.info("Reader prepared {s}: {d} ms", .{ relative, started.durationTo(std.Io.Clock.boot.now(task.io)).toMilliseconds() });
+}
+
+fn logRender(service: *Service, request: Request, started: std.Io.Timestamp, ready: std.Io.Timestamp, before: cache.Metrics) void {
+    const m = service.tiles.metrics.since(before);
+    std.log.info("Reader render mode={s} page={d} delta={d:.1} render_ms={d} ram_hits={d} disk_hits={d} decoded={d} open_us={d} disk_read_us={d} decode_us={d} disk_write_us={d}", .{ @tagName(request.mode), request.page + 1, request.delta, started.durationTo(ready).toMilliseconds(), m.ram_hits, m.disk_hits, m.decoded, m.open_us, m.disk_read_us, m.decode_us, m.disk_write_us });
 }

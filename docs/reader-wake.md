@@ -98,3 +98,17 @@ sleep guard disabled, logging to `wake-control.log`. It may require Back after
 fifteen seconds. Compare the guard-on and guard-off results with the logged
 sleep/USB/network state. The guarded/control comparison should be repeated after changes to firmware
 or power handling; the recorded result applies to the tested device/firmware.
+
+## Reader latency diagnostics
+
+The application log distinguishes reader input, cache lookup, task startup,
+visible-frame rendering, speculative preparation, delivery and application.
+`input_to_applied_ms` ends after copying pixels and saving progress/preferences;
+it does not include drawing or the physical e-ink panel update.
+
+`Reader render` includes both paged and continuous vertical views. Tile counts
+separate RAM hits, disk hits and actual decoding. Microsecond totals isolate
+image opening, disk reads, decoding and tile writes; these are components of
+render time, not additional delays. UI cache lookups report elapsed time
+separately because they use immutable disk tiles without entering the decoder.
+`progress_ms` and `preferences_ms` identify synchronous persistence costs.

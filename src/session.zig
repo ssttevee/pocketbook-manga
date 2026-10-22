@@ -27,6 +27,7 @@ pub const Session = struct {
     display_scale: f32 = 1,
     region_viewport: Viewport.Size = .{ .width = 0, .height = 0 },
     region_epoch: u64 = 0,
+    reader_requested_at: ?std.Io.Timestamp = null,
     region_pixels: ?[]u8 = null,
     region_drawn: ?struct { chapter: u64, page: usize, epoch: u64, position: f64, rtl: bool, viewport: Viewport.Size, mode: lib.ReaderMode = .paged } = null,
     load_image: ?*const fn (*Session, []const u8) anyerror!void = null,
@@ -114,10 +115,14 @@ pub const Session = struct {
     /// exclusively on the task thread; a cache miss follows the normal task.
     pub fn acceptCachedRegion(self: *Session, request: Regions.Request) !bool {
         const service = self.region_service orelse return false;
+        const checking = std.Io.Clock.boot.now(self.io);
+        var checked: ?std.Io.Timestamp = null;
+        defer std.log.info("Reader cache lookup page={d} elapsed_ms={d}", .{ request.page + 1, checking.durationTo(checked orelse std.Io.Clock.boot.now(self.io)).toMilliseconds() });
         if (request.mode == .vertical) {
             var arena: std.heap.ArenaAllocator = .init(self.model.gpa);
             defer arena.deinit();
             const output = try Regions.Continuous.cached(Regions.continuousContext(service, self.io, &request), arena.allocator(), Regions.continuousRequest(request)) orelse return false;
+            checked = std.Io.Clock.boot.now(self.io);
             return self.acceptRegion(.{ .request = request, .value = .{ .continuous = output } });
         }
         if (!tachi.library.safePath(request.relative)) return false;
@@ -129,6 +134,7 @@ pub const Session = struct {
             try std.fs.path.join(arena.allocator(), &.{ request.root, request.relative });
         const terminated = try arena.allocator().dupeSentinel(u8, path, 0);
         const frame = try service.tiles.cachedFrame(arena.allocator(), self.io, terminated, request.viewport, request.position, request.backward, request.rtl) orelse return false;
+        checked = std.Io.Clock.boot.now(self.io);
         return self.acceptRegion(.{ .request = request, .value = .{ .frame = frame } });
     }
     pub fn acceptRegion(self: *Session, result: Regions.Result) !bool {
@@ -170,8 +176,16 @@ pub const Session = struct {
                 self.image = .{ .width = frame.rect.width, .height = frame.rect.height, .pixels = pixels, .revision = frame.revision, .native_scale = self.display_scale };
                 self.region_drawn = .{ .chapter = std.hash.Wyhash.hash(0, chapter.id), .page = model.page, .epoch = self.region_epoch, .position = model.reader_position, .rtl = model.prefs.rtl, .viewport = request.viewport, .mode = request.mode };
                 self.setStatus("");
+                const saving = std.Io.Clock.boot.now(self.io);
                 self.recordProgress();
+                const progress_saved = std.Io.Clock.boot.now(self.io);
                 try self.saveDisplayPreferences();
+                const preferences_saved = std.Io.Clock.boot.now(self.io);
+                std.log.info("Reader present mode={s} page={d} cached={} progress_ms={d} preferences_ms={d}", .{ @tagName(request.mode), model.page + 1, result.ready_at == null, saving.durationTo(progress_saved).toMilliseconds(), progress_saved.durationTo(preferences_saved).toMilliseconds() });
+                if (self.reader_requested_at) |at| {
+                    std.log.info("Reader input_to_applied_ms={d}", .{at.durationTo(preferences_saved).toMilliseconds()});
+                    self.reader_requested_at = null;
+                }
                 if (result.ready_at) |ready_at| std.log.info("Reader region {s}: accepted delivery_ms={d} apply_ms={d}", .{ request.relative, ready_at.durationTo(accepted_at).toMilliseconds(), accepted_at.durationTo(std.Io.Clock.boot.now(self.io)).toMilliseconds() });
                 return true;
             },
@@ -1323,6 +1337,10 @@ pub const Session = struct {
         return .decode(self.settings.library.sort);
     }
     pub fn act(self: *Session, action: lib.Action) !void {
+        if (self.model.screen == .reader and (action == .turn or action == .pan or action == .jump_page)) {
+            self.reader_requested_at = std.Io.Clock.boot.now(self.io);
+            std.log.info("Reader input action={s} page={d}", .{ @tagName(action), self.model.page + 1 });
+        } else if (action == .back or action == .feed) self.reader_requested_at = null;
         switch (action) {
             .back, .feed, .help, .settings, .open, .open_chapter, .menu => self.queued_read_pending = false,
             else => {},
