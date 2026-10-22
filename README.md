@@ -64,6 +64,8 @@ The region reader requires fabrum commit `4ff5f21` or later, which schedules fra
 
 SQLite persistence requires libtachi commit `c70d52f` or later. `build.zig.zon` points at `../zig-tachi`. Build its `tachi-host.jar` first with `zig build host` in that repository; the tools read it from `../zig-tachi/zig-out/lib`. On this workspace, use `/Users/steve/Programs/Zig/v0.17.0/zig`; the `zig` on PATH is 0.16.
 
+The latest validated libtachi revision is `69a78ac4fd1c6bfe4356d4545f4d53a4487dca45`. Its standalone `tachicore` module handles the extension runtime; PocketManga continues to use the `tachi` module for the managed runtime, engine, SQLite library and download queue. The local-path dependency uses the checked-out revision rather than pinning this hash.
+
 The worker's Java runtime is built from source in Docker; see [the Java runtime](docs/java-runtime.md). The first build compiles a GCC cross toolchain and OpenJDK, which takes about an hour; later builds reuse Docker's cache:
 
 ```
